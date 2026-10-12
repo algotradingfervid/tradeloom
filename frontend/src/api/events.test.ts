@@ -1,0 +1,44 @@
+import { describe, expect, it, vi } from 'vitest';
+import { useAppStore } from '../store/app';
+import { useSessionStore } from '../store/session';
+import { useSettingsStore } from '../store/settings';
+import { useStatusStore } from '../store/status';
+import { useTicksStore } from '../store/ticks';
+import { bootstrap, startEventBridge } from './events';
+import { demoSeed, FIXED_NOW, readySession, tickFixture } from './mock/fixtures';
+import { createMockBackend } from './mock/index';
+
+describe('event bridge', () => {
+  it('dispatches each backend event into its store and unsubscribes on stop', () => {
+    const backend = createMockBackend(demoSeed());
+    const navigate = vi.fn();
+    const stop = startEventBridge(backend, { navigate });
+    backend.emit('session.state', readySession({ state: 'expired' }));
+    backend.emit('feed.state', { state: 'reconnecting', attempt: 2, nextRetryMs: FIXED_NOW + 5000, lastTickMs: 0, connections: 0, tokens: 3 });
+    backend.emit('market.status', { exchange: 'NSE', phase: 'closed', dayType: 'holiday', label: 'Holiday', tooltip: 'Exchange holiday', atMs: FIXED_NOW });
+    backend.emit('clock.offset', { millis: 3200, source: 'ticks', samples: 12, warn: true, skewed: false, updatedAtMs: FIXED_NOW });
+    backend.emit('tick.batch', [tickFixture(1, 10, 9)]);
+    backend.emit('settings.changed', { key: 'appearance.theme', value: 'dark' });
+    backend.emit('app.navigate', { route: '/holdings' });
+    expect(useSessionStore.getState().session?.state).toBe('expired');
+    expect(useStatusStore.getState().feed).toMatchObject({ state: 'reconnecting', attempt: 2, nextRetryMs: FIXED_NOW + 5000 });
+    expect(useStatusStore.getState().market?.label).toBe('Holiday');
+    expect(useStatusStore.getState().clock?.millis).toBe(3200);
+    expect(useTicksStore.getState().latest[1].ltp).toBe(10);
+    expect(useSettingsStore.getState().values['appearance.theme']).toBe('dark');
+    expect(navigate).toHaveBeenCalledWith('/holdings');
+    stop();
+    for (const name of ['session.state', 'feed.state', 'market.status', 'clock.offset', 'tick.batch', 'settings.changed', 'app.navigate'] as const) {
+      expect(backend.listenerCount(name)).toBe(0);
+    }
+  });
+  it('bootstrap loads session, status, settings and app info', async () => {
+    const seed = demoSeed();
+    seed.settings = { 'appearance.theme': '"dark"' };
+    await bootstrap(createMockBackend(seed));
+    expect(useSessionStore.getState().session?.state).toBe('ready');
+    expect(useStatusStore.getState().feed.state).toBe('live');
+    expect(useSettingsStore.getState()).toMatchObject({ loaded: true, values: { 'appearance.theme': 'dark' } });
+    expect(useAppStore.getState().info?.version).toBe('0.1.0');
+  });
+});
