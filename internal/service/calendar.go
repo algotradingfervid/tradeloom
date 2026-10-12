@@ -4,12 +4,15 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"tradeloom/internal/bus"
@@ -27,6 +30,7 @@ const (
 	calendarMinYear      = 2000    // earliest year an override may describe
 	calendarYearsAhead   = 2       // latest date: 31 Dec of (this year + 2), app clock
 	maxCalendarPhases    = 4       // pre-open, continuous, closing, post-closing
+	maxCalendarReason    = 120     // longest parse message echoed back to the UI (Ruling 77)
 )
 
 // calendarCoversUntil persists the furthest "# covers:" end of an imported file (Ruling 28). It is
@@ -136,15 +140,48 @@ func (s *Service) LoadCalendar(ctx context.Context) error {
 		es = append(es, e)
 	}
 	s.d.Calendar.SetOverrides(es)
-	if s.d.Settings != nil {
-		if v := settings.Get(s.d.Settings, calendarCoversUntil); v != "" {
-			if d, err := calendar.ParseDate(v); err == nil {
-				s.d.Calendar.ExtendCoverage(d)
-			}
-		}
+	if d, ok := s.storedCoverage(); ok {
+		s.d.Calendar.ExtendCoverage(d)
 	}
 	s.calendarChanged()
 	return nil
+}
+
+// storedCoverage reads calendar.covers_until as stored. settings.Get falls back to the default for a value
+// that fails validation, so the raw row is checked too: a bad value is reported, never silently dropped.
+func (s *Service) storedCoverage() (calendar.Date, bool) {
+	if s.d.Settings == nil {
+		return calendar.Date{}, false
+	}
+	for _, c := range s.d.Settings.Snapshot() {
+		if c.Key != calendarCoversUntil.Name {
+			continue
+		}
+		var v string
+		if err := json.Unmarshal(c.Value, &v); err != nil {
+			s.d.Log.Warn("calendar coverage setting ignored", "setting", calendarCoversUntil.Name, "err", err)
+			return calendar.Date{}, false
+		}
+		if v == "" {
+			return calendar.Date{}, false
+		}
+		d, err := calendar.ParseDate(v)
+		if err != nil {
+			s.d.Log.Warn("calendar coverage setting ignored", "setting", calendarCoversUntil.Name, "err", err)
+			return calendar.Date{}, false
+		}
+		return d, true
+	}
+	return calendar.Date{}, false
+}
+
+// capReason shortens an echoed parse message to maxCalendarReason characters.
+func capReason(r string) string {
+	rs := []rune(r)
+	if len(rs) <= maxCalendarReason {
+		return r
+	}
+	return string(rs[:maxCalendarReason-1]) + "…"
 }
 
 func (s *Service) persistOverrides(ctx context.Context, es []calendar.Entry) error {
@@ -161,10 +198,17 @@ func (s *Service) persistOverrides(ctx context.Context, es []calendar.Entry) err
 
 // readCalendarFile reads an import file with the size and row bounds applied.
 func readCalendarFile(path string) ([]byte, error) {
-	st, err := os.Stat(path)
+	// O_NONBLOCK: opening a FIFO or device must not hang; the type is checked on the opened file, so the
+	// path cannot be swapped between the check and the read (Ruling 77).
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, refused(calendarStage, "not_found", "The calendar file was not found.")
 	}
+	if err != nil {
+		return nil, refused(calendarStage, "invalid_file", "The calendar file could not be read.")
+	}
+	defer f.Close()
+	st, err := f.Stat()
 	if err != nil {
 		return nil, refused(calendarStage, "invalid_file", "The calendar file could not be read.")
 	}
@@ -174,11 +218,6 @@ func readCalendarFile(path string) ([]byte, error) {
 	if st.Size() > maxCalendarFileBytes {
 		return nil, refused(calendarStage, "invalid_file", "The calendar file is larger than 1 MiB.")
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, refused(calendarStage, "invalid_file", "The calendar file could not be read.")
-	}
-	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, maxCalendarFileBytes+1))
 	if err != nil {
 		return nil, refused(calendarStage, "invalid_file", "The calendar file could not be read.")
@@ -236,9 +275,9 @@ func (s *Service) ImportCalendar(ctx context.Context, path string) (CalendarInfo
 	if err != nil {
 		var re *calendar.RowError
 		if errors.As(err, &re) {
-			return s.calendarRefuse("invalid_file", re.Error())
+			return s.calendarRefuse("invalid_file", capReason(re.Error()))
 		}
-		return s.calendarRefuse("invalid_file", err.Error())
+		return s.calendarRefuse("invalid_file", capReason(err.Error()))
 	}
 	if err := s.checkImportScope(file); err != nil {
 		return s.calendarInfo(), s.refuse(calendarStage, err)
@@ -275,7 +314,7 @@ func (s *Service) ImportCalendar(ctx context.Context, path string) (CalendarInfo
 	if file.CoversTo != (calendar.Date{}) {
 		s.d.Calendar.ExtendCoverage(file.CoversTo)
 	}
-	s.d.Log.Info("calendar imported", "entries", len(file.Entries), "coversTo", file.CoversTo.String(), "path", path)
+	s.d.Log.Info("calendar imported", "entries", len(file.Entries), "coversTo", file.CoversTo.String(), "file", filepath.Base(path))
 	s.calendarChanged()
 	return s.calendarInfo(), nil
 }
@@ -344,6 +383,9 @@ func (s *Service) parseEntry(in CalendarEntryInput) (calendar.Entry, error) {
 	sort.Slice(e.Phases, func(i, j int) bool { return e.Phases[i].Start < e.Phases[j].Start })
 	if ty == calendar.DaySpecial && !seen[calendar.PhaseContinuous] {
 		return bad("A special session needs a continuous phase.")
+	}
+	if ty == calendar.DayTrading && len(e.Phases) > 0 && !seen[calendar.PhaseContinuous] {
+		return bad("A trading day with phases needs a continuous phase.")
 	}
 	return e, nil
 }

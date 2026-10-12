@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,5 +312,90 @@ func TestCalendarChange_RepublishesMarketStatus(t *testing.T) {
 	case v, ok := <-sub.C():
 		t.Fatalf("unexpected event %+v (open %v)", v, ok)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// --- Fix round 1 (Ruling 77) ---
+
+type mapBackend map[string]string
+
+func (m mapBackend) Load(context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for k, v := range m {
+		out[k] = v
+	}
+	return out, nil
+}
+func (m mapBackend) Save(_ context.Context, k, v string) error { m[k] = v; return nil }
+
+func captureLog(e *svcEnv) *syncBuf {
+	w := &syncBuf{}
+	e.svc.d.Log = slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	return w
+}
+
+// Ruling 77 (3): the import log line names the file, never its folder (the log can go in a support bundle).
+func TestImportCalendar_LogsBaseNameOnly(t *testing.T) {
+	e := newSvcEnv(t)
+	withCalendarData(t, e)
+	logs := captureLog(e)
+	path := writeCal(t, "holidays-2027.csv", calendar.Header+"\n2026-10-19,NSE,holiday,,,\n")
+	if _, err := e.svc.ImportCalendar(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "holidays-2027.csv") || strings.Contains(out, filepath.Dir(path)) {
+		t.Fatalf("log must carry the base name only: %s", out)
+	}
+}
+
+// Ruling 77 (4): a stored coverage that is not a date is reported, not silently ignored.
+func TestLoadCalendar_WarnsOnBadStoredCoverage(t *testing.T) {
+	e := newSvcEnv(t)
+	withCalendarData(t, e)
+	st, err := settings.Load(context.Background(), mapBackend{"calendar.covers_until": `"2027-13-45"`}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.svc.d.Settings = st
+	logs := captureLog(e)
+	before := e.svc.d.Calendar.CoversUntil()
+	if err := e.svc.LoadCalendar(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if out := logs.String(); !strings.Contains(out, "level=WARN") || !strings.Contains(out, "calendar.covers_until") {
+		t.Fatalf("no warning for a bad stored coverage: %s", out)
+	}
+	if e.svc.d.Calendar.CoversUntil() != before {
+		t.Fatal("bad coverage applied")
+	}
+}
+
+// Ruling 77 (5): a trading or special day that lists phases must include a continuous phase.
+func TestUpsertCalendarEntry_PhasesNeedContinuous(t *testing.T) {
+	e := newSvcEnv(t)
+	db := withCalendarData(t, e)
+	ctx := context.Background()
+	for _, ty := range []string{"trading", "special"} {
+		in := CalendarEntryInput{Exchange: "NSE", Date: "2026-11-02", Type: ty, Phases: []PhaseDTO{{Kind: "pre-open", Start: "09:00", End: "09:08"}}}
+		if _, err := e.svc.UpsertCalendarEntry(ctx, in); refusedCode(t, err) != "invalid_entry" {
+			t.Errorf("%s: %v", ty, err)
+		}
+	}
+	assertNoOverrides(t, e, db)
+	// A trading day without phases keeps the regular phases and is accepted.
+	if _, err := e.svc.UpsertCalendarEntry(ctx, CalendarEntryInput{Exchange: "NSE", Date: "2026-11-02", Type: "trading"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Ruling 77 (2): an echoed parse error is capped at 120 characters.
+func TestImportCalendar_CapsEchoedReason(t *testing.T) {
+	e := newSvcEnv(t)
+	withCalendarData(t, e)
+	path := writeCal(t, "long.csv", "# covers: "+strings.Repeat("x", 500)+"\n"+calendar.Header+"\n")
+	_, err := e.svc.ImportCalendar(context.Background(), path)
+	if refusedCode(t, err) != "invalid_file" || len([]rune(err.Error())) > 120 || !strings.HasPrefix(err.Error(), "invalid covers comment") {
+		t.Fatalf("%d chars: %v", len(err.Error()), err)
 	}
 }
