@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,13 +105,68 @@ func TestSet_BackendErrorLeavesCacheUnchanged(t *testing.T) {
 
 // NFR-04: settings never hold secrets.
 func TestSet_RefusesSecrets(t *testing.T) {
-	s, _ := Load(context.Background(), &memBackend{m: map[string]string{}}, nil)
-	if err := Set(context.Background(), s, Key[string]{Name: "kite.api_secret"}, "x"); !errors.Is(err, ErrSecretKey) {
-		t.Fatalf("want ErrSecretKey, got %v", err)
+	b := &memBackend{m: map[string]string{}}
+	s, _ := Load(context.Background(), b, nil)
+	for _, name := range []string{"kite.api_secret", "telegram.token", "kite.password", "x.totp_seed", "Auth.Authorization"} {
+		if err := Set(context.Background(), s, Key[string]{Name: name}, "x"); !errors.Is(err, ErrSecretKey) {
+			t.Fatalf("%s: want ErrSecretKey, got %v", name, err)
+		}
 	}
 	logging.RegisterSecret("registeredSecretValue42")
 	if err := Set(context.Background(), s, Key[string]{Name: "note"}, "has registeredSecretValue42 inside"); !errors.Is(err, ErrSecretValue) {
 		t.Fatalf("want ErrSecretValue, got %v", err)
+	}
+	if len(b.m) != 0 || len(s.Snapshot()) != 0 || Get(s, Key[string]{Name: "note", Default: "d"}) != "d" {
+		t.Fatalf("refused Set wrote state: backend=%v snapshot=%v", b.m, s.Snapshot())
+	}
+}
+
+func TestSet_LegitimateKeysAccepted(t *testing.T) {
+	s, _ := Load(context.Background(), &memBackend{m: map[string]string{}}, nil)
+	for _, name := range []string{"log.level", "backup.schedule.enabled", "backup.schedule.folder", "backup.schedule.keep",
+		"backup.include_candles", "kite.api_key", "kite.redirect_port", "appearance.theme", "appearance.follow_system",
+		"appearance.sidebar_collapsed", "ui.last_route", "chart.default_timeframe", "calendar.stale_toast_day"} {
+		if isSecretKey(name) {
+			t.Fatalf("%s falsely flagged as secret", name)
+		}
+	}
+	if err := Set(context.Background(), s, Key[string]{Name: "kite.api_key"}, "abcd1234"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoad_DropsSecretRows(t *testing.T) {
+	logging.RegisterSecret("loadedSecretValue77")
+	b := &memBackend{m: map[string]string{
+		"telegram.token": `"abc"`,
+		"note":           `"has loadedSecretValue77"`,
+		"log.level":      `"debug"`,
+	}}
+	s, err := Load(context.Background(), b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap) != 1 || snap[0].Key != "log.level" {
+		t.Fatalf("snapshot %v", snap)
+	}
+}
+
+func TestSnapshot_Redacts(t *testing.T) {
+	s, _ := Load(context.Background(), &memBackend{m: map[string]string{}}, nil)
+	s.raw["note"] = `"late loadedSecretValue77"` // registered after Load: Snapshot must still redact
+	logging.RegisterSecret("loadedSecretValue77")
+	for _, c := range s.Snapshot() {
+		if strings.Contains(string(c.Value), "loadedSecretValue77") {
+			t.Fatalf("unredacted snapshot %s", c.Value)
+		}
+	}
+}
+
+func TestGet_NullFallsBackToDefault(t *testing.T) {
+	s, _ := Load(context.Background(), &memBackend{m: map[string]string{"backup.schedule.keep": "null", "log.level": "null"}}, nil)
+	if Get(s, BackupScheduleKeep) != 7 || Get(s, LogLevel) != "info" {
+		t.Fatal("null not treated as corrupt")
 	}
 }
 

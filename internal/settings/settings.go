@@ -7,12 +7,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 
 	"tradeloom/internal/bus"
 	"tradeloom/internal/logging"
 )
+
+// secretKeyName is the settings-specific secret-key guard, applied in addition to
+// logging.Default.IsSensitiveKey. It deliberately omits a bare "api_key": the Kite API key is
+// not secret and lives in the setting kite.api_key (P0-3); only api_secret is refused.
+var secretKeyName = regexp.MustCompile(`(?i)(secret|token|password|passwd|passphrase|api_?secret|totp|authorization|checksum)`)
+
+func isSecretKey(name string) bool {
+	return logging.Default.IsSensitiveKey(name) || secretKeyName.MatchString(name)
+}
 
 // Backend persists raw JSON values by key. *store.SettingsRepo implements it.
 type Backend interface {
@@ -66,6 +78,13 @@ func Load(ctx context.Context, b Backend, bs *bus.Bus) (*Settings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("settings: load: %w", err)
 	}
+	// Drop rows that must never have been stored (NFR-04): secret-like names or registered secret values.
+	for k, v := range raw {
+		if isSecretKey(k) || logging.Default.RedactString(v) != v {
+			slog.Warn("settings.secret_row_dropped", "component", "settings", "setting", k)
+			delete(raw, k)
+		}
+	}
 	return &Settings{b: b, bus: bs, raw: raw}, nil
 }
 
@@ -78,7 +97,7 @@ func Get[T any](s *Settings, k Key[T]) T {
 		return k.Default
 	}
 	var v T
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+	if err := json.Unmarshal([]byte(raw), &v); err != nil || strings.TrimSpace(raw) == "null" {
 		return k.Default
 	}
 	if k.Validate != nil && k.Validate(v) != nil {
@@ -89,7 +108,7 @@ func Get[T any](s *Settings, k Key[T]) T {
 
 // Set validates, persists and caches v, then publishes Changed. Nothing changes on error.
 func Set[T any](ctx context.Context, s *Settings, k Key[T], v T) error {
-	if logging.Default.IsSensitiveKey(k.Name) {
+	if isSecretKey(k.Name) {
 		return fmt.Errorf("%w: %s", ErrSecretKey, k.Name)
 	}
 	if k.Validate != nil {
@@ -119,13 +138,13 @@ func Set[T any](ctx context.Context, s *Settings, k Key[T], v T) error {
 // Reset stores k.Default.
 func Reset[T any](ctx context.Context, s *Settings, k Key[T]) error { return Set(ctx, s, k, k.Default) }
 
-// Snapshot returns every stored value (for the support bundle and the settings view), sorted by key.
+// Snapshot returns every stored value, passed through the log redactor (for the support bundle and the settings view), sorted by key.
 func (s *Settings) Snapshot() []Changed {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Changed, 0, len(s.raw))
 	for k, v := range s.raw {
-		out = append(out, Changed{Key: k, Value: json.RawMessage(v)})
+		out = append(out, Changed{Key: k, Value: json.RawMessage(logging.Default.RedactString(v))})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
 	return out
