@@ -83,6 +83,9 @@ func violations(rec *mock.Recorder, leaks ...leakSource) []string {
 		if !allowedRoutes[id] {
 			out = append(out, "request outside the allowed route set: "+id)
 		}
+		if r.BodyErr != nil {
+			out = append(out, "request body not read in full, secret scan incomplete: "+id)
+		}
 		out = append(out, secretLeaks(r, id)...)
 	}
 	for _, l := range leaks {
@@ -682,10 +685,35 @@ func TestRecorder_DetectsEveryWrite(t *testing.T) {
 	// An order POST through http.DefaultClient (any path that bypasses the allow-list transport) is refused and reported.
 	t.Run("default transport", func(t *testing.T) {
 		d := refuseDefaultTransport(t)
-		if _, err := http.PostForm("https://api.kite.trade/orders/regular", url.Values{"quantity": {"1"}}); !errors.Is(err, errDefaultTransport) {
+		// kite.invalid (RFC 6761) never resolves: if the swap failed, the request could not reach Kite.
+		if _, err := http.PostForm("https://kite.invalid/orders/regular", url.Values{"quantity": {"1"}}); !errors.Is(err, errDefaultTransport) {
 			t.Fatalf("POST through http.DefaultClient: %v", err)
 		}
-		assertViolations(t, violations(mock.NewRecorder(t), d), []string{"request through http.DefaultTransport (refused): POST https://api.kite.trade/orders/regular"})
+		assertViolations(t, violations(mock.NewRecorder(t), d), []string{"request through http.DefaultTransport (refused): POST https://kite.invalid/orders/regular"})
+	})
+	// A body cut short (here: Content-Length larger than what arrives) is recorded with its read error and
+	// reported, because the secret scan only saw part of it.
+	t.Run("unreadable body", func(t *testing.T) {
+		rec := mock.NewRecorder(t)
+		u, err := url.Parse(rec.URL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := net.Dial("tcp", u.Host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.WriteString(conn, "POST /session/token HTTP/1.1\r\nHost: "+u.Host+"\r\n"+
+			"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\napi_key=k")
+		_ = conn.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the truncated request is recorded", func() bool { return len(rec.Requests()) == 1 })
+		if r := rec.Requests()[0]; r.BodyErr == nil || string(r.Body) != "api_key=k" {
+			t.Fatalf("body %q, err %v", r.Body, r.BodyErr)
+		}
+		assertViolations(t, violations(rec), []string{"request body not read in full, secret scan incomplete: POST /session/token"})
 	})
 	// And a clean recorder reports nothing.
 	assertViolations(t, violations(mock.NewRecorder(t)), nil)
