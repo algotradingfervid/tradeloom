@@ -145,3 +145,16 @@ func TestCreateSupportBundle_NoOverwriteSameSecondAndNilNow(t *testing.T) {
 		t.Fatalf("temp left %v", left)
 	}
 }
+
+func TestCreateSupportBundle_CopyFailureLeavesNothing(t *testing.T) {
+	old := copyFile
+	copyFile = func(io.Writer, io.Reader) (int64, error) { return 0, os.ErrInvalid }
+	defer func() { copyFile = old }()
+	dir := t.TempDir()
+	if _, err := CreateSupportBundle(BundleOptions{LogDir: dir, ExportDir: dir, Now: time.Now}); err == nil {
+		t.Fatal("want error")
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, "*")); len(left) != 0 {
+		t.Fatalf("files left: %v", left)
+	}
+}

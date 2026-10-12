@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
@@ -106,22 +108,15 @@ func CreateSupportBundle(o BundleOptions) (string, error) {
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	// Never overwrite a bundle made in the same second: link fails if the name exists.
-	final := ""
-	for i := 0; i < 1000; i++ {
-		final = filepath.Join(o.ExportDir, "tradeloom-support-"+stamp+suffix(i)+".zip")
-		err = os.Link(tmp.Name(), final)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return "", err
-		}
-	}
+	// Never overwrite a bundle made in the same second: O_EXCL on the final name, next suffix on
+	// ErrExist. Copying (not link/rename) works on FAT/exFAT and SMB targets too.
+	final, err := publishBundle(tmp.Name(), o.ExportDir, stamp)
 	if err != nil {
 		return "", err
 	}
-	os.Remove(tmp.Name())
+	if err := os.Remove(tmp.Name()); err != nil {
+		slog.Warn("logging.bundle_tmp_remove_failed", "component", "logging", "path", tmp.Name(), "err", err.Error())
+	}
 	ok = true
 	return final, nil
 }
@@ -169,4 +164,47 @@ func logEntries(dir string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// copyFile is a seam so tests can force a copy failure.
+var copyFile = func(dst io.Writer, src io.Reader) (int64, error) { return io.Copy(dst, src) }
+
+func publishBundle(tmpPath, dir, stamp string) (string, error) {
+	var out *os.File
+	var final string
+	for i := 0; i < 1000; i++ {
+		final = filepath.Join(dir, "tradeloom-support-"+stamp+suffix(i)+".zip")
+		f, err := os.OpenFile(final, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			out = f
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	if out == nil {
+		return "", errors.New("logging: no free bundle name")
+	}
+	fail := func(err error) (string, error) {
+		out.Close()
+		os.Remove(final)
+		return "", err
+	}
+	in, err := os.Open(tmpPath)
+	if err != nil {
+		return fail(err)
+	}
+	defer in.Close()
+	if _, err := copyFile(out, in); err != nil {
+		return fail(err)
+	}
+	if err := out.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(final)
+		return "", err
+	}
+	return final, nil
 }
