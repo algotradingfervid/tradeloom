@@ -8,6 +8,14 @@ export interface kite_CredentialsInfo {
   secretBackend: string;
 }
 
+export interface service_SecretStorageInfo {
+  mode: string;
+  backend: string;
+  keyringAvailable: boolean;
+  fileExists: boolean;
+  choices: Array<string> | null;
+}
+
 export interface service_SessionStatus {
   state: string;
   sessionId: string;
@@ -20,6 +28,7 @@ export interface service_SessionStatus {
   errorCode: string;
   errorMessage: string;
   credentials: kite_CredentialsInfo;
+  secrets: service_SecretStorageInfo;
 }
 
 export interface service_FeedStateDTO {
