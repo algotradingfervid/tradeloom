@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -151,5 +153,73 @@ func TestOpenPath_OnlyDirectlyInsideLogsDir(t *testing.T) {
 	defer fr.mu.Unlock()
 	if len(fr.paths) != 1 || fr.paths[0] != direct {
 		t.Fatalf("opened %v", fr.paths)
+	}
+}
+
+// Ruling 91 I1: an opener that exits 0 but leaves a child holding the output pipe (xdg-open handing off
+// to a file manager) is a success, not open_failed; a non-zero exit is still a failure, with its output.
+func TestRunOpener_ChildHoldsPipe(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	var buf syncBuf
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cmd := exec.Command("sh", "-c", "sleep 2 & exit 0")
+	cmd.WaitDelay = 100 * time.Millisecond
+	start := time.Now()
+	if err := runOpener(cmd, log); err != nil {
+		t.Fatalf("zero exit with a child holding the pipe: %v", err)
+	}
+	if d := time.Since(start); d > 1500*time.Millisecond {
+		t.Fatalf("waited %v for the child", d)
+	}
+	if !strings.Contains(buf.String(), "level=DEBUG") {
+		t.Errorf("no debug log: %q", buf.String())
+	}
+	for _, script := range []string{"echo boom >&2; exit 3", "sleep 2 & echo boom >&2; exit 3"} {
+		cmd := exec.Command("sh", "-c", script)
+		cmd.WaitDelay = 100 * time.Millisecond
+		if err := runOpener(cmd, log); err == nil || !strings.Contains(err.Error(), "exit status 3") {
+			t.Errorf("%q: err %v", script, err)
+		}
+	}
+	cmd = exec.Command("sh", "-c", "echo boom >&2; exit 3")
+	cmd.WaitDelay = 100 * time.Millisecond
+	if err := runOpener(cmd, log); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Errorf("output not reported: %v", err)
+	}
+}
+
+// Ruling 91 M5: restoreGeometry (a DB read and a window call) is inside the tracked unit, so Shutdown,
+// and the DB close after it, waits for a restore in progress before StopPlatform.
+func TestShutdown_DuringRestoreGeometry(t *testing.T) {
+	svc, _, _ := servicetest.New(t)
+	if err := svc.SaveWindowGeometry(context.Background(), `{"w":1500,"h":950,"x":10,"y":20,"maximised":false}`); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	a := New(Deps{Service: svc, StopPlatform: func(context.Context) { note("platform stopped") }})
+	rt := newFakeRuntime().rt()
+	rt.SetWindowGeometry = func(int, int, int, int, bool) { close(entered); <-release; note("geometry restored") }
+	started := make(chan struct{})
+	go func() { a.start(context.Background(), rt); close(started) }()
+	<-entered
+	stopped := make(chan struct{})
+	go func() { a.Shutdown(context.Background()); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Error("Shutdown returned while restoreGeometry was still running")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-started
+	<-stopped
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(order, ","); got != "geometry restored,platform stopped" {
+		t.Errorf("order %q", got)
 	}
 }

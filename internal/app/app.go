@@ -137,7 +137,7 @@ func (a *App) Startup(ctx context.Context) { a.start(ctx, wailsRuntime(ctx)) }
 
 // start runs once Wails has a window. When Shutdown has already run (or runs meanwhile) it starts nothing
 // more: the stopped check and every wg.Add happen under a.mu, so Shutdown's wg.Wait never races an Add,
-// and StartPlatform is counted in a.wg so StopPlatform runs only after it has returned.
+// and restoreGeometry plus StartPlatform are counted in a.wg so StopPlatform runs only after they returned.
 func (a *App) start(parent context.Context, rt Runtime) {
 	ctx, cancel := context.WithCancel(parent)
 	a.mu.Lock()
@@ -148,12 +148,13 @@ func (a *App) start(parent context.Context, rt Runtime) {
 	}
 	a.ctx, a.cancel, a.rt = ctx, cancel, rt
 	a.mu.Unlock()
-	a.restoreGeometry(ctx, rt)
 	if !a.track() {
 		return
 	}
 	func() {
 		defer a.wg.Done()
+		// Inside the tracked unit (Ruling 91 M5): it reads app.db, which closes after Shutdown.
+		a.restoreGeometry(ctx, rt)
 		if a.d.StartPlatform != nil {
 			if err := a.d.StartPlatform(ctx); err != nil {
 				a.d.Log.Error("platform start failed", "err", err)

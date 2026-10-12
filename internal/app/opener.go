@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,7 +49,20 @@ func execOpenPath(path string) error {
 	if err != nil {
 		return err
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
+	return runOpener(cmd, slog.Default())
+}
+
+// runOpener runs cmd and reports a failure with its output. An opener that exited 0 while a child it
+// launched (the file manager xdg-open hands off to) still holds the output pipe makes Wait return
+// exec.ErrWaitDelay once WaitDelay expires: that is a successful open, logged at Debug (Ruling 91 I1).
+// Exec checks the exit status first, so a non-zero exit is still an *exec.ExitError.
+func runOpener(cmd *exec.Cmd, log *slog.Logger) error {
+	out, err := cmd.CombinedOutput()
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		log.Debug("opener exited 0; a child it started kept the output pipe open", "cmd", cmd.Args[0])
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("%s failed: %w: %s", cmd.Args[0], err, strings.TrimSpace(string(out)))
 	}
 	return nil
