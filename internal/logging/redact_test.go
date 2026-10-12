@@ -127,3 +127,11 @@ func TestRedactHandler_FixRound1(t *testing.T) {
 		l.Info("x", "p", p)
 	})
 }
+
+func TestIsSecretLikeKey(t *testing.T) {
+	for k, want := range map[string]bool{"kite.api_secret": true, "telegram.bot_token": true, "x.password": true, "access_token": true, "kite.api_key": false, "ui.theme": false} {
+		if IsSecretLikeKey(k) != want {
+			t.Errorf("%s want %v", k, want)
+		}
+	}
+}

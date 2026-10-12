@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -17,14 +16,9 @@ import (
 	"tradeloom/internal/logging"
 )
 
-// secretKeyName is the settings-specific secret-key guard, applied in addition to
-// logging.Default.IsSensitiveKey. It deliberately omits a bare "api_key": the Kite API key is
-// not secret and lives in the setting kite.api_key (P0-3); only api_secret is refused.
-var secretKeyName = regexp.MustCompile(`(?i)(secret|token|password|passwd|passphrase|api_?secret|totp|authorization|checksum)`)
-
-func isSecretKey(name string) bool {
-	return logging.Default.IsSensitiveKey(name) || secretKeyName.MatchString(name)
-}
+// isSecretKey is the settings-specific secret-key guard. It deliberately omits a bare "api_key":
+// the Kite API key is not secret and lives in kite.api_key (P0-3); only api_secret is refused.
+func isSecretKey(name string) bool { return logging.IsSecretLikeKey(name) }
 
 // Backend persists raw JSON values by key. *store.SettingsRepo implements it.
 type Backend interface {

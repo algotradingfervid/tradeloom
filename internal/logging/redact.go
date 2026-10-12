@@ -121,3 +121,12 @@ func (r *Redactor) redactAny(v any) (any, bool) {
 	}
 	return red, true
 }
+
+var secretLikeKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|passphrase|api_?secret|totp|authorization|checksum)`)
+
+// IsSecretLikeKey reports whether a key (setting name, JSON field) looks like it holds a secret:
+// the union of the redactor's sensitive keys and common secret words. A bare "api_key" is not
+// matched (the Kite API key is not secret).
+func IsSecretLikeKey(k string) bool {
+	return sensitiveKey.MatchString(k) || secretLikeKey.MatchString(k)
+}
