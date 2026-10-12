@@ -7,7 +7,6 @@ import { holdingsCardCopy as copy, listCopy } from '../../i18n/copy';
 import { formatMoney, toneOf } from '../../i18n/format';
 import { holdingRow, liveLtp, summarizeHoldings } from '../../portfolio/calc';
 import { usePortfolioResource } from '../../store/portfolio';
-import { useSessionStore } from '../../store/session';
 import { useTicksStore } from '../../store/ticks';
 import './home.css';
 
@@ -15,7 +14,7 @@ export const HOLDINGS_REFRESH_MS = 300_000;
 
 /**
  * FR-HOME-002. Totals are Go's `HoldingsSummary` (integer paise, every row incl. out-of-scope ones, P0-3 Ruling 38)
- * plus each row's live-LTP difference in paise; quotes older than this session are ignored (Ruling 93, via liveLtp).
+ * plus each row's live-LTP difference in paise; quotes persisted by an earlier run are ignored (Ruling 93: liveLtp → isStaleQuote/runStartedMs).
  */
 export function HoldingsSummaryCard() {
   const titleId = useId();
@@ -23,10 +22,9 @@ export function HoldingsSummaryCard() {
   // (order.update is a notification only, P0-3 Ruling 71).
   const { resource, reload } = usePortfolioResource('holdings', { pollMs: HOLDINGS_REFRESH_MS });
   const latest = useTicksStore((s) => s.latest);
-  const sessionStartMs = useSessionStore((s) => s.session?.loggedInAtMs ?? 0);
   const rows = useMemo(
-    () => resource.data.rows.map((h) => holdingRow(h, liveLtp(latest[h.token], sessionStartMs))),
-    [resource.data, latest, sessionStartMs],
+    () => resource.data.rows.map((h) => holdingRow(h, liveLtp(latest[h.token]))),
+    [resource.data, latest],
   );
   const s = summarizeHoldings(resource.data.summary, rows);
   // A failed re-read after a successful one keeps the shown figures (Task 10 M8); the store keeps the data on error.

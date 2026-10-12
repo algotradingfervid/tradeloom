@@ -1,7 +1,8 @@
 import { act, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { demoSeed, emptySeed, holdingA, holdingB, holdingsOf, kiteOrder, tickFixture } from '../../api/mock/fixtures';
+import { demoSeed, emptySeed, FIXED_NOW, holdingA, holdingB, holdingsOf, kiteOrder, tickFixture } from '../../api/mock/fixtures';
 import { createMockBackend } from '../../api/mock/index';
+import { setRunStartedMs } from '../../market/quotes';
 import { renderApp } from '../../test/render';
 
 afterEach(() => vi.useRealTimers());
@@ -34,11 +35,12 @@ describe('FR-HOME-002 Holdings summary card', () => {
     act(() => backend.emit('tick.batch', [tickFixture(holdingA.token, 120, 105)]));
     expect(within(c).getByText('₹2,150.00')).toBeInTheDocument();
   });
-  it('Ruling 93: a quote stamped before this session started does not move the totals', async () => {
+  it('Ruling 93: a quote stamped before this run started does not move the totals', async () => {
+    setRunStartedMs(FIXED_NOW);
     const { backend } = renderApp();
     const c = await card();
     await within(c).findByText('₹2,050.00');
-    const old = { ...tickFixture(holdingA.token, 120, 105), tsMs: Date.UTC(2026, 9, 11, 9, 0) };
+    const old = { ...tickFixture(holdingA.token, 120, 105), tsMs: FIXED_NOW - 60_000 };
     act(() => backend.emit('tick.batch', [old]));
     expect(within(c).getByText('₹2,050.00')).toBeInTheDocument();
     expect(within(c).queryByText('₹2,150.00')).not.toBeInTheDocument();
