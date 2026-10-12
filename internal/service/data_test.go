@@ -8,6 +8,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"tradeloom/internal/bus"
 	"tradeloom/internal/candles"
 	"tradeloom/internal/kite"
+	"tradeloom/internal/logging"
 	"tradeloom/internal/settings"
 	"tradeloom/internal/store"
 )
@@ -39,11 +42,24 @@ func (f *fakeCandleAdmin) Clear(context.Context, []string) error {
 func (f *fakeCandleAdmin) OpenJobs(context.Context) ([]candles.Job, error) { return f.jobs, nil }
 
 type fakeRefresher struct {
-	err   error
-	calls int
+	err      error
+	calls    int
+	mu       sync.Mutex
+	triggers int
 }
 
 func (f *fakeRefresher) Refresh(context.Context) error { f.calls++; return f.err }
+
+// Trigger records calls like *instruments.Refresher.Trigger (non-blocking, coalescing).
+func (f *fakeRefresher) Trigger() { f.mu.Lock(); f.triggers++; f.mu.Unlock() }
+func (f *fakeRefresher) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.triggers
+}
+
+// Ruling 74 (5): Trigger is part of InstrumentRefresher, not an optional interface.
+var _ interface{ Trigger() } = InstrumentRefresher(nil)
 
 // withData gives the env a real app.db inside a real data-directory layout, so backups and restores run for real.
 func withData(t *testing.T, e *svcEnv) (store.Layout, *store.DB, *fakeCandleAdmin, *fakeRefresher) {
@@ -102,6 +118,11 @@ func TestDataStats_ClearCandles_RefreshInstruments(t *testing.T) {
 		st.InstrumentsImportedAtMs != ist(2026, 10, 12, 8, 30).UnixMilli() || st.BackfillOpenJobs != 2 {
 		t.Fatalf("%+v %v", st, err)
 	}
+	// Ruling 74 (3): open backfill jobs block the clear; the store is not touched.
+	if err := e.svc.ClearCandles(ctx); refusedCode(t, err) != "backfill_running" || ca.cleared != 0 {
+		t.Fatalf("%v %d", err, ca.cleared)
+	}
+	ca.jobs = nil
 	ca.clearErr = &candles.RunsReferencedError{Runs: []string{"run-1", "run-2"}}
 	if err := e.svc.ClearCandles(ctx); refusedCode(t, err) != "runs_referenced" || err.Error() != "2 backtest runs still reference cached candles." {
 		t.Fatalf("%v", err)
@@ -264,7 +285,8 @@ func TestRestoreBackup_FailureAfterCloseStillRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	stages, last := waitJob(t, ch, id)
-	if stages[len(stages)-1] != "restart" || last.Error == "" || last.ResultPath != "" {
+	if stages[len(stages)-1] != StageRestart || !strings.Contains(last.Error, "will be put back when Tradeloom restarts") ||
+		strings.Contains(last.Error, "not changed") || last.ResultPath != "" {
 		t.Fatalf("%v %+v", stages, last)
 	}
 	if _, err := os.Stat(layout.AppDB); err != nil {
@@ -275,8 +297,9 @@ func TestRestoreBackup_FailureAfterCloseStillRestarts(t *testing.T) {
 	}
 }
 
-// A refused close keeps the app running: the job ends at stage closing and the slot is free again.
-func TestRestoreBackup_CloseRefusedKeepsRunning(t *testing.T) {
+// Ruling 74 (1): a failed CloseForRestore may have closed part of the platform, so it is treated like a failure
+// after close: the job ends with StageRestart plus an Error and the slot stays taken (a relaunch is always safe).
+func TestRestoreBackup_CloseRefusedStillRestarts(t *testing.T) {
 	e := newSvcEnv(t)
 	_, _, _, _ = withData(t, e)
 	ch := startEvents(t, e)
@@ -292,11 +315,12 @@ func TestRestoreBackup_CloseRefusedKeepsRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	stages, fin := waitJob(t, ch, id)
-	if stages[len(stages)-1] != "closing" || fin.Error == "" {
+	if stages[len(stages)-1] != StageRestart || fin.Error == "" || fin.ResultPath != "" {
 		t.Fatalf("%v %+v", stages, fin)
 	}
-	rel := holdJob(t, e.svc)
-	rel()
+	if _, err := e.svc.BackupNow(ctx, "", false); refusedCode(t, err) != "job_running" {
+		t.Fatalf("job after a failed close: %v", err)
+	}
 }
 
 // FR-DATA-005 AC4: the scheduled backup runs once after 16:00 IST, and at quit when it was missed.
@@ -353,24 +377,10 @@ func TestScheduledBackup_DailyAfter1600AndOnQuit(t *testing.T) {
 	}
 }
 
-// triggerRefresher records Trigger calls like *instruments.Refresher.Trigger (non-blocking, coalescing).
-type triggerRefresher struct {
-	fakeRefresher
-	mu       sync.Mutex
-	triggers int
-}
-
-func (f *triggerRefresher) Trigger() { f.mu.Lock(); f.triggers++; f.mu.Unlock() }
-func (f *triggerRefresher) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.triggers
-}
-
 // Carry-forward Ruling 49: the supervisor kicks the instrument refresher once per new login session.
 func TestRun_TriggersInstrumentRefreshOnLogin(t *testing.T) {
 	e := newSvcEnv(t)
-	rf := &triggerRefresher{}
+	rf := &fakeRefresher{}
 	e.svc.d.Refresher = rf
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -438,5 +448,68 @@ func writeManifestArchive(t *testing.T, path string, m store.Manifest) {
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// scheduledEnv enables the daily backup into folder and moves the clock past 16:00 IST.
+func scheduledEnv(t *testing.T, folder string) (*svcEnv, *store.DB, chan emitted) {
+	t.Helper()
+	e := newSvcEnv(t)
+	_, db, _, _ := withData(t, e)
+	ctx := context.Background()
+	if err := settings.Set(ctx, e.settings, settings.BackupScheduleEnabled, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, e.settings, settings.BackupScheduleFolder, folder); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Set(ist(2026, 10, 12, 18, 0))
+	return e, db, startEvents(t, e)
+}
+
+func nextJobEvent(t *testing.T, ch chan emitted) JobProgress {
+	t.Helper()
+	ev := nextEvent(t, ch, EvJobProgress)
+	jp, ok := ev.payload.(JobProgress)
+	if !ok {
+		t.Fatalf("payload %T", ev.payload)
+	}
+	return jp
+}
+
+// Ruling 74 (7): a failed scheduled backup is reported on job.progress (kind backup, redacted Error), and the
+// day's marker stays unset so the next chance retries.
+func TestScheduledBackup_FailurePublishesRedactedProgress(t *testing.T) {
+	// Unique per run: registered secrets are process-wide and settings.Set refuses a value holding one (-count=2).
+	secret := "sch3dS3cretTOKEN" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	folder := filepath.Join(t.TempDir(), "ro-"+secret)
+	if err := os.Mkdir(folder, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(folder, 0o700) })
+	e, db, ch := scheduledEnv(t, folder)
+	logging.RegisterSecret(secret) // after settings.Set, which refuses values holding a registered secret
+	e.svc.BackupOnQuit(context.Background())
+	jp := nextJobEvent(t, ch)
+	if jp.Kind != JobBackup || !jp.Finished || !strings.Contains(jp.Error, "ro-") || strings.Contains(jp.Error, secret) || jp.ResultPath != "" {
+		t.Fatalf("%+v", jp)
+	}
+	if v, _ := store.NewWindowStateRepo(db).Get(context.Background(), UiStateLastScheduledBackup); v != "" {
+		t.Fatalf("marker set after a failed backup: %q", v)
+	}
+}
+
+// Ruling 74 (8): the scheduled folder must exist (as for BackupNow); a missing one is skipped with an error
+// event and is never created.
+func TestScheduledBackup_MissingFolderSkipped(t *testing.T) {
+	folder := filepath.Join(t.TempDir(), "unplugged-drive")
+	e, _, ch := scheduledEnv(t, folder)
+	e.svc.BackupOnQuit(context.Background())
+	jp := nextJobEvent(t, ch)
+	if jp.Kind != JobBackup || !jp.Finished || jp.Error == "" {
+		t.Fatalf("%+v", jp)
+	}
+	if _, err := os.Stat(folder); !os.IsNotExist(err) {
+		t.Fatalf("missing folder was created or is unreadable: %v", err)
 	}
 }

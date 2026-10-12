@@ -99,10 +99,11 @@ type CandleAdmin interface {
 	OpenJobs(ctx context.Context) ([]candles.Job, error)
 }
 
-// InstrumentRefresher is *instruments.Refresher (Task 30). Its Trigger method is used through an optional
-// interface after each new login (P0-2 Ruling 49).
+// InstrumentRefresher is *instruments.Refresher (Task 30): Refresh for the manual refresh, Trigger after
+// each new login (P0-2 Ruling 49; non-blocking, coalescing).
 type InstrumentRefresher interface {
 	Refresh(ctx context.Context) error
+	Trigger()
 }
 
 // liveChart is one open chart subscription (OpenLive).
