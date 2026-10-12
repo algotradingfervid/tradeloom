@@ -58,9 +58,12 @@ func (s *Session) HandleTokenError(err error) {
 }
 
 // expire claims the ready→expired transition exactly once, then performs the side effects.
-// It takes only mu and then (released) endSession's feedMu → mu; never exMu, because the relay can call
-// HandleTokenError from inside a Kite call made while exMu is held.
+// Ruling 58 (1): it takes feedMu before its mu claim, so no login can commit between the claim and the
+// side effects. It never takes exMu, because the relay can call HandleTokenError from inside a Kite call
+// made while exMu is held; feedMu is never held across a Kite call, so that cannot deadlock.
 func (s *Session) expire(code string) {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
 	s.mu.Lock()
 	if s.st.State != StateReady || s.rec == nil {
 		s.mu.Unlock()
@@ -70,11 +73,12 @@ func (s *Session) expire(code string) {
 	s.rec = nil
 	s.st.State = StateExpired
 	s.mu.Unlock()
-	s.endSession(rec, code)
+	s.endSessionLocked(rec, code)
 }
 
-// Close shuts the loopback listener (app shutdown). It is idempotent.
+// Close shuts the loopback listener and cancels the base run context (app shutdown). It is idempotent.
 func (s *Session) Close() {
+	s.cancelBase()
 	s.mu.Lock()
 	lb := s.lb
 	s.lb = nil

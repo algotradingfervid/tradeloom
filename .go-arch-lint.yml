@@ -56,6 +56,7 @@ components:
   kitemock:   { in: internal/kite/mock }                # test double: no production component may depend on it
   # P0-3 (local order/position cache; read-only until P4 wires orderwrite).
   orders:     { in: internal/orders }
+  service:    { in: internal/service }                  # P0-3 Task 14: transport-neutral façade (§2.2, AD-09)
 
 commonComponents:
   - logging
@@ -106,6 +107,8 @@ deps:
     canUse: [kite]
   feed:
     mayDependOn: [ticker]
+  service:   # §2.3: the façade sits above every domain package; only app/api (Task 22) and cmd depend on it
+    mayDependOn: [bus, settings, store, secrets, calendar, kite, ratelimit, ticker, feed, candles, candles_backfill, candles_builder, instruments, orders]
   orders:
     mayDependOn: [kite]   # §2.3 also allows orderwrite; added when P4 wires it
   storetest:

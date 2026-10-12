@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -92,5 +93,47 @@ func TestResultPage_EscapesHTML(t *testing.T) {
 	p := resultPage("<b>", "<script>alert(1)</script>")
 	if strings.Contains(p, "<script>") || !strings.Contains(p, "&lt;script&gt;") {
 		t.Fatalf("not escaped: %s", p)
+	}
+}
+
+// Ruling 57: the listener answers only requests addressed to 127.0.0.1:<port> (DNS-rebinding guard),
+// and every page forbids framing.
+func TestLoopback_RejectsForeignHostAndForbidsFraming(t *testing.T) {
+	port := freePort(t)
+	var calls atomic.Int32
+	lb, err := startLoopback(port, func(r *http.Request) (int, string) {
+		calls.Add(1)
+		return http.StatusOK, resultPage(pageTitleOK, pageMsgOK)
+	}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lb.Close()
+	u := fmt.Sprintf("http://127.0.0.1:%d%s?request_token=AbC123xyz789", port, CallbackPath)
+	for _, host := range []string{"localhost:" + fmt.Sprint(port), "evil.example", fmt.Sprintf("evil.example:%d", port), "127.0.0.1", "127.0.0.1:1", "[::1]:" + fmt.Sprint(port)} {
+		req, _ := http.NewRequest(http.MethodGet, u, nil)
+		req.Host = host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("host %q: status %d", host, resp.StatusCode)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("handler ran %d times for foreign hosts", n)
+	}
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("own host: status %d calls %d", resp.StatusCode, calls.Load())
+	}
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "frame-ancestors 'none'") {
+		t.Fatalf("CSP %q", csp)
 	}
 }
