@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -153,6 +154,14 @@ func TestOpen_RefusesNewerSchema(t *testing.T) {
 		t.Fatalf("message\n got %q\nwant %q", err.Error(), want)
 	}
 	// The refused database is untouched: still written by v1.4.0.
+	chk, cerr := sql.Open("sqlite", "file:"+filepath.Join(dir, "app.db")+"?mode=ro")
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if v := readAppVersion(context.Background(), chk); v != "v1.4.0" {
+		t.Fatalf("refused database modified: app_version_last=%q", v)
+	}
+	chk.Close()
 	db = mustOpen(t, dir, withStep3("CREATE TABLE c (y INTEGER);"), "v1.4.0")
 	db.Close()
 }
@@ -277,5 +286,54 @@ func TestOpen_FileModes0600(t *testing.T) {
 		if fi.Mode().Perm() != 0o600 {
 			t.Errorf("%s mode %v, want 0600", filepath.Base(f), fi.Mode().Perm())
 		}
+	}
+}
+
+// Review Focus 1: a leftover -wal must not be replayed into a damaged app.db.
+func TestOpen_CorruptWithLeftoverWAL(t *testing.T) {
+	for _, mode := range []string{"truncate", "garble"} {
+		t.Run(mode, func(t *testing.T) {
+			src := t.TempDir()
+			db := mustOpen(t, src, migV2, "v1")
+			defer db.Close()
+			for i := 0; i < 2000; i++ {
+				db.W.Exec("INSERT INTO b(x) VALUES (?)", i)
+			}
+			dir := t.TempDir()
+			// Copy while open in WAL mode so -wal/-shm hold unreplayed frames.
+			for _, suf := range []string{"", "-wal", "-shm"} {
+				b, err := os.ReadFile(filepath.Join(src, "app.db"+suf))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "app.db"+suf), b, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := filepath.Join(dir, "app.db")
+			b, _ := os.ReadFile(p)
+			if mode == "truncate" {
+				b = b[:len(b)/2]
+			} else {
+				copy(b, "garbage garbage!")
+			}
+			os.WriteFile(p, b, 0o600)
+			walBefore, err := os.ReadFile(p + "-wal")
+			if err != nil || len(walBefore) == 0 {
+				t.Fatalf("test needs a non-empty -wal: %v", err)
+			}
+			_, err = openTest(t, dir, migV2, "v1")
+			if !errors.Is(err, ErrCorrupt) {
+				t.Fatalf("want ErrCorrupt, got %v", err)
+			}
+			after, _ := os.ReadFile(p)
+			walAfter, werr := os.ReadFile(p + "-wal")
+			if string(after) != string(b) {
+				t.Fatal("damaged app.db was modified")
+			}
+			if werr != nil || string(walAfter) != string(walBefore) {
+				t.Fatal("-wal was removed or modified")
+			}
+		})
 	}
 }

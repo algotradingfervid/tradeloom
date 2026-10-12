@@ -6,9 +6,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/url"
@@ -120,6 +122,16 @@ func Open(ctx context.Context, path string, o Options) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Raw header check before any connection: opening in WAL mode would replay a leftover -wal
+	// into a damaged app.db (Review Focus 1).
+	if detail := rawHeaderCheck(path); detail != "" {
+		return nil, &CorruptError{Path: path, Detail: detail, LatestBackup: latestFile(o.BackupDir, "app-*.db")}
+	}
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600); err != nil {
+		return nil, err
+	} else if err := f.Close(); err != nil {
+		return nil, err
+	}
 	w, err := sql.Open("sqlite", dsn(path, false))
 	if err != nil {
 		return nil, err
@@ -177,6 +189,33 @@ func Open(ctx context.Context, path string, o Options) (*DB, error) {
 		return fail(err)
 	}
 	return &DB{W: w, R: r, path: path, schema: mig.Latest(), now: o.Now}, nil
+}
+
+// rawHeaderCheck validates an existing app.db without SQLite. A missing or empty file is a new
+// database and passes. It returns "" when fine, otherwise a human-readable detail.
+func rawHeaderCheck(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return "" // absent (or unreadable: let SQLite report it)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return ""
+	}
+	var h [100]byte
+	n, _ := io.ReadFull(f, h[:])
+	if n < 100 || string(h[:16]) != "SQLite format 3\x00" {
+		return "file header is not a SQLite database"
+	}
+	pageSize := int64(binary.BigEndian.Uint16(h[16:18]))
+	if pageSize == 1 {
+		pageSize = 65536
+	}
+	if pages := int64(binary.BigEndian.Uint32(h[28:32])); pages != 0 && fi.Size() < pageSize*pages {
+		return fmt.Sprintf("file is truncated: %d bytes, header declares %d pages of %d", fi.Size(), pages, pageSize)
+	}
+	return ""
 }
 
 // restrictModes chmods app.db and its -wal/-shm sidecars (those that exist) to 0600.
