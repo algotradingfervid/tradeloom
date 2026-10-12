@@ -55,10 +55,11 @@ func (f *fakeHistorical) HistoricalPick(_ context.Context, prio ratelimit.Priori
 }
 
 type upsert struct {
-	token uint32
-	iv    candles.Interval
-	cs    []candles.Candle
-	src   candles.Source
+	token  uint32
+	iv     candles.Interval
+	window candles.Range
+	cs     []candles.Candle
+	src    candles.Source
 }
 
 type fakeUpserter struct {
@@ -66,10 +67,10 @@ type fakeUpserter struct {
 	rows []upsert
 }
 
-func (f *fakeUpserter) Upsert(_ context.Context, token uint32, iv candles.Interval, cs []candles.Candle, src candles.Source) error {
+func (f *fakeUpserter) UpsertCovered(_ context.Context, token uint32, iv candles.Interval, window candles.Range, cs []candles.Candle, src candles.Source) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows = append(f.rows, upsert{token, iv, cs, src})
+	f.rows = append(f.rows, upsert{token, iv, window, cs, src})
 	return nil
 }
 
@@ -159,7 +160,7 @@ func TestCandles_TradingDaysResolvesFromCalendar(t *testing.T) {
 	rc.mu.Lock()
 	from = rc.from
 	rc.mu.Unlock()
-	if err != nil || !from.Equal(ist(2026, 10, 9, 9, 15)) {
+	if err != nil || !from.Equal(ist(2026, 10, 9, 0, 0)) { // Ruling 66: day candles are stored at 00:00 IST
 		t.Fatalf("sunday range from %v err %v", from, err)
 	}
 }
@@ -272,6 +273,10 @@ func TestRefreshCandles_FetchesAndUpsertsManual(t *testing.T) {
 	if row.src != candles.SourceManual || row.iv != candles.Minute60 || len(row.cs) != 2 || !row.cs[0].Start.Equal(ist(2026, 10, 12, 9, 15)) ||
 		row.cs[0].Volume != 10 || row.cs[0].OI != 7 || !row.cs[0].HasOI || !row.cs[0].Complete || row.cs[1].Complete {
 		t.Fatalf("upsert %+v", row)
+	}
+	// Ruling 66 (4): coverage stops at the forming 10:15 candle, as in backfill.store.
+	if !row.window.From.Equal(ist(2026, 10, 12, 9, 15)) || !row.window.To.Equal(ist(2026, 10, 12, 10, 15)) {
+		t.Fatalf("covered window %v → %v", row.window.From, row.window.To)
 	}
 }
 
@@ -419,3 +424,101 @@ func TestOpenLive_OtherSubscribeErrorIsInternal(t *testing.T) {
 		t.Fatalf("tracked %d times after a failed subscribe", n)
 	}
 }
+
+// Ruling 66 (2): before the continuous open the day of `to` does not count.
+func TestCandles_TradingDaysPreOpen(t *testing.T) {
+	e := newSvcEnv(t)
+	withChartDeps(t, e)
+	rc := &rangeCandles{}
+	e.svc.d.Candles = rc
+	e.clock.Set(ist(2026, 10, 12, 8, 0)) // Monday, trading day, before 09:15
+	for _, c := range []struct {
+		iv   string
+		n    int
+		want time.Time
+	}{
+		{"60minute", 1, ist(2026, 10, 9, 9, 15)},
+		{"60minute", 3, ist(2026, 10, 7, 9, 15)},
+		{"day", 1, ist(2026, 10, 9, 0, 0)},
+		{"day", 3, ist(2026, 10, 7, 0, 0)},
+	} {
+		if _, err := e.svc.Candles(context.Background(), CandlesRequest{Token: 256265, Interval: c.iv, TradingDays: c.n}); err != nil {
+			t.Fatal(err)
+		}
+		rc.mu.Lock()
+		from := rc.from
+		rc.mu.Unlock()
+		if !from.Equal(c.want) {
+			t.Errorf("%s × %d at 08:00: from %v, want %v", c.iv, c.n, from, c.want)
+		}
+	}
+}
+
+// Ruling 66 (2): a calendar gap is surfaced, never served as fewer trading days.
+func TestCandles_TradingDaysCalendarGapRefused(t *testing.T) {
+	e := newSvcEnv(t)
+	withChartDeps(t, e)
+	var hol []calendar.Entry
+	for d := calendar.DateOf(ist(2026, 9, 1, 12, 0)); d.Before(calendar.DateOf(ist(2026, 10, 12, 12, 0))); d = d.AddDays(1) {
+		hol = append(hol, calendar.Entry{Date: d, Exchange: calendar.NSE, Type: calendar.DayHoliday, Source: "user"})
+	}
+	e.svc.d.Calendar.SetOverrides(hol)
+	if _, err := e.svc.Candles(context.Background(), CandlesRequest{Token: 256265, Interval: "day", TradingDays: 2}); refusedCode(t, err) != "invalid_range" {
+		t.Fatal(err)
+	}
+	if len(e.backfill.jobs) != 0 {
+		t.Fatal("submitted a backfill for a range the calendar could not resolve")
+	}
+}
+
+// Ruling 66 (3c): without the instrument the OI need is unknown, so nothing is submitted.
+func TestCandles_UnknownTokenSubmitsNothing(t *testing.T) {
+	e := newSvcEnv(t)
+	withChartDeps(t, e)
+	e.candles.missing = []candles.Range{{From: ist(2026, 10, 5, 9, 15), To: ist(2026, 10, 6, 15, 30)}}
+	res, err := e.svc.Candles(context.Background(), req())
+	if err != nil || res.Complete || res.BackfillJobID != "" || len(e.backfill.jobs) != 0 {
+		t.Fatalf("%+v %v jobs %d", res, err, len(e.backfill.jobs))
+	}
+}
+
+// Ruling 66 (5): missing wiring is an explicit internal refusal, not a panic.
+func TestRefreshCandles_NilDepsRefused(t *testing.T) {
+	e := newSvcEnv(t)
+	withChartDeps(t, e)
+	rr := RefreshRequest{Token: 256265, Interval: "minute", FromMs: ist(2026, 10, 12, 9, 15).UnixMilli(), ToMs: ist(2026, 10, 12, 10, 0).UnixMilli()}
+	e.svc.d.Historical = nil
+	if _, err := e.svc.RefreshCandles(context.Background(), rr); refusedCode(t, err) != "internal" {
+		t.Fatal(err)
+	}
+	withChartDeps(t, e)
+	e.svc.d.CandleWriter = nil
+	if _, err := e.svc.RefreshCandles(context.Background(), rr); refusedCode(t, err) != "internal" {
+		t.Fatal(err)
+	}
+}
+
+// loadedFinder is a master that reports its size (*instruments.Master.Len).
+type loadedFinder struct{ fakeInstruments }
+
+func (f *loadedFinder) Len() int { return len(f.m) }
+
+// Ruling 66 (7): with a loaded master, a token it does not list is refused.
+func TestOpenLive_UnknownTokenWithLoadedMaster(t *testing.T) {
+	e := newSvcEnv(t)
+	_, _, tr := withChartDeps(t, e)
+	lf := &loadedFinder{fakeInstruments{m: map[uint32]instruments.Instrument{256265: {Token: 256265, Exchange: "NSE", Tradingsymbol: "NIFTY 50"}}}}
+	e.svc.d.Instruments = lf
+	if _, err := e.svc.OpenLive(context.Background(), 99, "minute"); refusedCode(t, err) != "not_found" {
+		t.Fatal(err)
+	}
+	if n, _ := tr.counts(99, candles.Minute); n != 0 || e.live.has(ticker.ConsumerChart, 99) {
+		t.Fatal("unknown token was subscribed or tracked")
+	}
+	if _, err := e.svc.OpenLive(context.Background(), 256265, "minute"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The production master must expose Len, or OpenLive's unknown-token check would never apply.
+var _ masterSize = (*instruments.Master)(nil)

@@ -79,9 +79,10 @@ type HistoricalFetcher interface {
 	HistoricalPick(ctx context.Context, prio ratelimit.Priority, pick func() (kite.HistoricalRequest, bool)) (kite.HistoricalRequest, []kite.HistoricalData, bool, error)
 }
 
-// CandleUpserter is the write half of candles.Store (*sqlite.Store).
+// CandleUpserter is the covered-write half of candles.Store (*sqlite.Store): the manual refresh records
+// coverage for the window it fetched, up to the first candle that has not ended (Ruling 66).
 type CandleUpserter interface {
-	Upsert(ctx context.Context, token uint32, iv candles.Interval, cs []candles.Candle, src candles.Source) error
+	UpsertCovered(ctx context.Context, token uint32, iv candles.Interval, window candles.Range, cs []candles.Candle, src candles.Source) error
 }
 
 // CandleTracker is *builder.Builder: forming/closed candles are built only for tracked (token, interval) pairs.
