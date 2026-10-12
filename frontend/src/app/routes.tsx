@@ -1,6 +1,8 @@
 import { matchRoutes, Navigate, type RouteObject } from 'react-router-dom';
+import { HelpView } from '../help/HelpView';
 import { HomeView } from '../views/home/HomeView';
 import { HoldingsView } from '../views/holdings/HoldingsView';
+import { LegalView } from '../views/legal/LegalView';
 import { NotFoundView } from '../views/NotFoundView';
 import { LoginView } from '../views/onboarding/LoginView';
 import { RiskDisclosureView } from '../views/onboarding/RiskDisclosureView';
@@ -38,6 +40,9 @@ export const rootChildren: RouteObject[] = [
   { path: 'setup', element: <SetupView /> },
   { path: 'login', element: <LoginView /> },
   { path: 'risk', element: <RiskDisclosureView /> },
+  // Ruling 108 M6 (Task 18): outside the shell, so the risk screen's links work before acknowledgement (gate ALWAYS_ALLOWED).
+  { path: 'help/:article?', element: <HelpView /> },
+  { path: 'legal/:page', element: <LegalView /> },
 ];
 
 export function buildRoutes(): RouteObject[] {

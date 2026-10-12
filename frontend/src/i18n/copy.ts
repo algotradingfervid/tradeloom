@@ -497,3 +497,22 @@ export const tickerCopy = {
   down: 'down',
   flat: 'unchanged',
 } as const;
+
+export const helpCopy = {
+  title: 'Help',
+  description: 'Guides and answers that work offline.',
+  searchPlaceholder: 'Search help articles',
+  results: 'Search results',
+  noResults: (q: string) => `No articles match "${q}"`,
+  topics: 'Help topics',
+  tree: 'Help articles',
+  articles: (n: number) => (n === 1 ? '1 article' : `${n} articles`),
+  updatedFor: (v: string) => `Updated for v${v}`,
+  support: 'Support',
+  supportHint: 'If something goes wrong, the logs folder and a support bundle help explain what happened.',
+  shortcutsTitle: 'Keyboard shortcuts',
+  shortcutsIntro: 'Every shortcut can be changed in Settings → Shortcuts. This list always shows the current keys.',
+  unbound: 'not set',
+} as const;
+
+export const legalCopy = { updatedFor: (v: string) => `Updated for v${v}` } as const;
