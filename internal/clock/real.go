@@ -27,11 +27,15 @@ type Options struct {
 // Real is the production Clock. It also receives offset samples from the ticker manager
 // (ObserveTick) and from the Kite HTTP transport (ObserveHTTPDate).
 type Real struct {
-	o      Options
-	mu     sync.Mutex
-	est    estimator
-	off    Offset
-	acked  bool
+	o     Options
+	mu    sync.Mutex
+	est   estimator
+	off   Offset
+	acked bool
+	// armedValue is the offset the timers were last armed against; drift is measured from it.
+	armedValue time.Duration
+	// pubMu serialises recompute so events, logs and UpdatedAt stay ordered.
+	pubMu  sync.Mutex
 	timers map[*realTimer]struct{}
 }
 
@@ -99,6 +103,9 @@ func (r *Real) ObserveTick(exchangeTS, arrival time.Time) {
 // ObserveHTTPDate records a Kite HTTP Date header with the system times the request was sent
 // and the response received.
 func (r *Real) ObserveHTTPDate(date, sent, received time.Time) {
+	if date.IsZero() || received.Before(sent) {
+		return
+	}
 	r.mu.Lock()
 	r.est.addHTTP(date, sent, received)
 	r.mu.Unlock()
@@ -106,8 +113,13 @@ func (r *Real) ObserveHTTPDate(date, sent, received time.Time) {
 }
 
 // Acknowledge clears Skewed until the offset next returns below ClearBelow and rises again.
+// It is a no-op unless the clock is currently skewed, so it cannot pre-empt a later skew.
 func (r *Real) Acknowledge() {
 	r.mu.Lock()
+	if !r.off.Skewed {
+		r.mu.Unlock()
+		return
+	}
 	r.acked = true
 	r.mu.Unlock()
 	r.recompute()
@@ -121,6 +133,8 @@ func abs(d time.Duration) time.Duration {
 }
 
 func (r *Real) recompute() {
+	r.pubMu.Lock()
+	defer r.pubMu.Unlock()
 	sys := r.o.System()
 	r.mu.Lock()
 	v, src, n := r.est.estimate(sys)
@@ -141,10 +155,11 @@ func (r *Real) recompute() {
 		Warn: a > r.o.WarnAbove, Skewed: skewed, UpdatedAt: sys.Add(v).In(IST),
 	}
 	r.off = next
-	significant := abs(v-prev.Value) > r.o.Rearm || src != prev.Source ||
+	significant := abs(v-r.armedValue) > r.o.Rearm || src != prev.Source ||
 		next.Warn != prev.Warn || next.Skewed != prev.Skewed
 	var ts []*realTimer
 	if significant {
+		r.armedValue = v
 		for t := range r.timers {
 			ts = append(ts, t)
 		}
@@ -176,6 +191,7 @@ func (r *Real) At(target time.Time) Timer {
 	return t
 }
 
+// After fires d later in exchange time (Now()-relative), not system time.
 func (r *Real) After(d time.Duration) Timer { return r.At(r.Now().Add(d)) }
 
 func (r *Real) forget(t *realTimer) {
@@ -197,14 +213,14 @@ func (t *realTimer) C() <-chan time.Time { return t.ch }
 
 // arm (re)schedules the timer for target − Now(); called on creation and on offset moves.
 func (t *realTimer) arm() {
-	d := t.target.Sub(t.r.Now())
-	if d < 0 {
-		d = 0
-	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.done {
 		return
+	}
+	d := t.target.Sub(t.r.Now())
+	if d < 0 {
+		d = 0
 	}
 	if t.af != nil {
 		t.af.Stop()
