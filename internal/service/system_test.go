@@ -192,3 +192,14 @@ func TestStatus_ConcurrentWithRememberFeed(t *testing.T) {
 		t.Fatalf("last feed %+v", st.Feed)
 	}
 }
+
+// A probe that has not finished says so, rather than claiming the Connect plan is missing.
+func TestReconnectFeed_UnknownPlanMessage(t *testing.T) {
+	e := newSvcEnv(t)
+	e.svc.d.FeedCtl = &fakeFeedCtl{}
+	e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanUnknown})
+	err := e.svc.ReconnectFeed(context.Background())
+	if r, ok := err.(*ErrRefused); !ok || r.Code != "unavailable" || !strings.Contains(r.Reason, "Still checking") {
+		t.Fatalf("got %v", err)
+	}
+}

@@ -113,8 +113,13 @@ func (s *Service) ReconnectFeed(_ context.Context) error {
 	if st.State != kite.StateReady {
 		return s.refuse(systemStage, refused(systemStage, "not_logged_in", "Log in before reconnecting the market feed."))
 	}
-	if st.DataPlan != kite.PlanConnect {
-		// Personal plan (none) or a probe that has not finished (unknown): the feed is never started.
+	switch st.DataPlan {
+	case kite.PlanConnect:
+	case kite.PlanUnknown:
+		// The data-plan probe has not finished, so the feed has not started yet.
+		return s.refuse(systemStage, refused(systemStage, "unavailable", "Still checking your Kite data plan; try again in a moment."))
+	default:
+		// Personal plan (none): the feed is never started.
 		return s.refuse(systemStage, refused(systemStage, "unavailable", "Live market data needs the Kite Connect data plan."))
 	}
 	if s.d.FeedCtl == nil {
