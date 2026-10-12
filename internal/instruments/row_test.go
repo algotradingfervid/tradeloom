@@ -61,7 +61,7 @@ func TestRowRoundTrip(t *testing.T) {
 		if !got.Expiry.Equal(in.Expiry) {
 			t.Fatalf("%s expiry %v != %v", in.ID(), got.Expiry, in.Expiry)
 		}
-		got.Expiry, in.Expiry = in.Expiry, in.Expiry // compare instants above; normalise location
+		got.Expiry = in.Expiry // equal instants; normalise location
 		if !reflect.DeepEqual(got, in) {
 			t.Fatalf("round trip\n got %+v\nwant %+v", got, in)
 		}
