@@ -15,10 +15,15 @@
 .chart-view__canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--chart-crosshair, var(--focus)); }
 .chart-view__overlay { position: absolute; inset: 0; display: grid; place-items: center; gap: 8px; color: var(--chart-text, var(--text)); pointer-events: none; }
 .chart-view__overlay > * { pointer-events: auto; }
-.chart-view__badge { position: absolute; top: 34px; left: 8px; font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--chart-separator, var(--border)); color: var(--chart-text, var(--text)); }
+.chart-view__badge { position: absolute; top: 34px; left: 8px; font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--chart-separator, var(--border)); color: var(--chart-text, var(--text)); background: var(--chart-bg, var(--bg)); }
 .chart-legend { position: absolute; top: 6px; left: 8px; z-index: 2; display: flex; gap: 8px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--chart-text, var(--text)); pointer-events: none; }
 .chart-legend--up b { color: var(--up); }
 .chart-legend--down b { color: var(--down); }
 .chart-scale-toggles { position: absolute; right: 4px; bottom: 28px; z-index: 2; display: flex; gap: 2px; }
 .chart-scale-toggles button { min-width: 22px; font-size: 11px; border: 1px solid var(--chart-separator, var(--border)); background: var(--chart-bg, var(--bg)); color: var(--chart-text, var(--text)); border-radius: 4px; cursor: pointer; }
 .chart-scale-toggles button[aria-pressed="true"] { border-color: var(--chart-crosshair, var(--focus)); font-weight: 700; }
+.chart-view__badges { position: absolute; top: 34px; left: 8px; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px; max-width: calc(100% - 16px); pointer-events: none; }
+.chart-view__badges > .chart-view__badge { position: static; pointer-events: auto; }
+/* Home slot (P0-4 Task 12). Compound selector: home.css loads after this file and its .home-slot sets min-height. */
+.home-slot.home-slot--chart { display: flex; flex-direction: column; min-height: 420px; padding: 0; overflow: hidden; }
+.home-slot--chart > .chart-view { flex: 1; }

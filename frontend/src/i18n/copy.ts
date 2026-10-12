@@ -635,3 +635,16 @@ export const instrumentPickerCopy = {
   created: (name: string) => `Watchlist ${name} created`,
   done: 'Done',
 } as const;
+
+/** Chart view body (FR-CHART-001/003/011, P0-5 Task 10). Load-state messages come from ChartDataController. */
+export const chartViewCopy = {
+  canvas: 'Price chart. Arrow keys pan, plus and minus zoom, Home shows the latest candle, A auto-scale, L log scale.',
+  loadingCandles: 'Loading candles',
+  loadingChart: 'Loading chart',
+  offline: 'Offline — cached data',
+  liveOff: 'Live candles are off',
+  retry: 'Retry',
+  priceScale: 'Price scale',
+  autoScale: 'Auto-scale (A)',
+  logScale: 'Logarithmic scale (L)',
+} as const;
