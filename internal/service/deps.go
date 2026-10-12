@@ -92,6 +92,20 @@ type CandleTracker interface {
 	Untrack(token uint32, ivs ...candles.Interval)
 }
 
+// CandleAdmin is the maintenance half of *sqlite.Store (FR-DATA-002) (Task 30).
+type CandleAdmin interface {
+	Stats(ctx context.Context) (candles.Stats, error)
+	Clear(ctx context.Context, confirmRuns []string) error
+	OpenJobs(ctx context.Context) ([]candles.Job, error)
+}
+
+// InstrumentRefresher is *instruments.Refresher (Task 30): Refresh for the manual refresh, Trigger after
+// each new login (P0-2 Ruling 49; non-blocking, coalescing).
+type InstrumentRefresher interface {
+	Refresh(ctx context.Context) error
+	Trigger()
+}
+
 // liveChart is one open chart subscription (OpenLive).
 type liveChart struct {
 	token uint32
@@ -120,6 +134,15 @@ type Deps struct {
 	Historical   HistoricalFetcher // *kite.Client
 	CandleWriter CandleUpserter    // *sqlite.Store
 	Tracker      CandleTracker     // *builder.Builder
+	// Task 30 (data façade)
+	DB              *store.DB           // app.db (backups, calendar overrides, support files)
+	Layout          store.Layout        // data directory layout
+	AppVersion      string              // app.Version
+	CandleAdmin     CandleAdmin         // candle stats / clear
+	Refresher       InstrumentRefresher // manual instrument refresh; Trigger after login
+	ImportedAt      func() time.Time    // Master.ImportedAt
+	CloseForRestore func() error        // stops the platform and closes app.db before store.Restore
+	supportedSchema func() int          // store.SupportedSchema; tests override it
 
 	// Secret storage (Task 27, FR-ACCT-013).
 	Secrets      *SecretSwitch        // the Session's secrets.Store; swapped by setup, unlock and migration
@@ -151,6 +174,11 @@ type Service struct {
 
 	feedMu   sync.Mutex
 	lastFeed ticker.FeedState // last feed.state (System.Status); zero State reads as "stopped"
+
+	// Task 30: the single job slot (backup, restore, support bundle).
+	jobMu      sync.Mutex
+	jobRunning string // kind of the running job, "" when idle
+	jobSeq     int
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
