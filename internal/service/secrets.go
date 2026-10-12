@@ -39,6 +39,12 @@ type SecretSwitch struct {
 	setup sync.Mutex
 	op    sync.RWMutex
 
+	// leftoverFile (guarded by setup) is set only when a MigrateToKeyring of this run moved every key but
+	// returned file_not_removed. It is the only licence to delete secrets.enc while the keyring is the
+	// backend (Ruling 72 (b)): "keyring backend + file exists" alone never deletes the file, which may be
+	// the only copy of the secrets after any startup that picks the keyring next to an existing file.
+	leftoverFile bool
+
 	mu      sync.Mutex
 	store   secrets.Store
 	locked  bool
@@ -347,7 +353,8 @@ const msgFileNotRemoved = "The secrets were moved to the system keyring, but the
 // secrets.Migrate copies and verifies each key and rolls back on any failure, leaving the file untouched.
 // When the keys moved but the file could not be removed (secrets.ErrSourceNotRemoved), the keyring becomes
 // the backend and the call still refuses with file_not_removed; calling it again with the keyring backend
-// and the leftover file present removes only that file (Ruling 68).
+// and the leftover file present removes only that file (Ruling 68) — and only when this run's migration
+// reported file_not_removed (Ruling 72 (b)); otherwise a keyring backend is "not_file_backend".
 func (s *Service) MigrateToKeyring(ctx context.Context) (SecretStorageInfo, error) {
 	sw := s.d.Secrets
 	if sw == nil {
@@ -358,11 +365,12 @@ func (s *Service) MigrateToKeyring(ctx context.Context) (SecretStorageInfo, erro
 	if s.d.Session.State().State == kite.StateLoggingIn {
 		return s.secretInfo(), refused(secretsStage, kite.CodeLoginBusy, "Finish or cancel the current login before moving the secrets.")
 	}
-	if sw.Backend() == secrets.BackendKeyring && s.secretsFileExists() {
+	if sw.leftoverFile && sw.Backend() == secrets.BackendKeyring && s.secretsFileExists() {
 		if err := secrets.RemoveFile(s.d.SecretsFile); err != nil {
 			s.d.Log.Warn("removing the leftover secrets file failed", "err", err)
 			return s.secretInfo(), refused(secretsStage, "file_not_removed", msgFileNotRemoved)
 		}
+		sw.leftoverFile = false
 		s.d.Log.Info("leftover secrets file removed")
 		return s.secretInfo(), nil
 	}
@@ -400,6 +408,7 @@ func (s *Service) MigrateToKeyring(ctx context.Context) (SecretStorageInfo, erro
 		return s.secretInfo(), refused(secretsStage, "migrate_failed", "The secrets could not be moved to the keyring; they stay in the encrypted file.")
 	}
 	if notRemoved {
+		sw.leftoverFile = true
 		return s.secretInfo(), refused(secretsStage, "file_not_removed", msgFileNotRemoved)
 	}
 	s.d.Log.Info("secrets moved to the system keyring")

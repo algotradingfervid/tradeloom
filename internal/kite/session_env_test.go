@@ -155,11 +155,18 @@ func (f *fakeLimiter) counts() (int, int) {
 type fakeTokens struct {
 	mu         sync.Mutex
 	key, token string
+	gen        uint64 // numbers installed tokens like Client.SetAccessToken (Ruling 70)
 }
 
-func (f *fakeTokens) SetAPIKey(k string)      { f.mu.Lock(); defer f.mu.Unlock(); f.key = k }
-func (f *fakeTokens) SetAccessToken(t string) { f.mu.Lock(); defer f.mu.Unlock(); f.token = t }
-func (f *fakeTokens) get() string             { f.mu.Lock(); defer f.mu.Unlock(); return f.token }
+func (f *fakeTokens) SetAPIKey(k string) { f.mu.Lock(); defer f.mu.Unlock(); f.key = k }
+func (f *fakeTokens) SetAccessToken(t string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.token = t
+	f.gen++
+}
+func (f *fakeTokens) TokenGen() uint64 { f.mu.Lock(); defer f.mu.Unlock(); return f.gen }
+func (f *fakeTokens) get() string      { f.mu.Lock(); defer f.mu.Unlock(); return f.token }
 
 type fakeProfiles struct {
 	mu    sync.Mutex

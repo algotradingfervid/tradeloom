@@ -18,7 +18,8 @@ func (r *SessionErrorRelay) Set(fn func(error)) {
 	r.mu.Unlock()
 }
 
-// Handle forwards a session error to the target; before Set it drops the error.
+// Handle forwards a session error to the target; before Set it drops the error. The *Err is passed
+// through unchanged, so its TokenGen (Ruling 70) reaches Session.HandleTokenError.
 func (r *SessionErrorRelay) Handle(e *Err) {
 	r.mu.Lock()
 	fn := r.fn
