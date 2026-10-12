@@ -31,6 +31,9 @@ func TestSettingsFacade(t *testing.T) {
 	if _, err := e.svc.SetSetting(ctx, "kite.redirect_port", `8000`); refusedCode(t, err) != "use_credentials_flow" {
 		t.Fatal(err)
 	}
+	if v, err := e.svc.SetSetting(ctx, "watchlist.active", `"wl-9"`); err != nil || v.ValueJSON != `"wl-9"` {
+		t.Fatalf("%+v %v", v, err)
+	}
 	if _, err := e.svc.SetSetting(ctx, "no.such.key", `1`); refusedCode(t, err) != "unknown_setting" {
 		t.Fatal(err)
 	}
