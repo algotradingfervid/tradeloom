@@ -39,7 +39,16 @@ var defaultShortcuts = []ShortcutAction{
 	{ID: "kill.switch", Label: "Kill switch", Scope: ScopeGlobal, Default: "Ctrl+Shift+K"},
 	{ID: "chart.fullView", Label: "Full-view chart", Scope: ScopeGlobal, Default: "F11"},
 	{ID: "chart.trendLine", Label: "Draw trend line", Scope: ScopeChart, Default: "Alt+T"},
+	{ID: "chart.horizontalLine", Label: "Draw horizontal line", Scope: ScopeChart, Default: "Alt+H"},
+	{ID: "chart.horizontalRay", Label: "Draw horizontal ray", Scope: ScopeChart, Default: "Alt+J"},
+	{ID: "chart.verticalLine", Label: "Draw vertical line", Scope: ScopeChart, Default: "Alt+V"},
+	{ID: "chart.crossLine", Label: "Draw cross line", Scope: ScopeChart, Default: "Alt+C"},
 	{ID: "order.new", Label: "New order", Scope: ScopeChart, Default: "Shift+T"},
+	// Scalper actions ship unbound (FR-SCALP-013); an empty binding never conflicts.
+	{ID: "scalper.buy", Label: "Scalper: buy", Scope: ScopeView},
+	{ID: "scalper.sell", Label: "Scalper: sell", Scope: ScopeView},
+	{ID: "scalper.exitAll", Label: "Scalper: exit all", Scope: ScopeView},
+	{ID: "scalper.cancelAll", Label: "Scalper: cancel all", Scope: ScopeView},
 	{ID: "builder.undo", Label: "Undo", Scope: ScopeBuilder, Default: "Ctrl+Z"},
 	{ID: "builder.redo", Label: "Redo", Scope: ScopeBuilder, Default: "Ctrl+Shift+Z"},
 	{ID: "watchlist.moveUp", Label: "Move item up", Scope: ScopeView, Default: "Alt+ArrowUp"},
@@ -62,60 +71,126 @@ type Binding struct {
 	Key                    string
 }
 
-// ParseBinding parses "+"-joined modifiers (Ctrl, Alt, Shift, Meta; any case) followed by exactly one key.
-// Single letters are upper-cased; other keys keep their KeyboardEvent.key spelling (F11, ArrowUp, Escape).
+// namedKeys maps the lower-cased spelling to the KeyboardEvent.key spelling. "Space" is the only alias:
+// the event key itself is " ", which Binding.Key stores and String renders as "Space".
+var namedKeys = func() map[string]string {
+	m := map[string]string{"space": " "}
+	for _, k := range []string{"Escape", "Enter", "Tab", "Backspace", "Delete", "Insert", "Home", "End", "PageUp", "PageDown", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"} {
+		m[strings.ToLower(k)] = k
+	}
+	return m
+}()
+
+const punctuationKeys = "`-=[]\\;',./"
+
+// normaliseKey returns the canonical key for p, or false when p is not on the allow-list: A-Z, 0-9, F1-F24,
+// the punctuation keys and the named keys.
+func normaliseKey(p string) (string, bool) {
+	if n, ok := namedKeys[strings.ToLower(p)]; ok {
+		return n, true
+	}
+	if len(p) == 1 { // ASCII only: a multi-byte or invalid rune is longer than one byte
+		c := p[0]
+		switch {
+		case c >= 'a' && c <= 'z':
+			return string(c - 'a' + 'A'), true
+		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9', strings.IndexByte(punctuationKeys, c) >= 0:
+			return p, true
+		}
+		return "", false
+	}
+	if (p[0] == 'F' || p[0] == 'f') && len(p) <= 3 {
+		n := 0
+		for _, c := range p[1:] {
+			if c < '0' || c > '9' {
+				return "", false
+			}
+			n = n*10 + int(c-'0')
+		}
+		if n >= 1 && n <= 24 && p[1] != '0' {
+			return "F" + p[1:], true
+		}
+	}
+	return "", false
+}
+
+// ParseBinding parses "+"-joined modifiers (Ctrl, Alt, Shift, Meta; any case) followed by exactly one key
+// from the allow-list (normaliseKey); keys use the KeyboardEvent.key spelling.
 func ParseBinding(s string) (Binding, error) {
 	var b Binding
-	parts := strings.Split(strings.TrimSpace(s), "+")
-	if len(parts) == 0 || strings.TrimSpace(s) == "" {
+	if strings.TrimSpace(s) == "" {
 		return b, errors.New("binding is empty")
 	}
+	parts := strings.Split(strings.TrimSpace(s), "+")
 	for i, raw := range parts {
 		p := strings.TrimSpace(raw)
 		if p == "" {
 			return b, fmt.Errorf("binding %q has an empty part", s)
 		}
 		last := i == len(parts)-1
+		var flag *bool
 		switch strings.ToLower(p) {
 		case "ctrl", "control":
-			if last || b.Ctrl {
-				return b, fmt.Errorf("binding %q: Ctrl is a modifier, not a key", s)
-			}
-			b.Ctrl = true
+			flag = &b.Ctrl
 		case "alt":
-			if last || b.Alt {
-				return b, fmt.Errorf("binding %q: Alt is a modifier, not a key", s)
-			}
-			b.Alt = true
+			flag = &b.Alt
 		case "shift":
-			if last || b.Shift {
-				return b, fmt.Errorf("binding %q: Shift is a modifier, not a key", s)
-			}
-			b.Shift = true
+			flag = &b.Shift
 		case "meta", "super", "cmd":
-			if last || b.Meta {
-				return b, fmt.Errorf("binding %q: Meta is a modifier, not a key", s)
-			}
-			b.Meta = true
-		default:
-			if !last {
-				return b, fmt.Errorf("binding %q: %q must be the last part", s, p)
-			}
-			if len([]rune(p)) == 1 {
-				p = strings.ToUpper(p)
-			} else {
-				p = strings.ToUpper(p[:1]) + p[1:]
-				if strings.HasPrefix(strings.ToLower(p), "arrow") && len(p) > 5 {
-					p = "Arrow" + strings.ToUpper(p[5:6]) + p[6:]
-				}
-			}
-			b.Key = p
+			flag = &b.Meta
 		}
+		if flag != nil {
+			if last || *flag {
+				return b, fmt.Errorf("binding %q: %q is a modifier, not a key", s, p)
+			}
+			*flag = true
+			continue
+		}
+		if !last {
+			return b, fmt.Errorf("binding %q: %q must be the last part", s, p)
+		}
+		k, ok := normaliseKey(p)
+		if !ok {
+			return b, fmt.Errorf("binding %q: %q is not a supported key", s, p)
+		}
+		b.Key = k
 	}
 	if b.Key == "" {
 		return b, fmt.Errorf("binding %q has no key", s)
 	}
 	return b, nil
+}
+
+var reservedBindings = map[string]bool{
+	"Ctrl+C": true, "Ctrl+V": true, "Ctrl+X": true, "Ctrl+A": true, "Ctrl+Q": true, "Ctrl+W": true,
+	"Alt+F4": true, "F5": true, "F12": true,
+}
+
+// ValidateBinding parses s and applies the rules of a scope: global and view bindings need a modifier
+// (Shift alone does not count for a printable key) unless the key is F1-F24, and the reserved list (clipboard,
+// quit, close, reload, devtools) is refused everywhere. Alt+letter stays allowed (no GTK mnemonics, FR-SHELL-019).
+// It returns the canonical form.
+func ValidateBinding(scope, s string) (string, error) {
+	switch scope {
+	case ScopeGlobal, ScopeView, ScopeChart, ScopeBuilder:
+	default:
+		return "", fmt.Errorf("unknown shortcut scope %q", scope)
+	}
+	b, err := ParseBinding(s)
+	if err != nil {
+		return "", err
+	}
+	canon := b.String()
+	if reservedBindings[canon] {
+		return "", fmt.Errorf("%s is reserved and cannot be used", canon)
+	}
+	if scope == ScopeGlobal || scope == ScopeView {
+		fn := len(b.Key) >= 2 && b.Key[0] == 'F' && b.Key[1] >= '0' && b.Key[1] <= '9'
+		if !fn && !b.Ctrl && !b.Alt && !b.Meta {
+			return "", fmt.Errorf("%s needs Ctrl, Alt or Meta in the %s scope", canon, scope)
+		}
+	}
+	return canon, nil
 }
 
 // String renders the canonical form: Ctrl+Alt+Shift+Meta order, then the key.
@@ -133,24 +208,42 @@ func (b Binding) String() string {
 	if b.Meta {
 		parts = append(parts, "Meta")
 	}
-	return strings.Join(append(parts, b.Key), "+")
+	key := b.Key
+	if key == " " {
+		key = "Space"
+	}
+	return strings.Join(append(parts, key), "+")
 }
 
-// Conflicts reports another action that already uses binding in the same scope as id or in the global scope.
+// Conflicts reports another action that already uses binding in the same scope as id, or in the global scope
+// (a global action overlaps every scope). Unbound actions never conflict, an unknown id reports nothing, and
+// restoring an action to its own default ignores a shipped default overlap (toasts.focus / chart.trendLine
+// both default to Alt+T and are resolved by scope at runtime).
 func Conflicts(actions []ShortcutAction, id, binding string) (ShortcutAction, bool) {
-	scope := ""
+	if binding == "" {
+		return ShortcutAction{}, false
+	}
+	var self ShortcutAction
+	found := false
 	for _, a := range actions {
 		if a.ID == id {
-			scope = a.Scope
+			self, found = a, true
 		}
+	}
+	if !found {
+		return ShortcutAction{}, false
 	}
 	for _, a := range actions {
 		if a.ID == id || a.Binding != binding {
 			continue
 		}
-		if a.Scope == scope || a.Scope == ScopeGlobal || scope == ScopeGlobal {
-			return a, true
+		if a.Scope != self.Scope && a.Scope != ScopeGlobal && self.Scope != ScopeGlobal {
+			continue
 		}
+		if binding == self.Default && a.Binding == a.Default {
+			continue // shipped overlap
+		}
+		return a, true
 	}
 	return ShortcutAction{}, false
 }

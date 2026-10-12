@@ -96,6 +96,8 @@ type Service struct {
 
 	wlMu sync.Mutex // serialises watchlist read-modify-write
 
+	shortcutsMu sync.Mutex // serialises Rebind / ResetShortcuts (conflict check + save)
+
 	liveMu sync.Mutex
 	live   map[ticker.Consumer]map[uint32]bool
 }
