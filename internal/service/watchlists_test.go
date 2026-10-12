@@ -3,8 +3,13 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"tradeloom/internal/clock"
 	"tradeloom/internal/instruments"
 	"tradeloom/internal/settings"
 	"tradeloom/internal/store"
@@ -127,3 +132,247 @@ func TestWatchlists_StoreConflictIsStaleOrder(t *testing.T) {
 }
 
 func s2(err error) error { return asRefused(wlStage, err) }
+
+// hookClock runs hook once, on the first Now call, before delegating. The façade calls nowMs() while
+// building the arguments of a store write, so the hook simulates another writer changing the DB between
+// the façade's read and the store call.
+type hookClock struct {
+	clock.Clock
+	hook func()
+}
+
+func (h *hookClock) Now() time.Time {
+	if h.hook != nil {
+		f := h.hook
+		h.hook = nil
+		f()
+	}
+	return h.Clock.Now()
+}
+
+func armHook(e *svcEnv, f func()) {
+	e.svc.d.Clock = &hookClock{Clock: e.clock, hook: f}
+}
+
+// Ruling 42 wiring: mutate must route store sentinels through mapStoreErr.
+func TestWatchlists_MutateMapsStoreSentinels(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("ErrNoRow from Rename is not_found", func(t *testing.T) {
+		e := newSvcEnv(t)
+		st, _ := e.svc.CreateWatchlist(ctx, "A")
+		id := st.Lists[len(st.Lists)-1].ID
+		armHook(e, func() {
+			if err := e.svc.d.Watchlists.SoftDelete(ctx, id, 1); err != nil {
+				t.Error(err)
+			}
+		})
+		if _, err := e.svc.RenameWatchlist(ctx, id, "B"); refusedCode(t, err) != "not_found" {
+			t.Fatalf("got %v", err)
+		}
+	})
+
+	t.Run("ErrNoRow from SoftDelete is not_found", func(t *testing.T) {
+		e := newSvcEnv(t)
+		st, _ := e.svc.CreateWatchlist(ctx, "A")
+		id := st.Lists[len(st.Lists)-1].ID
+		armHook(e, func() { _ = e.svc.d.Watchlists.SoftDelete(ctx, id, 1) })
+		if _, err := e.svc.DeleteWatchlist(ctx, id); refusedCode(t, err) != "not_found" {
+			t.Fatalf("got %v", err)
+		}
+	})
+
+	t.Run("ErrConflict from ReorderLists is stale_order", func(t *testing.T) {
+		e := newSvcEnv(t)
+		e.svc.CreateWatchlist(ctx, "A")
+		st, _ := e.svc.CreateWatchlist(ctx, "B")
+		var ids []string
+		for _, l := range st.Lists {
+			ids = append(ids, l.ID)
+		}
+		armHook(e, func() { _ = e.svc.d.Watchlists.SoftDelete(ctx, ids[2], 1) })
+		if _, err := e.svc.ReorderWatchlists(ctx, []string{ids[2], ids[1], ids[0]}); refusedCode(t, err) != "stale_order" {
+			t.Fatalf("got %v", err)
+		}
+	})
+}
+
+// Same-name creates racing: the lock serialises them, so exactly one wins.
+func TestWatchlists_ConcurrentCreateSameName(t *testing.T) {
+	e := newSvcEnv(t)
+	ctx := context.Background()
+	e.svc.Watchlists(ctx)
+	const n = 16
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = e.svc.CreateWatchlist(ctx, "Banks")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	ok, dup := 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case refusedCode(t, err) == "duplicate_name":
+			dup++
+		}
+	}
+	if ok != 1 || dup != n-1 {
+		t.Fatalf("ok=%d dup=%d", ok, dup)
+	}
+	st, _ := e.svc.Watchlists(ctx)
+	if len(st.Lists) != 2 {
+		t.Fatalf("lists %v", names(st))
+	}
+}
+
+func TestWatchlists_RemoveFromDeletedOrUnknownListIsNotFound(t *testing.T) {
+	e := newSvcEnv(t)
+	seedInstruments(e)
+	ctx := context.Background()
+	st, _ := e.svc.CreateWatchlist(ctx, "A")
+	id := st.Lists[len(st.Lists)-1].ID
+	if _, err := e.svc.AddToWatchlist(ctx, id, 779521, -1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.DeleteWatchlist(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.RemoveFromWatchlist(ctx, id, 779521); refusedCode(t, err) != "not_found" {
+		t.Fatalf("deleted: %v", err)
+	}
+	if _, err := e.svc.RemoveFromWatchlist(ctx, "nope", 779521); refusedCode(t, err) != "not_found" {
+		t.Fatalf("unknown: %v", err)
+	}
+	// An item that is not in a live list stays not_found too.
+	st, _ = e.svc.Watchlists(ctx)
+	if _, err := e.svc.RemoveFromWatchlist(ctx, st.Lists[0].ID, 779521); refusedCode(t, err) != "not_found" {
+		t.Fatalf("missing item: %v", err)
+	}
+}
+
+func TestWatchlists_DeleteActiveActivatesAdjacent(t *testing.T) {
+	ctx := context.Background()
+	setup := func() (*svcEnv, []string) {
+		e := newSvcEnv(t)
+		e.svc.Watchlists(ctx)
+		e.svc.CreateWatchlist(ctx, "B")
+		st, _ := e.svc.CreateWatchlist(ctx, "C")
+		var ids []string
+		for _, l := range st.Lists {
+			ids = append(ids, l.ID)
+		}
+		return e, ids
+	}
+	// Middle: the list that slides into its slot (the next one) becomes active.
+	e, ids := setup()
+	e.svc.SetActiveWatchlist(ctx, ids[1])
+	st, err := e.svc.DeleteWatchlist(ctx, ids[1])
+	if err != nil || st.ActiveID != ids[2] || len(st.Lists) != 2 {
+		t.Fatalf("middle %+v %v", st, err)
+	}
+	// Last: falls back to the previous one.
+	e, ids = setup()
+	st, err = e.svc.DeleteWatchlist(ctx, ids[2]) // C is active after create
+	if err != nil || st.ActiveID != ids[1] {
+		t.Fatalf("last %+v %v", st, err)
+	}
+	// Non-active delete leaves the active list alone.
+	e, ids = setup()
+	st, err = e.svc.DeleteWatchlist(ctx, ids[0])
+	if err != nil || st.ActiveID != ids[2] {
+		t.Fatalf("other %+v %v", st, err)
+	}
+}
+
+func TestWatchlists_ReorderLists(t *testing.T) {
+	e := newSvcEnv(t)
+	ctx := context.Background()
+	e.svc.Watchlists(ctx)
+	e.svc.CreateWatchlist(ctx, "B")
+	st, _ := e.svc.CreateWatchlist(ctx, "C")
+	a, b, c := st.Lists[0].ID, st.Lists[1].ID, st.Lists[2].ID
+	st, err := e.svc.ReorderWatchlists(ctx, []string{c, a, b})
+	if err != nil || strings.Join(names(st), ",") != "C,Watchlist 1,B" {
+		t.Fatalf("%v %v", names(st), err)
+	}
+	if st, _ = e.svc.Watchlists(ctx); strings.Join(names(st), ",") != "C,Watchlist 1,B" {
+		t.Fatalf("not persisted %v", names(st))
+	}
+	for name, ids := range map[string][]string{
+		"missing":   {c, a},
+		"duplicate": {c, c, a},
+		"unknown":   {c, a, "zzz"},
+		"extra":     {c, a, b, "zzz"},
+	} {
+		if _, err := e.svc.ReorderWatchlists(ctx, ids); refusedCode(t, err) != "stale_order" {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestWatchlists_NameLengthBoundaryCountsRunes(t *testing.T) {
+	e := newSvcEnv(t)
+	ctx := context.Background()
+	e.svc.Watchlists(ctx)
+	ascii40 := strings.Repeat("a", 40)
+	multi40 := strings.Repeat("日", 40) // 40 runes, 120 bytes
+	for _, ok := range []string{ascii40, multi40} {
+		if st, err := e.svc.CreateWatchlist(ctx, ok); err != nil || names(st)[len(st.Lists)-1] != ok {
+			t.Fatalf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{ascii40 + "a", multi40 + "日"} {
+		if _, err := e.svc.CreateWatchlist(ctx, bad); refusedCode(t, err) != "invalid_name" {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	// Surrounding whitespace is trimmed before counting.
+	if _, err := e.svc.CreateWatchlist(ctx, "  "+strings.Repeat("b", 40)+"  "); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWatchlists_SixtyItems(t *testing.T) {
+	e := newSvcEnv(t)
+	ctx := context.Background()
+	st, _ := e.svc.Watchlists(ctx)
+	id := st.Lists[0].ID
+	toks := make([]uint32, 60)
+	for i := range toks {
+		toks[i] = uint32(1000 + i)
+		e.instr.m[toks[i]] = instruments.Instrument{Token: toks[i], Exchange: "NSE", Tradingsymbol: fmt.Sprintf("S%d", i)}
+		if _, err := e.svc.AddToWatchlist(ctx, id, toks[i], -1); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+	}
+	st, _ = e.svc.Watchlists(ctx)
+	if len(st.Lists[0].Items) != 60 {
+		t.Fatalf("items %d", len(st.Lists[0].Items))
+	}
+	for i, it := range st.Lists[0].Items {
+		if it.Token != toks[i] {
+			t.Fatalf("order at %d: %d", i, it.Token)
+		}
+	}
+	rev := make([]uint32, 60)
+	for i := range toks {
+		rev[i] = toks[59-i]
+	}
+	st, err := e.svc.ReorderWatchlist(ctx, id, rev)
+	if err != nil || st.Lists[0].Items[0].Token != toks[59] || st.Lists[0].Items[59].Token != toks[0] {
+		t.Fatalf("reorder %v", err)
+	}
+	rm, err := e.svc.RemoveFromWatchlist(ctx, id, toks[30])
+	if err != nil || rm.Position != 29 {
+		t.Fatalf("remove %+v %v", rm, err)
+	}
+}
