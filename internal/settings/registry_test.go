@@ -94,3 +94,12 @@ func TestRegistry_AllRegisteredKeysAcceptedBySecretGuard(t *testing.T) {
 		}
 	}
 }
+
+func TestRegister_RejectsSecretLikeName(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Register accepted a secret-like name")
+		}
+	}()
+	Register(Key[string]{Name: "kite.api_secret"})
+}
