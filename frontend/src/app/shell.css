@@ -1,0 +1,30 @@
+.shell {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  grid-template-areas: "top top" "side content"; height: 100vh; min-width: 1280px; background: var(--bg); color: var(--text);
+}
+.shell__top { grid-area: top; min-width: 0; background: var(--surface); border-bottom: 1px solid var(--border); }
+.shell__side { grid-area: side; min-height: 0; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--border); }
+.shell__content { grid-area: content; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.shell__content > :last-child { flex: 1 1 auto; min-height: 0; }
+
+.topbar { display: flex; align-items: center; gap: var(--space-3); height: 100%; padding: 0 var(--space-3); min-width: 0; }
+.topbar__ticker { display: flex; gap: var(--space-2); flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.topbar__status, .topbar__links, .topbar__profile { flex: none; display: flex; align-items: center; gap: var(--space-2); }
+.topbar__spacer { flex: 1 1 0; }
+
+.sidebar { display: flex; flex-direction: column; height: 100%; width: var(--sidebar-w); transition: width var(--motion-fast); }
+.sidebar--collapsed { width: var(--sidebar-w-collapsed); }
+.sidebar ul { list-style: none; margin: 0; padding: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1); flex: 1 1 auto; }
+.sidebar__link {
+  display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-1);
+  color: var(--text); text-decoration: none; white-space: nowrap; overflow: hidden;
+}
+.sidebar__link:hover { background: var(--surface-2); }
+.sidebar__link[aria-current="page"] { background: var(--surface-2); color: var(--accent); font-weight: 600; }
+.sidebar--collapsed .sidebar__label { display: none; }
+.sidebar__collapse { margin: var(--space-2); align-self: flex-end; }
+
+.home { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: var(--space-4); padding: var(--space-4); height: 100%; min-height: 0; }
+.home__left, .home__right { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4); }
+.home__top-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--space-4); }
+.home__main { min-height: 360px; flex: 1 0 auto; display: flex; flex-direction: column; }

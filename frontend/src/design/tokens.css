@@ -1,0 +1,10 @@
+:root {
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 24px; --space-8: 32px;
+  --radius-1: 4px; --radius-2: 8px; --radius-pill: 999px;
+  --font-ui: "Inter", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 24px;
+  --topbar-h: 48px; --sidebar-w: 208px; --sidebar-w-collapsed: 56px;
+  --motion-fast: 150ms; --motion-colour: 300ms;
+  --z-menu: 20; --z-dialog: 40; --z-toast: 60; --z-tooltip: 80;
+}
