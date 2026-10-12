@@ -1,0 +1,222 @@
+//go:build oracle
+
+package ta
+
+import (
+	"math"
+	"math/rand/v2"
+	"testing"
+
+	"tradeloom/ta/internal/oracle"
+)
+
+var cdleveningdojistarOraclePens = []float64{0, 0.3, 0.5, 1, 3e37}
+
+// cdleveningdojistarOracleCompare compares CDLEVENINGDOJISTAR with C on every
+// fixture and edge length under the current candle settings, and returns how
+// many bars fired.
+func cdleveningdojistarOracleCompare(t *testing.T, tag string, pens []float64) int {
+	t.Helper()
+	fired := 0
+	for _, p := range pens {
+		lb := CDLEVENINGDOJISTARLookback(p)
+		if c := mustLookback(t, "CDLEVENINGDOJISTAR", p); lb != c {
+			t.Fatalf("%s lookback p=%g: go %d c %d", tag, p, lb, c)
+		}
+		for _, n := range edgeLengths(lb) {
+			for _, s := range fixtures(n) {
+				got, err := CDLEVENINGDOJISTAR(s.O, s.H, s.L, s.C, p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n == 0 {
+					continue // C rejects endIdx -1; Go returns empty output
+				}
+				r := mustCall(t, "CDLEVENINGDOJISTAR", s.ohlcv(), p)
+				if r.RetCode != oracle.Success {
+					t.Fatalf("C retcode %d", r.RetCode)
+				}
+				assertInt(t, lbl("CDLEVENINGDOJISTAR ", tag, " ", s.Name, " n=", n, " p=", p), got, r.AlignedInt(0, n))
+				for _, v := range got {
+					if v != 0 {
+						fired++
+					}
+				}
+			}
+		}
+	}
+	return fired
+}
+
+func TestCDLEVENINGDOJISTAROracle(t *testing.T) {
+	fired := cdleveningdojistarOracleCompare(t, "default", cdleveningdojistarOraclePens)
+	t.Logf("fired %d times on the fixtures", fired)
+}
+
+// TestCDLEVENINGDOJISTAROracleConstructed checks the hand-built star, which
+// must fire in both Go and C, and its penetration boundaries.
+func TestCDLEVENINGDOJISTAROracleConstructed(t *testing.T) {
+	o, h, l, c := cdleveningdojistarSeries(cdleveningdojistarStar[:]...)
+	for _, p := range []float64{0, 0.3, 0.45, 0.5, 0.55, 1, 3e37} {
+		got, err := CDLEVENINGDOJISTAR(o, h, l, c, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := mustCall(t, "CDLEVENINGDOJISTAR", oracle.Inputs{Open: o, High: h, Low: l, Close: c}, p)
+		want := r.AlignedInt(0, len(o))
+		assertInt(t, lbl("constructed p=", p), got, want)
+		if p == 0.3 && want[14] != -100 {
+			t.Fatalf("C did not fire on the constructed star: %v", want)
+		}
+	}
+}
+
+// TestCDLEVENINGDOJISTAROracleThreshold puts the 3rd close within a few ulps
+// of the penetration threshold c1 - |body1|*p for random penetrations, so the
+// exact (unfused) rounding of C's threshold is compared.
+func TestCDLEVENINGDOJISTAROracleThreshold(t *testing.T) {
+	rng := rand.New(rand.NewPCG(42, 7))
+	fired := 0
+	for k := 0; k < 400; k++ {
+		p := rng.Float64()
+		body := 2 + rng.Float64()*6 // 1st body in (2, 8), well above avg 1
+		b := cdleveningdojistarStar
+		b[0].c = b[0].o + body
+		b[0].h = b[0].c + 0.5
+		b[1] = cdleveningdojistarBar{b[0].c + 1, b[0].c + 1.5, b[0].c + 0.8, b[0].c + 1.05}
+		th := b[0].c - body*p
+		for d := -3; d <= 3; d++ {
+			cl := th
+			for range cdleveningdojistarAbs(d) {
+				if d < 0 {
+					cl = math.Nextafter(cl, math.Inf(-1))
+				} else {
+					cl = math.Nextafter(cl, math.Inf(1))
+				}
+			}
+			bb := b
+			bb[2] = cdleveningdojistarBar{cl + 2.5, cl + 2.6, cl - 0.1, cl} // black, body 2.5
+			o, h, l, c := cdleveningdojistarSeries(bb[:]...)
+			got, err := CDLEVENINGDOJISTAR(o, h, l, c, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := mustCall(t, "CDLEVENINGDOJISTAR", oracle.Inputs{Open: o, High: h, Low: l, Close: c}, p)
+			assertInt(t, lbl("threshold k=", k, " d=", d, " p=", p), got, r.AlignedInt(0, len(o)))
+			if got[14] != 0 {
+				fired++
+			}
+		}
+	}
+	if fired == 0 {
+		t.Fatal("threshold cases never fired")
+	}
+}
+
+func cdleveningdojistarAbs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func TestCDLEVENINGDOJISTAROracleBadParams(t *testing.T) {
+	s := fixtures(30)[0]
+	// -4e37 is TA_REAL_DEFAULT, which C substitutes; Go has no sentinel, so
+	// it is not compared here.
+	for _, p := range []float64{-1, -1e-300, math.NaN(), math.Inf(1), math.Inf(-1), 3.0000001e37, 0, 3e37, 0.3} {
+		r := mustCall(t, "CDLEVENINGDOJISTAR", s.ohlcv(), p)
+		_, err := CDLEVENINGDOJISTAR(s.O, s.H, s.L, s.C, p)
+		if (r.RetCode == oracle.BadParam) != (err != nil) {
+			t.Errorf("p=%g: C retcode %d, Go err %v", p, r.RetCode, err)
+		}
+		lbErr := CDLEVENINGDOJISTARLookback(p) == -1
+		if c := mustLookback(t, "CDLEVENINGDOJISTAR", p); (c == -1) != lbErr {
+			t.Errorf("p=%g lookback: C %d, Go %d", p, c, CDLEVENINGDOJISTARLookback(p))
+		}
+	}
+}
+
+func TestCDLEVENINGDOJISTAROracleRanges(t *testing.T) {
+	s := fixtures(300)[11] // gaps
+	n := len(s.C)
+	for _, p := range []float64{0, 0.3} {
+		for _, rg := range [][2]int{{0, 0}, {0, n - 1}, {3, 3}, {0, 11}, {0, 12}, {12, 12}, {10, 50}, {13, 13}, {150, 299}, {n - 1, n - 1}} {
+			out := make([]int, n)
+			beg, nb, err := cdleveningdojistarRange(rg[0], rg[1], s.O, s.H, s.L, s.C, p, out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := mustCallRange(t, "CDLEVENINGDOJISTAR", s.ohlcv(), rg[0], rg[1], p)
+			if r.RetCode != oracle.Success {
+				t.Fatalf("range %v: C retcode %d", rg, r.RetCode)
+			}
+			if beg != r.BegIdx || nb != r.NbElement {
+				t.Fatalf("range %v p=%g: go (%d,%d) c (%d,%d)", rg, p, beg, nb, r.BegIdx, r.NbElement)
+			}
+			assertInt(t, lbl("CDLEVENINGDOJISTAR range ", rg, " p=", p), out[:nb], r.Outputs[0].Int[:nb])
+		}
+	}
+	// Sub-ranges over the constructed star.
+	o, h, l, c := cdleveningdojistarSeries(cdleveningdojistarStar[:]...)
+	for _, rg := range [][2]int{{14, 14}, {13, 14}, {0, 14}, {12, 13}} {
+		out := make([]int, len(o))
+		beg, nb, _ := cdleveningdojistarRange(rg[0], rg[1], o, h, l, c, 0.3, out)
+		r := mustCallRange(t, "CDLEVENINGDOJISTAR", oracle.Inputs{Open: o, High: h, Low: l, Close: c}, rg[0], rg[1], 0.3)
+		if beg != r.BegIdx || nb != r.NbElement {
+			t.Fatalf("constructed range %v: go (%d,%d) c (%d,%d)", rg, beg, nb, r.BegIdx, r.NbElement)
+		}
+		assertInt(t, lbl("constructed range ", rg), out[:nb], r.Outputs[0].Int[:nb])
+	}
+}
+
+func TestCDLEVENINGDOJISTAROracleBadRanges(t *testing.T) {
+	s := fixtures(30)[0]
+	for _, rg := range [][2]int{{-1, 5}, {5, 4}, {0, -1}} {
+		r := mustCallRange(t, "CDLEVENINGDOJISTAR", s.ohlcv(), rg[0], rg[1], 0.3)
+		_, _, err := cdleveningdojistarRange(rg[0], rg[1], s.O, s.H, s.L, s.C, 0.3, make([]int, 30))
+		if (r.RetCode != oracle.Success) != (err != nil) {
+			t.Errorf("range %v: C retcode %d, Go err %v", rg, r.RetCode, err)
+		}
+	}
+}
+
+func TestCDLEVENINGDOJISTAROracleSettings(t *testing.T) {
+	defer RestoreAllCandleDefaultSettings()
+	defer oracle.RestoreCandleDefaults()
+	type change struct {
+		st     CandleSettingType
+		rt     RangeType
+		period int
+		factor float64
+	}
+	sets := [][]change{
+		// Loose thresholds so the pattern fires on the random fixtures.
+		{{BodyLong, RangeRealBody, 10, 0.3}, {BodyDoji, RangeHighLow, 10, 0.5}, {BodyShort, RangeRealBody, 10, 0.3}},
+		{{BodyDoji, RangeHighLow, 5, 0.3}},
+		{{BodyLong, RangeHighLow, 7, 0.4}},
+		{{BodyShort, RangeShadows, 3, 0.3}},
+		{{BodyDoji, RangeShadows, 20, 0.5}},
+		{{BodyLong, RangeShadows, 0, 2.0}, {BodyShort, RangeRealBody, 0, 0.5}},
+		// All periods 0: lookback 2.
+		{{BodyLong, RangeRealBody, 0, 0.5}, {BodyDoji, RangeHighLow, 0, 0.3}, {BodyShort, RangeRealBody, 0, 0.5}},
+		// Long periods.
+		{{BodyLong, RangeRealBody, 50, 1.5}, {BodyDoji, RangeHighLow, 30, 0.1}},
+	}
+	total := 0
+	for k, set := range sets {
+		RestoreAllCandleDefaultSettings()
+		oracle.RestoreCandleDefaults()
+		for _, ch := range set {
+			if err := SetCandleSettings(ch.st, ch.rt, ch.period, ch.factor); err != nil {
+				t.Fatal(err)
+			}
+			oracle.SetCandleSettings(int(ch.st), int(ch.rt), ch.period, ch.factor)
+		}
+		total += cdleveningdojistarOracleCompare(t, lbl("settings#", k), []float64{0, 0.3})
+	}
+	if total == 0 {
+		t.Fatal("pattern never fired under modified settings")
+	}
+	t.Logf("fired %d times under modified settings", total)
+}
