@@ -16,6 +16,12 @@ type (
 	Profile         = kite.Profile
 )
 
+// SessionStatus.State values internal/app reacts to (it may not import internal/kite, rule 7).
+const (
+	SessionStateLoggingIn = string(kite.StateLoggingIn)
+	SessionStateReady     = string(kite.StateReady)
+)
+
 type CredentialsInput struct {
 	APIKey    string `json:"apiKey"`
 	APISecret string `json:"apiSecret"`

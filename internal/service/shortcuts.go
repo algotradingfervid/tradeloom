@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -121,7 +122,48 @@ func (s *Service) ResetShortcuts(ctx context.Context) ([]settings.ShortcutAction
 // backendUiKey reports keys owned by backend code (window geometry, last-quote cache, scheduled-backup marker);
 // the UI may read them but not write them.
 func backendUiKey(k string) bool {
-	return k == "quotes.last" || k == "window.geometry" || strings.HasPrefix(k, "backup.")
+	return k == "quotes.last" || k == UiStateWindowGeometry || strings.HasPrefix(k, "backup.")
+}
+
+// UiStateWindowGeometry is the backend-owned window_state key of the saved window geometry (FR-SHELL-019, A6).
+const UiStateWindowGeometry = "window.geometry"
+
+// SaveWindowGeometry stores the window geometry JSON under UiStateWindowGeometry. It is for internal/app's
+// BeforeClose only (the key is backend-owned, Ruling 64) and is never bound to the UI.
+func (s *Service) SaveWindowGeometry(ctx context.Context, value string) error {
+	if len(value) > maxUiValueBytes {
+		return refused(uiStateStage, "too_large", "UI state values are limited to 64 KiB.")
+	}
+	if !utf8.ValidString(value) {
+		return refused(uiStateStage, "invalid_value", "UI state values must be valid UTF-8.")
+	}
+	if !validGeometry(value) {
+		return refused(uiStateStage, "invalid_value", `The window geometry must be {"w","h","x","y","maximised"} with a positive size.`)
+	}
+	if s.d.UiState == nil {
+		return refused(uiStateStage, "unavailable", "UI state storage is not configured.")
+	}
+	return s.refuse(uiStateStage, s.d.UiState.Set(ctx, UiStateWindowGeometry, value))
+}
+
+// validGeometry reports whether value is exactly one JSON object of the geometry shape (Ruling 82 M2).
+func validGeometry(value string) bool {
+	var g struct {
+		W         *int  `json:"w"`
+		H         *int  `json:"h"`
+		X         *int  `json:"x"`
+		Y         *int  `json:"y"`
+		Maximised *bool `json:"maximised"`
+	}
+	dec := json.NewDecoder(strings.NewReader(value))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&g); err != nil || dec.More() {
+		return false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return false
+	}
+	return g.W != nil && g.H != nil && g.X != nil && g.Y != nil && g.Maximised != nil && *g.W > 0 && *g.H > 0
 }
 
 func validUiKey(k string) bool {

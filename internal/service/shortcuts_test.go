@@ -334,3 +334,44 @@ func TestUiState_LimitsAndProtectedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Task 22: window.geometry is backend-owned (Ruling 64) — internal/app saves it before close through
+// SaveWindowGeometry (never bound); the value obeys the same size and UTF-8 limits.
+func TestSaveWindowGeometry(t *testing.T) {
+	e := newSvcEnv(t)
+	withUiStore(t, e)
+	ctx := context.Background()
+	g := `{"w":1600,"h":1000,"x":5,"y":6,"maximised":true}`
+	if err := e.svc.SaveWindowGeometry(ctx, g); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := e.svc.GetUiState(ctx, UiStateWindowGeometry); err != nil || v != g {
+		t.Fatalf("%q %v", v, err)
+	}
+	if err := e.svc.SaveWindowGeometry(ctx, strings.Repeat("x", 64*1024+1)); refusedCode(t, err) != "too_large" {
+		t.Fatal(err)
+	}
+	if err := e.svc.SaveWindowGeometry(ctx, "\xff"); refusedCode(t, err) != "invalid_value" {
+		t.Fatal(err)
+	}
+	e2 := newSvcEnv(t)
+	if err := e2.svc.SaveWindowGeometry(ctx, g); refusedCode(t, err) != "unavailable" {
+		t.Fatal(err)
+	}
+}
+
+// Ruling 82 (M2): SaveWindowGeometry accepts only the geometry JSON shape.
+func TestSaveWindowGeometry_Shape(t *testing.T) {
+	e := newSvcEnv(t)
+	withUiStore(t, e)
+	ctx := context.Background()
+	for _, bad := range []string{"", "x", "[]", "null", `{"foo":1}`, `{"w":0,"h":10,"x":0,"y":0,"maximised":false}`,
+		`{"w":10,"h":-1,"x":0,"y":0,"maximised":false}`, `{"w":"10","h":10}`, `{"w":10,"h":10} {}`} {
+		if err := e.svc.SaveWindowGeometry(ctx, bad); refusedCode(t, err) != "invalid_value" {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+	if err := e.svc.SaveWindowGeometry(ctx, `{"w":1280,"h":720,"x":-5,"y":0,"maximised":true}`); err != nil {
+		t.Fatal(err)
+	}
+}
