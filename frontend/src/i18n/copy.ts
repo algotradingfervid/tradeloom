@@ -497,3 +497,20 @@ export const tickerCopy = {
   down: 'down',
   flat: 'unchanged',
 } as const;
+
+/** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
+export const symbolSearchCopy = {
+  title: 'Search instruments',
+  inputLabel: 'Search instruments',
+  placeholder: 'Search, e.g. SBIN, TCS',
+  quickChips: 'Quick picks',
+  results: 'Results',
+  colInstrument: 'Instrument',
+  colCompany: 'Company name',
+} as const;
+
+/** Shared by every instrument search box (useInstrumentSearch): the polite result-count announcement. */
+export const instrumentSearchCopy = {
+  noMatch: 'No instruments match',
+  count: (n: number) => (n === 1 ? '1 result' : `${n} results`),
+} as const;
