@@ -85,6 +85,9 @@ type Deps struct {
 	Bus         *bus.Bus
 	Log         *slog.Logger
 	NewID       func() string
+
+	Shortcuts *store.ShortcutsRepo   // user rebinds (Task 28)
+	UiState   *store.WindowStateRepo // window_state key/value (Task 28)
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
