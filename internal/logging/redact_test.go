@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -133,5 +134,68 @@ func TestIsSecretLikeKey(t *testing.T) {
 		if IsSecretLikeKey(k) != want {
 			t.Errorf("%s want %v", k, want)
 		}
+	}
+}
+
+// Ruling 78 (M6): scrubbing is idempotent; "[redacted]" never grows into "[redacted]]".
+func TestRedactString_IdempotentOverThreePasses(t *testing.T) {
+	r := NewRedactor()
+	r.Register(tAccess)
+	in := `access_token=abcdef passphrase=hunter2xyz "passphrase":"q1w2e3r4" Authorization: token k:` + tAccess +
+		` {"request_token":"` + tRequest + `"} api_secret: s3cr3tvalue`
+	once := r.RedactString(in)
+	thrice := r.RedactString(r.RedactString(once))
+	if once != thrice {
+		t.Fatalf("not idempotent:\n once  %s\n thrice %s", once, thrice)
+	}
+	if strings.Contains(thrice, Redacted+"]") || strings.Contains(thrice, "["+Redacted) {
+		t.Fatalf("redaction marker grew: %s", thrice)
+	}
+}
+
+// Ruling 78 (M6): a value that follows an already-redacted one, or is glued to the marker, is still removed.
+func TestRedactString_FollowingValueStillRedacted(t *testing.T) {
+	r := NewRedactor()
+	for _, in := range []string{
+		"passphrase=" + Redacted + "LEAKVALUE1",
+		"access_token=" + Redacted + " passphrase=LEAKVALUE1",
+		`"passphrase":"` + Redacted + `" "access_token":"LEAKVALUE1"`,
+		"passphrase=" + Redacted + "]]LEAKVALUE1",
+	} {
+		if out := r.RedactString(r.RedactString(in)); strings.Contains(out, "LEAKVALUE1") {
+			t.Fatalf("%q -> %q", in, out)
+		}
+	}
+}
+
+// Ruling 78 (M7): a quoted value is removed whole, spaces and escaped quotes included.
+func TestRedactString_QuotedValueWithSpaces(t *testing.T) {
+	r := NewRedactor()
+	for _, in := range []string{
+		`{"passphrase":"correct horse battery staple"}`,
+		`passphrase = "correct horse battery staple"`,
+		`{"passphrase":"correct \"horse\" battery staple"}`,
+		"passphrase=\"correct horse battery staple\nnext line",
+	} {
+		out := r.RedactString(in)
+		for _, w := range []string{"correct", "horse", "battery", "staple"} {
+			if strings.Contains(out, w) {
+				t.Fatalf("%q -> %q", in, out)
+			}
+		}
+		if !strings.Contains(out, `"`+Redacted+`"`) {
+			t.Fatalf("quotes not kept: %q -> %q", in, out)
+		}
+	}
+}
+
+// Ruling 78 (M8): a registered secret is also removed in its URL query-escaped form.
+func TestRegister_URLEscapedForm(t *testing.T) {
+	r := NewRedactor()
+	const sec = "s3cr+t/val=ue&x y"
+	r.Register(sec)
+	out := r.RedactString("GET /cb?x=" + url.QueryEscape(sec) + "&y=1")
+	if strings.Contains(out, url.QueryEscape(sec)) || strings.Contains(out, "s3cr") {
+		t.Fatalf("escaped form leaked: %s", out)
 	}
 }

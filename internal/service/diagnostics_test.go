@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +213,10 @@ func TestDiagnostics_SupportBundle_NoSecretsAnywhere(t *testing.T) {
 		secretsFile  = "SECRETS-ENC-CONTENT-Zq81xw7v"
 		clientID     = "ZX9876"
 	)
+	// The home path carries the OS user name (Ruling 78 I1).
+	home := filepath.Join(t.TempDir(), "homeMarkerZq81xw7v")
+	t.Setenv("HOME", home)
+	homeDoc := filepath.Join(home, "Documents", "backups")
 	for _, v := range []string{apiSecret, accessToken, telegram, keyringValue} {
 		logging.RegisterSecret(v)
 	}
@@ -224,6 +229,7 @@ func TestDiagnostics_SupportBundle_NoSecretsAnywhere(t *testing.T) {
 		`{"level":"DEBUG","msg":"telegram","url":"https://api.telegram.org/bot` + telegram + `/sendMessage"}`,
 		`{"level":"DEBUG","msg":"hdr","Authorization":"token key:` + accessToken + `"}`,
 		`passphrase=` + passphrase + ` client ` + clientID,
+		`{"level":"INFO","msg":"backup written","path":"` + homeDoc + `"}`,
 	}, "\n") + "\n"
 	write := func(name, body string) {
 		t.Helper()
@@ -247,6 +253,7 @@ func TestDiagnostics_SupportBundle_NoSecretsAnywhere(t *testing.T) {
 		"secrets.passphrase":    `"` + passphrase + `"`,
 		"ui.note":               `"` + keyringValue + ` ` + clientID + `"`,
 		"kite.user_" + clientID: `"x"`,
+		"backup.folder":         `"` + homeDoc + `"`,
 	} {
 		if err := repo.Save(ctx, k, v); err != nil {
 			t.Fatal(err)
@@ -267,7 +274,7 @@ func TestDiagnostics_SupportBundle_NoSecretsAnywhere(t *testing.T) {
 	if len(entries) == 0 {
 		t.Fatal("empty bundle")
 	}
-	planted := []string{apiSecret, accessToken, requestToken, telegram, passphrase, keyringValue, secretsFile, clientID}
+	planted := []string{apiSecret, accessToken, requestToken, telegram, passphrase, keyringValue, secretsFile, clientID, "homeMarkerZq81xw7v"}
 	for name, data := range entries {
 		if strings.Contains(strings.ToLower(name), "secrets.enc") || strings.Contains(strings.ToLower(name), "keyring") {
 			t.Fatalf("bundle entry %q must not exist", name)
@@ -285,6 +292,11 @@ func TestDiagnostics_SupportBundle_NoSecretsAnywhere(t *testing.T) {
 	}
 	if !bytes.Contains(entries["logs/tradeloom.log"], []byte(kite.MaskUserID(clientID))) {
 		t.Fatalf("client id not masked in the log:\n%s", entries["logs/tradeloom.log"])
+	}
+	for _, n := range []string{"logs/tradeloom.log", "settings.json"} {
+		if !bytes.Contains(entries[n], []byte(filepath.Join("~", "Documents", "backups"))) {
+			t.Fatalf("home path not shortened to ~ in %s:\n%s", n, entries[n])
+		}
 	}
 	des, err := os.ReadDir(layout.ExportsDir)
 	if err != nil {
@@ -372,5 +384,108 @@ func TestDiagnostics_SupportBundle_Bounded(t *testing.T) {
 	if bytes.Count(tail, []byte("line-")) != 2 || !bytes.HasPrefix(tail, []byte("line-18 access_token=[redacted]")) || !bytes.Contains(tail, []byte("\nline-19 access_token=[redacted]")) ||
 		!bytes.HasSuffix(tail, []byte("\n")) || bytes.Contains(tail, []byte("abcdefghij")) {
 		t.Fatalf("tail %q", tail)
+	}
+}
+
+// Ruling 78 (M2): a log that vanishes or is rotated between the listing and the read is skipped with a
+// note, not a failed bundle.
+func TestDiagnostics_SupportBundle_LogVanishesOrRotatesDuringStaging(t *testing.T) {
+	e := newSvcEnv(t)
+	layout := withDiagnostics(t, e)
+	gone := filepath.Join(layout.LogsDir, "tradeloom-2026-10-11T10-00-00.000.log")
+	rotated := filepath.Join(layout.LogsDir, "tradeloom.log")
+	for _, p := range []string{gone, rotated} {
+		if err := os.WriteFile(p, []byte("old line\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := stageOpenHook
+	t.Cleanup(func() { stageOpenHook = prev })
+	stageOpenHook = func(p string) {
+		switch p {
+		case gone:
+			_ = os.Remove(gone)
+		case rotated: // lumberjack renames the active file away and creates a new one
+			_ = os.Rename(rotated, rotated+".moved")
+			_ = os.WriteFile(rotated, []byte("new line\n"), 0o600)
+		}
+	}
+	path, err := e.svc.CreateSupportBundle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := zipEntries(t, path)
+	for _, n := range []string{"logs/tradeloom-2026-10-11T10-00-00.000.log", "logs/tradeloom.log"} {
+		if !bytes.Contains(entries[n], []byte("skipped")) {
+			t.Fatalf("%s: want a skip note, got %q", n, entries[n])
+		}
+	}
+}
+
+// Ruling 78 (M3): the crash size cap is checked on the opened file, so a report that grew after the
+// listing is replaced by the note instead of being cut mid-document.
+func TestDiagnostics_SupportBundle_CrashGrowsAfterListing(t *testing.T) {
+	e := newSvcEnv(t)
+	layout := withDiagnostics(t, e)
+	prevFile := bundleMaxFileBytes
+	bundleMaxFileBytes = 64
+	t.Cleanup(func() { bundleMaxFileBytes = prevFile })
+	crash := filepath.Join(layout.LogsDir, "crash-20261011T093000.000Z.json")
+	if err := os.WriteFile(crash, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := stageOpenHook
+	t.Cleanup(func() { stageOpenHook = prev })
+	stageOpenHook = func(p string) {
+		if p == crash {
+			f, err := os.OpenFile(crash, os.O_WRONLY|os.O_TRUNC, 0)
+			if err == nil {
+				_, _ = f.WriteString(`{"stack":"` + strings.Repeat("x", 200) + `"}`)
+				_ = f.Close()
+			}
+		}
+	}
+	path, err := e.svc.CreateSupportBundle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := zipEntries(t, path)["logs/crash-20261011T093000.000Z.json"]
+	if !bytes.Contains(got, []byte("omitted")) || bytes.Contains(got, []byte("xxxx")) {
+		t.Fatalf("crash entry %q", got)
+	}
+}
+
+// Ruling 78 (M4): stale staging folders and temp zips left by an interrupted run are swept at job start.
+func TestDiagnostics_SupportBundle_SweepsStaleLeftovers(t *testing.T) {
+	e := newSvcEnv(t)
+	layout := withDiagnostics(t, e)
+	stale := filepath.Join(layout.ExportsDir, ".support-stage-123")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "tradeloom.log"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout.ExportsDir, ".support-456.zip.tmp"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(layout.ExportsDir, "orders.csv")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := e.svc.CreateSupportBundle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	des, err := os.ReadDir(layout.ExportsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, d := range des {
+		got = append(got, d.Name())
+	}
+	if len(got) != 2 || !slices.Contains(got, filepath.Base(path)) || !slices.Contains(got, "orders.csv") {
+		t.Fatalf("exports after sweep: %v", got)
 	}
 }
