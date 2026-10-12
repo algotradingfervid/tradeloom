@@ -391,3 +391,25 @@ func TestMigrateToKeyring_RefusedWhileLoggingIn(t *testing.T) {
 		t.Fatalf("migration ran: %v %s %v", err, sw.Backend(), kr.m)
 	}
 }
+
+// Ruling 72 (b): "keyring backend + secrets file exists" alone never deletes secrets.enc. Only a file this
+// run's migration reported as file_not_removed is removed; e.g. a keyring backend chosen at startup next to
+// an existing file (Task 23 reconcile) leaves the file alone.
+func TestMigrateToKeyring_LeftoverRemovalNeedsThisRunsFlag(t *testing.T) {
+	e := newSvcEnv(t)
+	e.session.setState(kite.SessionState{State: kite.StateLoggedOut})
+	kr := &memStore{m: map[secrets.Key]string{secrets.KeyAPISecret: "s3cr3t"}, backend: secrets.BackendKeyring}
+	sw, file := withSecrets(t, e, kr, false, secrets.ModeKeyring)
+	if err := os.WriteFile(file, []byte("the only copy of the secrets"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.MigrateToKeyring(context.Background()); refusedCode(t, err) != "not_file_backend" {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("secrets file removed without this run's file_not_removed: %v", err)
+	}
+	if sw.Backend() != secrets.BackendKeyring || kr.m[secrets.KeyAPISecret] != "s3cr3t" {
+		t.Fatal("keyring changed")
+	}
+}

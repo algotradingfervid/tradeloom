@@ -142,6 +142,23 @@ type TokenSink interface {
 	SetAccessToken(token string)
 }
 
+// tokenGenerations is implemented by a TokenSink that numbers the tokens it installs (*Client.TokenGen,
+// Ruling 70). A sink without it gives generation 0 (unknown), and token errors then end the session
+// whatever generation they carry, as before Ruling 70.
+type tokenGenerations interface {
+	TokenGen() uint64
+}
+
+// installedTokenGen returns the generation of the token the sink holds now, or 0 when it does not number
+// them. Callers read it right after SetAccessToken while holding exMu or feedMu, the locks every token
+// install by the Session runs under, so no other install can come in between.
+func (s *Session) installedTokenGen() uint64 {
+	if g, ok := s.d.Tokens.(tokenGenerations); ok {
+		return g.TokenGen()
+	}
+	return 0
+}
+
 type ProfileReader interface {
 	Profile(ctx context.Context) (kiteconnect.UserProfile, error)
 }
@@ -179,7 +196,13 @@ type Session struct {
 	nonces map[string]nonceBinding // state nonces issued in this run (Ruling 57)
 	done   map[string]bool         // request tokens already exchanged in this run (reload-safe)
 	gen    int                     // login attempt generation
-	runCtx context.Context
+	// tokGen is the token generation (Client.TokenGen) of the current session's token, set with rec at
+	// each commit; 0 = unknown. HandleTokenError ignores errors from any other generation (Ruling 70).
+	tokGen uint64
+	// hookEndAtRestore is a test-only seam (nil in production): endSessionAtRestore calls it right after
+	// its gen check, with feedMu and mu held (Ruling 72 (a) test). It must not take mu itself.
+	hookEndAtRestore func()
+	runCtx           context.Context
 	// cancelBase cancels the base run context made by NewSession (Ruling 58 (2)): login timers and
 	// probes started before Run wait on it, and Close (also at the end of Run) cancels it.
 	cancelBase context.CancelFunc
@@ -407,6 +430,7 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		return s.endSessionAtRestore(gen, rec, CodeSessionExpired)
 	}
 	s.d.Tokens.SetAccessToken(rec.AccessToken)
+	tokGen := s.installedTokenGen()
 	s.d.Limiter.Resume()
 	offline := false
 	if _, err := s.d.Profiles.Profile(ctx); err != nil {
@@ -448,6 +472,7 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	}
 	st := readyState(rec, plan, ackRequired, offline)
 	s.rec = &rec
+	s.tokGen = tokGen
 	s.st = st
 	s.mu.Unlock()
 	s.feedMu.Unlock()
@@ -501,8 +526,12 @@ func (s *Session) endSessionAtRestore(gen int, rec TokenRecord, code string) Ses
 	defer s.feedMu.Unlock()
 	s.mu.Lock()
 	if s.gen == gen {
-		s.mu.Unlock()
-		return s.endSessionLocked(rec, code)
+		// Ruling 72 (a): the gen check and the state write share one mu critical section, so a BeginLogin
+		// cannot slip in between and be overwritten with expired.
+		if s.hookEndAtRestore != nil {
+			s.hookEndAtRestore()
+		}
+		return s.endSessionMuLocked(rec, code)
 	}
 	cur, corrected := s.correctNoCredentialsLocked()
 	s.mu.Unlock()
@@ -664,8 +693,14 @@ func (s *Session) endSession(rec TokenRecord, code string) SessionState {
 // running finishes first and is stopped. Ruling 58 (1): when a newer session committed while this call
 // waited for feedMu, only rec's row is ended; the new session's state, feed and token are left alone.
 func (s *Session) endSessionLocked(rec TokenRecord, code string) SessionState {
-	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	s.mu.Lock()
+	return s.endSessionMuLocked(rec, code)
+}
+
+// endSessionMuLocked is endSessionLocked entered with mu held as well (feedMu, then mu); it releases mu
+// once the state is written, before the side effects.
+func (s *Session) endSessionMuLocked(rec TokenRecord, code string) SessionState {
+	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	if s.supersededLocked(rec.SessionID) {
 		cur := s.st
 		s.mu.Unlock()

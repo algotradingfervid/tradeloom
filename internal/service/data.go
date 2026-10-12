@@ -25,6 +25,9 @@ const (
 	JobBackup                  = "backup"
 	JobRestore                 = "restore"
 	JobSupportBundle           = "support_bundle"
+	// StageRestart is the last stage of every restore job that got past its checks: the app must quit with
+	// exit code 3 and relaunch, whether or not Error is set (Ruling 75).
+	StageRestart = "restart"
 )
 
 // DataStats is Settings → Data's summary (FR-DATA-002).
@@ -114,13 +117,21 @@ func (s *Service) DataStats(ctx context.Context) (DataStats, error) {
 	return out, nil
 }
 
-// ClearCandles drops the candle cache (FR-DATA-002); refused while backtest runs reference it.
+// ClearCandles drops the candle cache (FR-DATA-002); refused while a backfill job is open (it would write
+// into the emptied store and lose its own job rows) and while backtest runs reference the candles.
 // It never confirms referenced runs on the user's behalf (confirmRuns is nil).
 func (s *Service) ClearCandles(ctx context.Context) error {
 	if s.d.CandleAdmin == nil {
 		return s.refuse(dataStage, refused(dataStage, "unavailable", "The candle store is not available."))
 	}
-	err := s.d.CandleAdmin.Clear(ctx, nil)
+	jobs, err := s.d.CandleAdmin.OpenJobs(ctx)
+	if err != nil {
+		return s.refuse(dataStage, err)
+	}
+	if len(jobs) > 0 {
+		return s.refuse(dataStage, refused(dataStage, "backfill_running", fmt.Sprintf("%d candle downloads are still running. Clear the cache when they have finished.", len(jobs))))
+	}
+	err = s.d.CandleAdmin.Clear(ctx, nil)
 	var rr *candles.RunsReferencedError
 	if errors.As(err, &rr) {
 		return s.refuse(dataStage, refused(dataStage, "runs_referenced", fmt.Sprintf("%d backtest runs still reference cached candles.", len(rr.Runs))))
@@ -150,8 +161,8 @@ func (s *Service) RefreshInstruments(ctx context.Context) error {
 // triggerInstrumentRefresh asks the refresher to download today's list if it is due (P0-2 Ruling 49:
 // the 08:30 attempt usually fails before login). Called by Run once per new login session.
 func (s *Service) triggerInstrumentRefresh() {
-	if t, ok := s.d.Refresher.(interface{ Trigger() }); ok {
-		t.Trigger()
+	if s.d.Refresher != nil {
+		s.d.Refresher.Trigger()
 	}
 }
 
@@ -242,10 +253,11 @@ func (s *Service) InspectBackup(_ context.Context, path string) (BackupInfo, err
 }
 
 // RestoreBackup starts a restore job (FR-DATA-005 AC3). It needs the typed phrase RESTORE; nothing is
-// closed or replaced before every check passed. Once the platform is closed the job ends with stage
-// "restart" (with Error set when the restore failed and the old data directory is still in place):
-// app.db is closed and the data-dir lock now lives in the replaced directory, so the app must quit with
-// exit code 3 and relaunch at once. From then on the job slot stays taken, so no other job can start.
+// closed or replaced before every check passed. Once the job has started closing the platform it always
+// ends with StageRestart (Ruling 74/75), with Error set when the close or the restore failed: app.db (or
+// part of the platform) is closed and, after a swap, the data-dir lock lives in the replaced directory,
+// so the app must quit with exit code 3 and relaunch at once. A relaunch is always safe: a failed restore
+// replaced nothing. From the closing stage on the job slot stays taken, so no other job can start.
 func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) (string, error) {
 	if confirmation != store.RestoreConfirmPhrase {
 		return "", s.refuse(dataStage, refused(dataStage, "not_confirmed", "Type "+store.RestoreConfirmPhrase+" to confirm."))
@@ -267,7 +279,8 @@ func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) 
 	if s.d.CloseForRestore == nil || s.d.Layout.Root == "" {
 		return "", s.refuse(dataStage, refused(dataStage, "unavailable", "Restore is not available in this build."))
 	}
-	id, release, err := s.beginJob(JobRestore)
+	// The restore never releases the job slot: it always ends in a restart (Ruling 74).
+	id, _, err := s.beginJob(JobRestore)
 	if err != nil {
 		return "", s.refuse(dataStage, err)
 	}
@@ -279,13 +292,12 @@ func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) 
 		step("inspecting", 1)
 		step("closing", 2)
 		if err := s.d.CloseForRestore(); err != nil {
-			// Nothing was replaced and the platform reports it is still usable: the app keeps running.
-			s.d.Log.Error("restore failed", "stage", "closing", "err", err)
-			release()
-			s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: "closing", Done: 2, Total: 4, Finished: true, Error: err.Error()})
+			// Part of the platform may already be closed; nothing was replaced, so a relaunch is safe.
+			s.d.Log.Error("restore failed; restarting", "stage", "closing", "err", err)
+			s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: StageRestart, Done: 4, Total: 4, Finished: true,
+				Error: "Tradeloom could not close for the restore; your previous data will be put back when Tradeloom restarts: " + err.Error()})
 			return
 		}
-		// Past this point the slot is never released: the process must restart.
 		step("restoring", 3)
 		res, err := store.Restore(jctx, store.RestoreRequest{Archive: path, DataDir: s.d.Layout.Root, Confirmation: confirmation, DeploymentsFlat: true, Now: s.d.Clock.Now})
 		if err != nil && res.ReplacedDir == "" {
@@ -293,8 +305,9 @@ func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) 
 			if errors.Is(err, store.ErrDeploymentsActive) {
 				msg = "deployments_active: stop every live strategy before restoring"
 			}
-			s.d.Log.Error("restore failed; the previous data directory is unchanged, restarting", "stage", "restoring", "err", err)
-			s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: "restart", Done: 4, Total: 4, Finished: true, Error: "The restore failed and your data was not changed: " + msg})
+			s.d.Log.Error("restore failed; restarting with the previous data directory", "stage", "restoring", "err", err)
+			s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: StageRestart, Done: 4, Total: 4, Finished: true,
+				Error: "The restore failed; your previous data will be put back when Tradeloom restarts: " + msg})
 			return
 		}
 		if err != nil { // swapped, but the parent directory could not be synced
@@ -306,7 +319,7 @@ func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) 
 			}
 		}
 		s.d.Log.Info("restore complete; restarting", "replaced", res.ReplacedDir)
-		s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: "restart", Done: 4, Total: 4, Finished: true, ResultPath: res.ReplacedDir})
+		s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: StageRestart, Done: 4, Total: 4, Finished: true, ResultPath: res.ReplacedDir})
 	})
 	return id, nil
 }
@@ -332,21 +345,33 @@ func (s *Service) scheduledBackupDue(ctx context.Context) (string, bool) {
 	return today, true
 }
 
+// runScheduledBackup writes the day's backup. A failure is published on job.progress (kind backup, redacted
+// Error, Ruling 74) and leaves the day's marker unset, so the next 16:00 or quit retries.
 func (s *Service) runScheduledBackup(ctx context.Context, today string) {
-	_, release, err := s.beginJob(JobBackup)
+	id, release, err := s.beginJob(JobBackup)
 	if err != nil {
 		s.d.Log.Info("scheduled backup skipped", "reason", err.Error())
 		return
 	}
 	defer release()
+	fail := func(stage string, n int, err error) {
+		s.progress(JobProgress{JobID: id, Kind: JobBackup, Stage: stage, Done: n, Total: 4, Finished: true, Error: "The scheduled backup failed: " + err.Error()})
+	}
 	dir := settings.Get(s.d.Settings, settings.BackupScheduleFolder)
 	if dir == "" {
 		dir = s.d.Layout.BackupsDir
+	}
+	// Same rule as BackupNow: never create the folder (an unplugged drive must not fill the system disk).
+	if fi, serr := os.Stat(dir); serr != nil || !fi.IsDir() || !filepath.IsAbs(dir) {
+		s.d.Log.Warn("scheduled backup skipped: folder missing or not a folder", "folder", dir)
+		fail("preparing", 1, fmt.Errorf("the folder %s does not exist or is not a folder", dir))
+		return
 	}
 	keep := settings.Get(s.d.Settings, settings.BackupScheduleKeep)
 	path, pruned, err := s.d.DB.ScheduledBackup(ctx, s.backupOptions(dir, settings.Get(s.d.Settings, settings.BackupIncludeCandles)), keep)
 	if err != nil && path == "" {
 		s.d.Log.Error("scheduled backup failed", "err", err)
+		fail("writing", 2, err)
 		return
 	}
 	if err != nil { // written, pruning failed: the day's backup exists

@@ -40,7 +40,12 @@ type Err struct {
 	Code    int    // HTTP status (0 when no response)
 	Type    string // Kite error_type
 	Message string
-	cause   error
+	// TokenGen is the generation of the access token the failing attempt sent: Client.SetAccessToken
+	// numbers every token it installs 1, 2, 3, … (a counter, never derived from the token). 0 means
+	// unknown — an Err built outside Client.call (tests, older paths) or an attempt made before any
+	// token was installed; such an error keeps the pre-Ruling-70 behaviour (it is treated as current).
+	TokenGen uint64
+	cause    error
 }
 
 func (e *Err) Error() string {
