@@ -287,6 +287,116 @@ describe('WatchlistSearch', () => {
     expect(toasts()).toHaveLength(0);
   });
 
+  describe('fix round 1 (Ruling 114)', () => {
+    it('I1: "sbin", then "tcs" + Enter within the debounce adds nothing from the old query', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValueOnce([SBIN]).mockResolvedValueOnce([TCS]);
+      render(<WatchlistSearch />);
+      await type('sbin');
+      expect(screen.getByRole('option', { name: /SBIN/ })).toBeInTheDocument();
+      fireEvent.change(input(), { target: { value: 'tcs' } });
+      act(() => { vi.advanceTimersByTime(SEARCH_DEBOUNCE_MS - 20); });
+      // The SBIN rows answer an older query: no list, no marker, no count, and Enter adds nothing.
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(screen.queryByLabelText(/Add to|Already in/)).toBeNull();
+      expect(screen.getByRole('status')).not.toHaveTextContent('1 result');
+      fireEvent.keyDown(input(), { key: 'Enter' });
+      await flush();
+      expect(backend.callsTo('watchlists.add')).toHaveLength(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS); });
+      expect(screen.getByRole('option', { name: /TCS/ })).toBeInTheDocument();
+      fireEvent.keyDown(input(), { key: 'Enter' });
+      await flush();
+      expect(backend.callsTo('watchlists.add').map((c) => c.args[1])).toEqual([TCS.token]);
+    });
+
+    it('m1: the handled Escapes stop propagation; the third one bubbles', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN]);
+      const outer = vi.fn();
+      render(<div onKeyDown={(e) => outer(e.key)}><WatchlistSearch /></div>);
+      await type('sbin');
+      fireEvent.keyDown(input(), { key: 'Escape' }); // closes
+      fireEvent.keyDown(input(), { key: 'Escape' }); // clears
+      expect(outer).not.toHaveBeenCalled();
+      fireEvent.keyDown(input(), { key: 'Escape' }); // nothing left to do here
+      expect(outer).toHaveBeenCalledWith('Escape');
+    });
+
+    it('m2: an add is announced in the polite region, without a toast', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN]);
+      render(<WatchlistSearch />);
+      await type('sbin');
+      fireEvent.keyDown(input(), { key: 'Enter' });
+      await flush();
+      expect(screen.getByRole('status')).toHaveTextContent('Added SBIN to Watchlist 1');
+      expect(toasts()).toHaveLength(0);
+    });
+
+    it('m3: the highlighted option is scrolled into view', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN, TCS]);
+      const scroll = vi.fn();
+      Element.prototype.scrollIntoView = scroll;
+      try {
+        render(<WatchlistSearch />);
+        await type('s');
+        scroll.mockClear();
+        fireEvent.keyDown(input(), { key: 'ArrowDown' });
+        expect(scroll).toHaveBeenCalledWith({ block: 'nearest' });
+        expect(scroll.mock.contexts.at(-1)).toBe(screen.getByRole('option', { name: /TCS/ }));
+      } finally {
+        delete (Element.prototype as Partial<Element>).scrollIntoView;
+      }
+    });
+
+    it('m4: a mousedown anywhere in the listbox (e.g. its scrollbar) keeps focus in the box', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN]);
+      render(<WatchlistSearch />);
+      await type('sbin');
+      expect(fireEvent.mouseDown(screen.getByRole('listbox'))).toBe(false); // default prevented
+    });
+
+    it('m6: Enter with Ctrl, Alt, Shift or Meta adds nothing', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN]);
+      render(<WatchlistSearch />);
+      await type('sbin');
+      for (const mod of ['ctrlKey', 'altKey', 'shiftKey', 'metaKey']) fireEvent.keyDown(input(), { key: 'Enter', [mod]: true });
+      await flush();
+      expect(backend.callsTo('watchlists.add')).toHaveLength(0);
+    });
+
+    it('m7: blur closes the list and focus reopens it', async () => {
+      seed([]);
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN]);
+      render(<WatchlistSearch />);
+      input().focus();
+      await type('sbin');
+      expect(screen.getByRole('listbox')).toBeInTheDocument();
+      fireEvent.blur(input());
+      expect(screen.queryByRole('listbox')).toBeNull();
+      fireEvent.focus(input());
+      expect(screen.getByRole('listbox')).toBeInTheDocument();
+    });
+
+    it('m7: with no active list there is no marker and nothing is added', async () => {
+      useWatchlists.setState({ lists: [], activeId: null, selectedToken: null, status: 'ready', error: null });
+      vi.mocked(searchInstruments).mockResolvedValue([SBIN]);
+      render(<WatchlistSearch />);
+      await type('sbin');
+      const opt = screen.getByRole('option', { name: /SBIN/ });
+      expect(within(opt).queryByLabelText(/Add to|Already in/)).toBeNull();
+      fireEvent.keyDown(input(), { key: 'Enter' });
+      fireEvent.click(opt);
+      await flush();
+      expect(backend.callsTo('watchlists.add')).toHaveLength(0);
+      expect(toasts()).toHaveLength(0);
+    });
+  });
+
   it('shows no order actions (G-0)', async () => {
     seed([]);
     vi.mocked(searchInstruments).mockResolvedValue([SBIN]);

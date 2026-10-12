@@ -417,6 +417,7 @@ export const watchlistSearchCopy = {
   results: 'Search results',
   alreadyIn: (list: string) => `Already in ${list}`,
   addTo: (list: string) => `Add to ${list}`,
+  added: (symbol: string, list: string) => `Added ${symbol} to ${list}`,
   resultCount: (n: number) => (n === 1 ? '1 result' : `${n} results`),
   noMatches: 'No instruments match',
   searchFailed: 'Search failed. Try again.',

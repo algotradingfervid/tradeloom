@@ -16,4 +16,4 @@
   flex: none; display: inline-grid; place-items: center; width: 20px; height: 20px;
   border-radius: var(--radius-pill); border: 1px solid var(--border); font-weight: 700; line-height: 1;
 }
-.watchlist-search__add.is-in-list { color: var(--up); border-color: currentColor; }
+.watchlist-search__add.is-in-list { color: var(--accent); border-color: currentColor; }

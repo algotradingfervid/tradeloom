@@ -14,7 +14,11 @@ export const SEARCH_DEBOUNCE_MS = 120;
 /** Go's default page (internal/service/chart.go defaultSearch); Go caps any limit at 50. */
 const SEARCH_LIMIT = 20;
 
-type SearchStatus = 'idle' | 'done' | 'failed';
+/**
+ * The answer to one trimmed query. It is "fresh" only while that query is still what the box holds (Ruling 114 I1, the
+ * Task 9 pattern): rows of an older query are never listed, counted, marked or added.
+ */
+interface Answer { q: string; rows: Instrument[]; failed: boolean }
 
 /**
  * Sign-out (and the test reset) clears every mounted search box: an answer still in flight is then dropped, and an Add
@@ -34,8 +38,9 @@ export function WatchlistSearch() {
   const listboxId = `${id}-results`;
   const optionId = (token: number) => `${id}-opt-${token}`;
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Instrument[]>([]);
-  const [status, setStatus] = useState<SearchStatus>('idle');
+  const [answer, setAnswer] = useState<Answer | null>(null);
+  /** The last add, announced in the polite region until the query changes (Ruling 114 m2). */
+  const [notice, setNotice] = useState('');
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   /** Bumped by every new query, clear, reset and unmount: only the latest search may write its answer. */
@@ -48,8 +53,8 @@ export function WatchlistSearch() {
     seq.current++;
     clearTimeout(timer.current);
     setQuery('');
-    setResults([]);
-    setStatus('idle');
+    setAnswer(null);
+    setNotice('');
     setOpen(false);
     setActive(0);
   };
@@ -70,30 +75,25 @@ export function WatchlistSearch() {
 
   const search = (value: string) => {
     setQuery(value);
+    const q = value.trim();
+    if (q === query.trim()) return; // same query (e.g. a trailing space): the answer stays fresh
     const my = ++seq.current;
     clearTimeout(timer.current);
-    const q = value.trim();
-    if (q === '') {
-      // Go answers [] for an empty query (searchInstruments skips the call): nothing is searched until the user types.
-      setResults([]);
-      setStatus('idle');
-      setOpen(false);
-      return;
-    }
+    setNotice('');
+    // Go answers [] for an empty query (searchInstruments skips the call): nothing is searched until the user types.
+    if (q === '') return;
     timer.current = setTimeout(() => {
       searchInstruments(q, EXCHANGE_TAGS, SEARCH_LIMIT).then(
         (found) => {
           if (my !== seq.current) return;
           const rows = found.filter(isInScope); // NFR-15: never offer an option, MCX or currency row
-          setResults(rows);
-          setStatus('done');
+          setAnswer({ q, rows, failed: false });
           setActive(0);
           setOpen(rows.length > 0);
         },
         () => {
           if (my !== seq.current) return;
-          setResults([]);
-          setStatus('failed');
+          setAnswer({ q, rows: [], failed: true });
           setOpen(false);
         },
       );
@@ -109,6 +109,7 @@ export function WatchlistSearch() {
       const outcome = await useWatchlists.getState().addItem(inst.token);
       // 'cancelled' (finished after a sign-out) shows nothing (Ruling 104 m1).
       if (outcome === 'duplicate') pushToast({ level: 'info', message: copy.alreadyIn(target.name) });
+      else if (outcome === 'added') setNotice(copy.added(displayName(inst), target.name));
     } catch (e) {
       pushToast({ level: 'error', message: copy.addFailed(displayName(inst), e instanceof Error ? e.message : String(e)) });
     } finally {
@@ -116,8 +117,16 @@ export function WatchlistSearch() {
     }
   };
 
+  const fresh = answer !== null && answer.q === query.trim() ? answer : null;
+  const results = fresh?.rows ?? [];
   const showList = open && results.length > 0;
   const highlighted = showList ? results[Math.min(active, results.length - 1)] : undefined;
+  const highlightedId = highlighted ? optionId(highlighted.token) : undefined;
+
+  useEffect(() => {
+    // jsdom has no scrollIntoView; browsers do.
+    if (highlightedId) document.getElementById(highlightedId)?.scrollIntoView?.({ block: 'nearest' });
+  }, [highlightedId]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     // IME composition keys belong to the input method (as in the shortcut provider, P0-4 Ruling 94 I2).
@@ -135,16 +144,19 @@ export function WatchlistSearch() {
         setActive((a) => Math.max(a - 1, 0));
         return;
       case 'Enter':
-        if (!highlighted) return;
+        if (!highlighted || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
         e.preventDefault();
         void add(highlighted);
         return;
       case 'Escape':
+        // Each Escape this box handles stays here; one with nothing left to do bubbles (Ruling 114 m1).
         if (showList) {
           e.preventDefault();
+          e.stopPropagation();
           setOpen(false);
         } else if (query !== '') {
           e.preventDefault();
+          e.stopPropagation();
           clear();
         }
         return;
@@ -152,11 +164,12 @@ export function WatchlistSearch() {
   };
 
   const message =
-    status === 'failed' ? copy.searchFailed
-    : status === 'done' ? (results.length > 0 ? copy.resultCount(results.length) : copy.noMatches)
+    notice ? notice
+    : fresh?.failed ? copy.searchFailed
+    : fresh ? (results.length > 0 ? copy.resultCount(results.length) : copy.noMatches)
     : '';
-  // The count is for screen readers only; "no matches" and a failure are shown too.
-  const messageVisible = status === 'failed' || (status === 'done' && results.length === 0);
+  // The count and the add notice are for screen readers only; "no matches" and a failure are shown too.
+  const messageVisible = !notice && fresh !== null && (fresh.failed || results.length === 0);
 
   return (
     <div className="watchlist-search">
@@ -168,7 +181,7 @@ export function WatchlistSearch() {
         aria-autocomplete="list"
         aria-expanded={showList}
         aria-controls={showList ? listboxId : undefined}
-        aria-activedescendant={highlighted ? optionId(highlighted.token) : undefined}
+        aria-activedescendant={highlightedId}
         autoComplete="off"
         spellCheck={false}
         placeholder={copy.placeholder}
@@ -182,7 +195,13 @@ export function WatchlistSearch() {
         {message}
       </div>
       {showList && (
-        <ul id={listboxId} role="listbox" aria-label={copy.results} className="watchlist-search__list">
+        <ul
+          id={listboxId}
+          role="listbox"
+          aria-label={copy.results}
+          className="watchlist-search__list"
+          onMouseDown={(e) => e.preventDefault()} // keep focus in the box, also on the scrollbar (Ruling 114 m4)
+        >
           {results.map((r) => {
             const inList = !!list?.items.some((i) => i.token === r.token);
             const isActive = r === highlighted;
@@ -194,7 +213,6 @@ export function WatchlistSearch() {
                 aria-selected={isActive}
                 className={`watchlist-search__row${isActive ? ' is-active' : ''}`}
                 onMouseEnter={() => setActive(results.indexOf(r))}
-                onMouseDown={(e) => e.preventDefault()} // keep focus in the box
                 onClick={() => void add(r)}
               >
                 <InstrumentLabel instrument={r} showName />
