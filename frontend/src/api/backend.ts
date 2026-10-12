@@ -148,6 +148,41 @@ export interface AppInfo { version: string; build: string; schemaVersion: number
 
 export type Navigate = G.service_Navigate;
 
+// ---- P0-5 market domains (canonical contract §C/§D; JSON of the service.* models). Types that events.gen.ts carries
+// are derived from it like the rest of this file; the others are checked against wailsjs/go/models in wails.ts.
+/** `alsoOnNse` (FR-WATCH-008): a BSE row whose company is also listed on NSE; Go fills it on Search results only. */
+export interface InstrumentDTO {
+  token: number;
+  exchange: string;
+  segment: string;
+  tag: string;
+  tradingsymbol: string;
+  name: string;
+  displayName: string;
+  instrumentType: string;
+  expiryMs: Ms; // 0 = none
+  tickSizePaise: number;
+  lotSize: number;
+  isIndex: boolean;
+  isFuture: boolean;
+  underlying: string;
+  alsoOnNse: boolean;
+}
+export type CandleDTO = G.service_CandleDTO;
+export type CandleEventDTO = G.service_CandleEventDTO;
+export interface CandlesRequest { token: number; interval: string; fromMs: Ms; toMs: Ms; tradingDays: number }
+export interface RefreshRequest { token: number; interval: string; fromMs: Ms; toMs: Ms }
+export interface CandlesResult { candles: CandleDTO[]; complete: boolean; backfillJobId: string; needsDataPlan: boolean; offline: boolean }
+export type BackfillState = 'running' | 'done' | 'failed';
+/** service.BackfillProgressDTO: `etaMs` is the remaining time in ms. */
+export interface BackfillProgress extends Omit<G.service_BackfillProgressDTO, 'state'> { state: BackfillState }
+export type QuoteConsumer = 'chart' | 'watchlist' | 'widget';
+export interface WatchResult { live: number[]; polled: number[]; snapshot: TickDTO[] }
+export type WatchlistItem = G.service_WatchlistItem;
+export interface Watchlist extends Omit<G.service_Watchlist, 'items'> { items: WatchlistItem[] }
+export interface WatchlistsState extends Omit<G.service_WatchlistsState, 'lists'> { lists: Watchlist[] }
+export interface RemovedItem { listId: string; token: number; position: number }
+
 /** The subset of P0-3's `events.gen.ts` this plan subscribes to (P0-5 adds its chart/watchlist events). */
 export interface EventMap {
   'session.state': SessionStatus;
@@ -162,6 +197,11 @@ export interface EventMap {
   'job.progress': JobProgress;
   'settings.changed': SettingsChanged;
   'app.navigate': Navigate;
+  'candle.forming': CandleEventDTO[];
+  'candle.closed': CandleEventDTO;
+  'backfill.progress': BackfillProgress[];
+  /** Go publishes the whole new state after every watchlist mutation (incl. SetActive) and after a restore. */
+  'watchlists.changed': WatchlistsState;
 }
 export type EventName = keyof EventMap;
 
@@ -238,6 +278,29 @@ export interface Backend {
   system: {
     info(): Promise<AppInfo>;
     status(): Promise<StatusSnapshot>;
+  };
+  chart: {
+    candles(req: CandlesRequest): Promise<CandlesResult>;
+    refresh(req: RefreshRequest): Promise<CandlesResult>;
+    openLive(token: number, interval: string): Promise<string>;
+    closeLive(id: string): Promise<void>;
+  };
+  instruments: {
+    search(q: string, tags: string[], limit: number): Promise<InstrumentDTO[]>;
+    byTokens(tokens: number[]): Promise<InstrumentDTO[]>;
+    byIdentifier(id: string): Promise<InstrumentDTO>;
+  };
+  quotes: { watch(consumer: QuoteConsumer, tokens: number[]): Promise<WatchResult> };
+  watchlists: {
+    list(): Promise<WatchlistsState>;
+    create(name: string): Promise<WatchlistsState>;
+    rename(id: string, name: string): Promise<WatchlistsState>;
+    delete(id: string): Promise<WatchlistsState>;
+    setActive(id: string): Promise<WatchlistsState>;
+    add(id: string, token: number, position: number): Promise<WatchlistsState>;
+    remove(id: string, token: number): Promise<RemovedItem>;
+    reorder(id: string, tokens: number[]): Promise<WatchlistsState>;
+    reorderLists(ids: string[]): Promise<WatchlistsState>;
   };
   on<K extends EventName>(name: K, cb: (payload: EventMap[K]) => void): () => void;
 }
