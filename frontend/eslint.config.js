@@ -17,4 +17,17 @@ export default defineConfig([
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: [
+      'src/chart/LightweightChartsAdapter.ts', 'src/chart/lwc.ts', 'src/chart/time.ts',
+      'src/chart/primitives/**', 'src/chart/testing/**', 'src/chart/**/*.test.ts',
+    ],
+    rules: {
+      'no-restricted-imports': ['error', { paths: [{
+        name: 'lightweight-charts',
+        message: 'Use ChartAdapter (src/chart/ChartAdapter.ts); only the adapter may import lightweight-charts (FR-CHART-001).',
+      }] }],
+    },
+  },
 ]);
