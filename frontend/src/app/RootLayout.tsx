@@ -6,6 +6,7 @@ import { Button } from '../components/Button';
 import { bootCopy } from '../i18n/copy';
 import { useAppStore } from '../store/app';
 import './shell.css';
+import { useTrackHistoryDepth } from '../store/nav';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -23,6 +24,7 @@ export function RootLayout() {
     void bootstrap(backend, { signal: ctl.signal });
     return () => ctl.abort();
   }, [backend, attempt]);
+  useTrackHistoryDepth();
   return (
     <>
       {bootError && (
