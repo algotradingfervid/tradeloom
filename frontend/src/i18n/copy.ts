@@ -34,3 +34,8 @@ export const componentCopy = {
 export const settingsCopy = {
   restoreInProgress: 'A restore is in progress — settings changes are paused',
 } as const;
+
+export const toastCopy = {
+  region: 'Notifications',
+  dismiss: 'Dismiss notification',
+} as const;

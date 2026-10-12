@@ -1,4 +1,5 @@
 import { useAppStore } from '../store/app';
+import { notifyUnclaimedJob } from '../store/jobNotices';
 import { useSessionStore } from '../store/session';
 import { useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
@@ -17,6 +18,7 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
     backend.on('tick.batch', (t) => useTicksStore.getState().applyBatch(t)),
     backend.on('settings.changed', (c) => useSettingsStore.getState().put(c.key, c.value)),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
+    backend.on('job.progress', (p) => notifyUnclaimedJob(p)),
   ];
   return () => {
     for (const off of offs) off();

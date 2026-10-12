@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useBackend } from '../api/BackendContext';
 import { bootstrap, startEventBridge } from '../api/events';
+import { ToastRegion } from '../components/ToastRegion';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -15,5 +16,10 @@ export function RootLayout() {
     void bootstrap(backend);
     return stop;
   }, [backend]);
-  return <Outlet />;
+  return (
+    <>
+      <Outlet />
+      <ToastRegion />
+    </>
+  );
 }
