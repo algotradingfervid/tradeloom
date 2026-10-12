@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point. WebKit2GTK 4.1 and GTK 3 come from the host system (not bundled).
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/bin/tradeloom" "$@"

@@ -36,6 +36,10 @@ func TestASTChecks_Fixture(t *testing.T) {
 		"g0-typearg bad/generic.go", "g0-typearg bad/genericvalue.go", "g0-typearg bad/genericvalue.go",
 		"g0-typearg bad/ifacecall.go", "g0-typearg bad/ifacecall.go",
 	}
+	// Alert-triggered and mutual-fund order writes (Ruling 47) and InitiateHoldingsAuth (Ruling 48): one g0-call per write selector.
+	for i := 0; i < 9; i++ {
+		indirect = append(indirect, "g0-call bad/alertsmf.go")
+	}
 	with := func(vs ...string) []string {
 		out := append(append([]string{}, vs...), indirect...)
 		sort.Strings(out)
@@ -61,5 +65,20 @@ func TestASTChecks_Fixture(t *testing.T) {
 				t.Fatalf("\n got %v\nwant %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestKitePkg_AnyMajorVersion(t *testing.T) {
+	for path, want := range map[string]bool{
+		"github.com/zerodha/gokiteconnect/v4":             true,
+		"github.com/zerodha/gokiteconnect/v5":             true,
+		"github.com/zerodha/gokiteconnect/v10":            true,
+		"github.com/zerodha/gokiteconnect/v4/models":      false,
+		"github.com/zerodha/gokiteconnect/v4/ticker":      false,
+		"example.com/github.com/zerodha/gokiteconnect/v4": false,
+	} {
+		if got := kitePkg.MatchString(path); got != want {
+			t.Errorf("kitePkg(%q) = %v, want %v", path, got, want)
+		}
 	}
 }

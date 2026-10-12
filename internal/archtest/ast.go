@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,11 +18,18 @@ import (
 var bannedTime = map[string]bool{"Now": true, "Since": true, "Until": true, "Sleep": true, "After": true,
 	"AfterFunc": true, "Tick": true, "NewTimer": true, "NewTicker": true}
 
-// orderWriteMethods are the Kite order-write methods gated by G-0.
+// orderWriteMethods are the Kite order-write methods gated by G-0: regular/GTT orders, alerts (an
+// alert can carry an ATO order basket) and mutual-fund orders/SIPs (Ruling 47) and
+// InitiateHoldingsAuth (CDSL authorisation that enables selling holdings, Ruling 48). Keep this list in
+// sync with scripts/g0-nm-check.sh.
 var orderWriteMethods = map[string]bool{"PlaceOrder": true, "ModifyOrder": true, "CancelOrder": true, "ExitOrder": true,
-	"ConvertPosition": true, "PlaceGTT": true, "ModifyGTT": true, "DeleteGTT": true}
+	"ConvertPosition": true, "PlaceGTT": true, "ModifyGTT": true, "DeleteGTT": true,
+	"CreateAlert": true, "ModifyAlert": true, "DeleteAlerts": true,
+	"PlaceMFOrder": true, "CancelMFOrder": true, "PlaceMFSIP": true, "ModifyMFSIP": true, "CancelMFSIP": true,
+	"InitiateHoldingsAuth": true}
 
-const kiteClient = "github.com/zerodha/gokiteconnect/v4.Client"
+// kitePkg matches every major version of gokiteconnect, so a module bump cannot silently disable G-0.
+var kitePkg = regexp.MustCompile(`^github\.com/zerodha/gokiteconnect/v[0-9]+$`)
 
 // Load type-checks every package matching patterns in dir with the given build tags (non-test files only).
 func Load(dir string, env []string, tags string, patterns ...string) ([]*packages.Package, error) {
@@ -147,7 +155,7 @@ func isKiteClient(t types.Type) bool {
 	if !ok || named.Obj().Pkg() == nil {
 		return false
 	}
-	return named.Obj().Pkg().Path()+"."+named.Obj().Name() == kiteClient
+	return kitePkg.MatchString(named.Obj().Pkg().Path()) && named.Obj().Name() == "Client"
 }
 
 // requiresOrdersTag is true when the file's //go:build line is satisfied with "orders" but not without it.

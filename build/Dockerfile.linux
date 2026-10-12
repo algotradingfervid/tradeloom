@@ -1,0 +1,36 @@
+# Linux build container (ARCHITECTURE §10.2). ubuntu:22.04 keeps the binary's glibc floor at 2.35.
+# Build:  docker build -f build/Dockerfile.linux -t tradeloom-build:p0 build
+# Use:    make docker-release VERSION=0.1.0
+FROM ubuntu:22.04
+
+ARG GO_VERSION=1.25.14
+ARG NODE_VERSION=22.23.3
+ARG WAILS_VERSION=v2.16.0
+ARG NFPM_VERSION=2.47.0
+ARG GO_LICENSES_VERSION=v1.6.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev \
+      ca-certificates curl git xz-utils file desktop-file-utils make \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      | tar -C /usr/local --strip-components=1 -xJ
+RUN curl -fsSL -o /tmp/nfpm.deb "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" \
+ && dpkg -i /tmp/nfpm.deb && rm /tmp/nfpm.deb
+RUN curl -fsSL -o /usr/local/bin/appimagetool \
+      "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+ && chmod +x /usr/local/bin/appimagetool
+
+ENV GOPATH=/go \
+    PATH=/usr/local/go/bin:/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    GOTOOLCHAIN=local \
+    GOWORK=off \
+    APPIMAGE_EXTRACT_AND_RUN=1
+RUN go install "github.com/wailsapp/wails/v2/cmd/wails@${WAILS_VERSION}" \
+ && go install "github.com/google/go-licenses@${GO_LICENSES_VERSION}"
+RUN git config --system --add safe.directory /src
+WORKDIR /src
