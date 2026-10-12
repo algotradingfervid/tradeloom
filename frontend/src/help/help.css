@@ -1,0 +1,14 @@
+.help { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: var(--space-6); }
+.help__tree h2 { margin: var(--space-3) 0 var(--space-1); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.help__tree ul, .help__cards, .help__results { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1); }
+.help__tree a { display: block; padding: var(--space-1) var(--space-2); border-radius: var(--radius-1); color: var(--text); text-decoration: none; }
+.help__tree a[aria-current="page"] { background: var(--surface-2); color: var(--accent); }
+.help__cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--space-3); }
+.help__card { display: flex; flex-direction: column; gap: var(--space-1); color: var(--text); text-decoration: none; }
+.help__card:hover { background: var(--surface-2); }
+.help article { display: flex; flex-direction: column; gap: var(--space-3); max-width: 760px; }
+.help__support { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-6); }
+.legal { display: flex; flex-direction: column; gap: var(--space-3); max-width: 760px; }
+.help__article { display: flex; flex-direction: column; gap: var(--space-3); }
+/* DocsFrame without the shell (Ruling 108 M6): the page scrolls on its own. */
+.standalone-page { min-height: 100vh; background: var(--bg); color: var(--text); }

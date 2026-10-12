@@ -59,6 +59,7 @@ describe('FR-SHELL-018 diagnostics (UI)', () => {
     backend.diagnostics.createSupportBundle = () => new Promise<string>((r) => { release = r; });
     await user.click(await screen.findByRole('button', { name: 'Create support bundle' }));
     expect(screen.getByRole('button', { name: 'Create support bundle' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Create support bundle' })).toHaveAttribute('aria-busy', 'true');
     backend.emit('job.progress', {
       jobId: 'backup-7', kind: 'backup', stage: 'write', done: 1, total: 4, finished: true,
       error: 'The scheduled backup failed: disk full', resultPath: '',

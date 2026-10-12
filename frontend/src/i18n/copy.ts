@@ -522,6 +522,22 @@ export const profileCopy = {
   logIn: 'Log in',
 } as const;
 
+export const helpCopy = {
+  title: 'Help',
+  description: 'Guides and answers that work offline.',
+  searchPlaceholder: 'Search help articles',
+  results: 'Search results',
+  topics: 'Help topics',
+  tree: 'Help articles',
+  articles: (n: number) => (n === 1 ? '1 article' : `${n} articles`),
+  updatedFor: (v: string) => `Updated for v${v}`,
+  support: 'Support',
+  supportHint: 'If something goes wrong, the logs folder and a support bundle help explain what happened.',
+  shortcutsTitle: 'Keyboard shortcuts',
+  shortcutsIntro: 'Every shortcut can be changed in Settings → Shortcuts. This list always shows the current keys.',
+  unbound: 'not set',
+} as const;
+
 /** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
 export const symbolSearchCopy = {
   title: 'Search instruments',
