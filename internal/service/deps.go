@@ -17,6 +17,7 @@ import (
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/logging"
 	"tradeloom/internal/orders"
+	"tradeloom/internal/secrets"
 	"tradeloom/internal/settings"
 	"tradeloom/internal/store"
 )
@@ -85,6 +86,13 @@ type Deps struct {
 	Bus         *bus.Bus
 	Log         *slog.Logger
 	NewID       func() string
+
+	// Secret storage (Task 27, FR-ACCT-013).
+	Secrets      *SecretSwitch        // the Session's secrets.Store; swapped by setup, unlock and migration
+	SecretsFile  string               // Layout.SecretsFile
+	Detection    secrets.Detection    // Boot.Secrets
+	KeyringProbe func() error         // secrets.ProbeKeyringWithin(secrets.ProbeTimeout); nil = available
+	NewKeyring   func() secrets.Store // secrets.NewKeyring; tests inject a memory store
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
