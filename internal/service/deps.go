@@ -161,13 +161,17 @@ type Service struct {
 	lastFeed ticker.FeedState // last feed.state (System.Status); zero State reads as "stopped"
 
 	// Task 29 (quotes): the maps are initialised lazily in quotes.go so New is untouched.
-	quotesOnce sync.Once                                // loads the persisted quote cache
-	watchMu    sync.Mutex                               // serialises set changes with their feed calls (WatchQuotes, linger)
-	pollMu     sync.Mutex                               // guards polled, deferred, pending, pollOff
-	polled     map[ticker.Consumer]map[uint32]bool      // tokens on the REST path, per consumer
-	deferred   map[ticker.Consumer]map[uint32]bool      // subscribed while the feed was stopped; polled until feed.state is live
-	pending    map[ticker.Consumer]map[uint32]time.Time // removed tokens awaiting UnsubscribeLinger (their deadline)
-	pollOff    string                                   // session id whose quote polling Kite refused (no data permission)
+	quotesOnce   sync.Once                                // loads the persisted quote cache
+	watchMu      sync.Mutex                               // serialises set changes with their feed calls (WatchQuotes, linger)
+	pollMu       sync.Mutex                               // guards polled, deferred, pending, pollOff, closeSession, closes, quitQuotes
+	polled       map[ticker.Consumer]map[uint32]bool      // tokens on the REST path, per consumer
+	deferred     map[ticker.Consumer]map[uint32]bool      // subscribed while the feed was stopped; polled until feed.state is live
+	pending      map[ticker.Consumer]map[uint32]time.Time // removed tokens awaiting UnsubscribeLinger (their deadline)
+	pollOff      string                                   // session id whose quote polling Kite refused (no data permission)
+	closeSession string                                   // session id the closes belong to
+	closes       map[uint32]float64                       // previous close per token, fetched once per session (OHLC)
+	quitQuotes   chan struct{}                            // closed when RunQuotes exits; ends pending linger goroutines
+	quitOnce     sync.Once
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).

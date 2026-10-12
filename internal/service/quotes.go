@@ -75,7 +75,6 @@ func (s *Service) WatchQuotes(_ context.Context, consumer string, tokens []uint3
 			removed = append(removed, t)
 		}
 	}
-	s.live[c] = want
 	s.liveMu.Unlock()
 	sort.Slice(add, func(i, j int) bool { return add[i] < add[j] })
 
@@ -95,10 +94,14 @@ func (s *Service) WatchQuotes(_ context.Context, consumer string, tokens []uint3
 				toPoll = add
 				s.d.Log.Warn("quote subscription over budget; polling instead", "consumer", consumer, "tokens", len(add), "err", err)
 			default:
+				// The consumer's set is left as it was (no half-applied change): a retry computes the same additions.
 				return WatchResult{}, s.refuse(quotesStage, refused(quotesStage, "subscription_failed", err.Error()))
 			}
 		}
 	}
+	s.liveMu.Lock()
+	s.live[c] = want
+	s.liveMu.Unlock()
 
 	var deadline time.Time
 	if len(removed) > 0 {
@@ -147,10 +150,15 @@ func (s *Service) WatchQuotes(_ context.Context, consumer string, tokens []uint3
 	res.Snapshot = s.LastQuotes(ordered)
 
 	if len(removed) > 0 {
+		quit := s.quotesQuit()
 		linger := s.d.Clock.At(deadline)
 		logging.Go("service.quotes.linger", func() {
-			<-linger.C()
-			s.expireLinger(c, consumer, removed, deadline)
+			select {
+			case <-linger.C():
+				s.expireLinger(c, consumer, removed, deadline)
+			case <-quit: // RunQuotes ended (shutdown): keep the subscriptions, release the timer
+				linger.Stop()
+			}
 		})
 	}
 	return res, nil
@@ -188,7 +196,17 @@ func (s *Service) initPollLocked() {
 		s.polled = map[ticker.Consumer]map[uint32]bool{}
 		s.deferred = map[ticker.Consumer]map[uint32]bool{}
 		s.pending = map[ticker.Consumer]map[uint32]time.Time{}
+		s.closes = map[uint32]float64{}
+		s.quitQuotes = make(chan struct{})
 	}
+}
+
+// quotesQuit is closed when RunQuotes exits; pending linger goroutines end with it.
+func (s *Service) quotesQuit() <-chan struct{} {
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+	s.initPollLocked()
+	return s.quitQuotes
 }
 
 // RunQuotes polls the REST quote endpoints for polled tokens every QuotePollInterval and flushes the
@@ -201,6 +219,12 @@ func (s *Service) RunQuotes(ctx context.Context) {
 	defer func() {
 		poll.Stop()
 		flush.Stop()
+		s.quitOnce.Do(func() {
+			s.pollMu.Lock()
+			s.initPollLocked()
+			close(s.quitQuotes)
+			s.pollMu.Unlock()
+		})
 		s.flushQuoteCache(context.Background())
 	}()
 	for {
@@ -251,7 +275,11 @@ func (s *Service) pollQuotes(ctx context.Context) {
 		return
 	}
 	s.pollMu.Lock()
+	s.initPollLocked()
 	off := s.pollOff != "" && s.pollOff == st.SessionID
+	if s.closeSession != st.SessionID { // previous closes belong to the login (trading day) they were fetched in
+		s.closeSession, s.closes = st.SessionID, map[uint32]float64{}
+	}
 	s.pollMu.Unlock()
 	if off {
 		return // Kite refused quotes for this login: the UI keeps the last known values (FR-ACCT-007)
@@ -262,30 +290,35 @@ func (s *Service) pollQuotes(ctx context.Context) {
 	}
 	ids := make([]string, 0, len(tokens))
 	byID := map[string]uint32{}
+	var unknown []uint32
 	for _, t := range tokens {
 		in, ok := s.d.Instruments.ByToken(t)
 		if !ok {
+			unknown = append(unknown, t)
 			continue
 		}
 		id := in.Exchange + ":" + in.Tradingsymbol
 		ids = append(ids, id)
 		byID[id] = t
 	}
+	if len(unknown) > 0 {
+		s.d.Log.Debug("quote poll skips tokens missing from the instrument master", "count", len(unknown), "tokens", unknown[:min(len(unknown), 20)])
+	}
 	if len(ids) == 0 {
 		return
 	}
 	bg := ratelimit.WithPriority(ctx, quotePollPriority)
-	cached := map[uint32]TickDTO{}
-	for _, q := range s.LastQuotes(tokens) {
-		cached[q.Token] = q
-	}
-	closes := map[uint32]float64{}
+
+	// The previous close is fetched once per token per session; a cached (possibly restored) close is only
+	// the fallback while OHLC fails.
+	s.pollMu.Lock()
 	var needClose []string
 	for _, id := range ids {
-		if cached[byID[id]].Close <= 0 {
+		if s.closes[byID[id]] <= 0 {
 			needClose = append(needClose, id)
 		}
 	}
+	s.pollMu.Unlock()
 	for i := 0; i < len(needClose); i += ltpChunk {
 		end := min(i+ltpChunk, len(needClose))
 		q, err := s.d.Quotes.OHLC(bg, needClose[i:end]...)
@@ -293,23 +326,47 @@ func (s *Service) pollQuotes(ctx context.Context) {
 			if s.quotesRefused(st.SessionID, err) {
 				return
 			}
-			s.d.Log.Warn("quote OHLC poll failed", "err", err)
+			s.pollFailed(ctx, "quote OHLC poll failed", err)
 			break
 		}
-		for _, v := range q {
-			if v.OHLC.Close > 0 {
-				closes[uint32(v.InstrumentToken)] = v.OHLC.Close
+		s.pollMu.Lock()
+		if s.closeSession == st.SessionID {
+			for _, v := range q {
+				if v.OHLC.Close > 0 {
+					s.closes[uint32(v.InstrumentToken)] = v.OHLC.Close
+				}
 			}
 		}
+		s.pollMu.Unlock()
 	}
+	s.pollMu.Lock()
+	closes := make(map[uint32]float64, len(ids))
+	for _, t := range byID {
+		if c := s.closes[t]; c > 0 {
+			closes[t] = c
+		}
+	}
+	s.pollMu.Unlock()
+	cached := map[uint32]TickDTO{}
+	for _, q := range s.LastQuotes(tokens) {
+		cached[q.Token] = q
+	}
+
 	now := s.d.Clock.Now().UnixMilli()
 	var out []TickDTO
+	defer func() {
+		// Chunks that succeeded are published even when a later chunk failed.
+		if len(out) > 0 {
+			sort.Slice(out, func(i, j int) bool { return out[i].Token < out[j].Token })
+			bus.Publish(s.d.Bus, TopicPolledTicks, out)
+		}
+	}()
 	for i := 0; i < len(ids); i += ltpChunk {
 		end := min(i+ltpChunk, len(ids))
 		q, err := s.d.Quotes.LTP(bg, ids[i:end]...)
 		if err != nil {
 			if !s.quotesRefused(st.SessionID, err) {
-				s.d.Log.Warn("quote LTP poll failed", "err", err)
+				s.pollFailed(ctx, "quote LTP poll failed", err)
 			}
 			return
 		}
@@ -319,7 +376,7 @@ func (s *Service) pollQuotes(ctx context.Context) {
 			}
 			tok := uint32(v.InstrumentToken)
 			d := TickDTO{Token: tok, LTP: v.LastPrice, Close: closes[tok], TsMs: now, Polled: true}
-			if d.Close == 0 {
+			if d.Close <= 0 {
 				d.Close = cached[tok].Close
 			}
 			if d.Close > 0 {
@@ -329,10 +386,15 @@ func (s *Service) pollQuotes(ctx context.Context) {
 			out = append(out, d)
 		}
 	}
-	if len(out) > 0 {
-		sort.Slice(out, func(i, j int) bool { return out[i].Token < out[j].Token })
-		bus.Publish(s.d.Bus, TopicPolledTicks, out)
+}
+
+// pollFailed logs a poll failure at Warn unless the poll was cancelled (logout, shutdown).
+func (s *Service) pollFailed(ctx context.Context, msg string, err error) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		s.d.Log.Debug(msg, "err", err)
+		return
 	}
+	s.d.Log.Warn(msg, "err", err)
 }
 
 // quotesRefused stops polling for this login when Kite says the key has no market-data permission.

@@ -2,8 +2,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -249,5 +254,253 @@ func TestWatchQuotes_PollIsBackgroundAndSkipsZeroLTP(t *testing.T) {
 	defer fq.mu.Unlock()
 	if len(fq.prio) != 1 || fq.prio[0] == ratelimit.Interactive {
 		t.Fatalf("poll priority %v, want a background priority", fq.prio)
+	}
+}
+
+// Ruling 73 (1): the previous close comes from OHLC once per token per session; a restored Close is only a fallback.
+func TestWatchQuotes_PreviousCloseFetchedPerSession(t *testing.T) {
+	db := storetest.Open(t)
+	if err := store.NewWindowStateRepo(db).Set(context.Background(), QuoteCacheKey,
+		`{"1":{"token":1,"ltp":123,"close":120,"tsMs":1}}`); err != nil {
+		t.Fatal(err)
+	}
+	e := newSvcEnv(t)
+	fq := withQuotes(t, e)
+	e.svc.d.UiState = store.NewWindowStateRepo(db)
+	e.live.err = &ticker.ErrBudget{Used: 9000, Requested: 1, Limit: 9000}
+	if _, err := e.svc.WatchQuotes(context.Background(), "watchlist", []uint32{1}); err != nil {
+		t.Fatal(err)
+	}
+	sub := bus.Subscribe(e.bus, TopicPolledTicks, bus.SubOpts[[]TickDTO]{Name: "test.polled", Buffer: 8})
+	next := func() []TickDTO {
+		t.Helper()
+		select {
+		case got, ok := <-sub.C():
+			if !ok {
+				t.Fatal("bus closed")
+			}
+			return got
+		case <-time.After(3 * time.Second):
+			t.Fatal("no polled ticks")
+		}
+		return nil
+	}
+	e.svc.pollQuotes(context.Background())
+	if got := next(); len(got) != 1 || got[0].Close != 98 || got[0].Change != 2 || fq.count("ohlc") != 1 {
+		t.Fatalf("fresh close not used: %+v ohlc=%d", got, fq.count("ohlc"))
+	}
+	e.svc.pollQuotes(context.Background())
+	next()
+	if fq.count("ohlc") != 1 {
+		t.Fatal("OHLC fetched twice in one session")
+	}
+	e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanConnect, SessionID: "s2"})
+	e.svc.pollQuotes(context.Background())
+	next()
+	if fq.count("ohlc") != 2 {
+		t.Fatal("a new session must fetch the previous close again")
+	}
+	// OHLC without the token (the cache still holds the restored quote, no event forwarder runs here): the
+	// cached close is the fallback.
+	e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanConnect, SessionID: "s3"})
+	fq.mu.Lock()
+	fq.ohlc = nil
+	fq.mu.Unlock()
+	e.svc.pollQuotes(context.Background())
+	if got := next(); len(got) != 1 || got[0].Close != 120 || got[0].Change != -20 {
+		t.Fatalf("cached close fallback: %+v", got)
+	}
+}
+
+// Ruling 73 (2): a no-data-permission refusal stops polling for that login and resumes on the next one.
+func TestWatchQuotes_NoDataPermissionStopsPollingUntilNextLogin(t *testing.T) {
+	e := newSvcEnv(t)
+	fq := withQuotes(t, e)
+	fq.err = kite.APIError("PermissionException", 403, "Insufficient permission for that call.")
+	e.live.err = &ticker.ErrBudget{Used: 9000, Requested: 1, Limit: 9000}
+	if _, err := e.svc.WatchQuotes(context.Background(), "watchlist", []uint32{1}); err != nil {
+		t.Fatal(err)
+	}
+	calls := func() int { return fq.count("ohlc") + fq.count("ltp") }
+	e.svc.pollQuotes(context.Background())
+	if calls() != 1 {
+		t.Fatalf("calls %d after the refusal, want 1", calls())
+	}
+	e.svc.pollQuotes(context.Background())
+	e.svc.pollQuotes(context.Background())
+	if calls() != 1 {
+		t.Fatalf("kept polling after a permission refusal: %d calls", calls())
+	}
+	e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanConnect, SessionID: "s2"})
+	e.svc.pollQuotes(context.Background())
+	if calls() != 2 {
+		t.Fatalf("a new login must resume polling: %d calls", calls())
+	}
+}
+
+// Ruling 73 (3): remove → re-add → remove inside the linger window waits 30 s from the LAST removal.
+func TestWatchQuotes_LingerRestartsOnSecondRemoval(t *testing.T) {
+	e := newSvcEnv(t)
+	withQuotes(t, e)
+	ctx := context.Background()
+	watch := func(toks ...uint32) {
+		t.Helper()
+		if _, err := e.svc.WatchQuotes(ctx, "watchlist", toks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	watch(1, 2)
+	watch(2) // t0: 1 removed
+	e.clock.Advance(10 * time.Second)
+	watch(1, 2) // t0+10: re-added
+	e.clock.Advance(10 * time.Second)
+	watch(2) // t0+20: removed again
+	e.clock.Advance(10 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if !e.live.has(ticker.ConsumerWatchlist, 1) {
+		t.Fatal("unsubscribed at t0+30 s, only 10 s after the last removal")
+	}
+	e.clock.Advance(19 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if !e.live.has(ticker.ConsumerWatchlist, 1) {
+		t.Fatal("unsubscribed before t0+50 s")
+	}
+	e.clock.Advance(time.Second)
+	eventually(t, "token 1 unsubscribed at t0+50 s", func() bool { return !e.live.has(ticker.ConsumerWatchlist, 1) })
+}
+
+// Ruling 73 (4): a failed subscription leaves the consumer's set as it was, so a retry subscribes again.
+func TestWatchQuotes_SubscriptionFailedKeepsPreviousSet(t *testing.T) {
+	e := newSvcEnv(t)
+	withQuotes(t, e)
+	ctx := context.Background()
+	if _, err := e.svc.WatchQuotes(ctx, "watchlist", []uint32{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.live.err = errors.New("ticker write failed")
+	if _, err := e.svc.WatchQuotes(ctx, "watchlist", []uint32{2}); refusedCode(t, err) != "subscription_failed" {
+		t.Fatal(err)
+	}
+	e.live.err = nil
+	e.clock.Advance(UnsubscribeLinger + time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if !e.live.has(ticker.ConsumerWatchlist, 1) {
+		t.Fatal("a refused change must not schedule the old set's removal")
+	}
+	res, err := e.svc.WatchQuotes(ctx, "watchlist", []uint32{1, 2})
+	if err != nil || len(res.Live) != 2 || !e.live.has(ticker.ConsumerWatchlist, 2) {
+		t.Fatalf("retry did not subscribe token 2: %+v %v", res, err)
+	}
+}
+
+// Ruling 73 (5): pending linger goroutines end (and release their timers) when RunQuotes exits.
+func TestWatchQuotes_LingerStopsWithRunQuotes(t *testing.T) {
+	e := newSvcEnv(t)
+	withQuotes(t, e)
+	stop := runQuotes(t, e)
+	ctx := context.Background()
+	e.svc.WatchQuotes(ctx, "watchlist", []uint32{1})
+	e.svc.WatchQuotes(ctx, "widget", []uint32{2})
+	e.svc.WatchQuotes(ctx, "watchlist", nil)
+	e.svc.WatchQuotes(ctx, "widget", nil)
+	if n := e.clock.PendingTimers(); n != 4 {
+		t.Fatalf("pending timers %d, want 2 (RunQuotes) + 2 (linger)", n)
+	}
+	stop()
+	eventually(t, "linger timers released", func() bool { return e.clock.PendingTimers() == 0 })
+	if !e.live.has(ticker.ConsumerWatchlist, 1) {
+		t.Fatal("shutdown must not unsubscribe")
+	}
+}
+
+// chunkQuotes answers the first LTP chunk and fails the second one.
+type chunkQuotes struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (f *chunkQuotes) LTP(_ context.Context, ids ...string) (kite.QuoteLTP, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.calls > 1 {
+		return nil, f.err
+	}
+	m := map[string]map[string]any{}
+	for i, id := range ids {
+		m[id] = map[string]any{"instrument_token": 1000 + i, "last_price": 10}
+	}
+	raw, _ := json.Marshal(m)
+	var q kite.QuoteLTP
+	if err := json.Unmarshal(raw, &q); err != nil {
+		panic(err)
+	}
+	return q, nil
+}
+func (f *chunkQuotes) OHLC(context.Context, ...string) (kite.QuoteOHLC, error) { return nil, nil }
+
+// lockedBuf is a goroutine-safe log sink.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
+
+// Ruling 73 (9, 10): a failed LTP chunk still publishes the chunks that succeeded; a cancelled poll is not a
+// warning; tokens missing from the instrument master are logged at Debug.
+func TestWatchQuotes_PartialChunksAndLogging(t *testing.T) {
+	e := newSvcEnv(t)
+	var logs lockedBuf
+	e.svc.d.Log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	cq := &chunkQuotes{err: errors.New("network down")}
+	e.svc.d.Quotes = cq
+	toks := make([]uint32, 0, ltpChunk+2)
+	for i := 0; i < ltpChunk+1; i++ {
+		tok := uint32(1000 + i)
+		e.instr.m[tok] = instruments.Instrument{Token: tok, Exchange: "NSE", Tradingsymbol: fmt.Sprintf("S%04d", i)}
+		toks = append(toks, tok)
+	}
+	toks = append(toks, 99999) // not in the master
+	e.live.err = &ticker.ErrBudget{Used: 9000, Requested: 1, Limit: 9000}
+	if _, err := e.svc.WatchQuotes(context.Background(), "watchlist", toks); err != nil {
+		t.Fatal(err)
+	}
+	sub := bus.Subscribe(e.bus, TopicPolledTicks, bus.SubOpts[[]TickDTO]{Name: "test.polled", Buffer: 8})
+	e.svc.pollQuotes(context.Background())
+	select {
+	case got, ok := <-sub.C():
+		if !ok {
+			t.Fatal("bus closed")
+		}
+		if len(got) != ltpChunk {
+			t.Fatalf("published %d quotes, want the %d of the chunk that succeeded", len(got), ltpChunk)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the successful chunk was not published")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "quote LTP poll failed") {
+		t.Fatalf("a real failure must warn: %s", out)
+	}
+	if !strings.Contains(out, "level=DEBUG") || !strings.Contains(out, "99999") {
+		t.Fatalf("missing-token debug log absent: %s", out)
+	}
+
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cq.mu.Lock()
+	cq.calls, cq.err = 1, context.Canceled
+	cq.mu.Unlock()
+	before := strings.Count(logs.String(), "level=WARN")
+	e.svc.pollQuotes(cctx)
+	if after := strings.Count(logs.String(), "level=WARN"); after != before {
+		t.Fatalf("a cancelled poll logged a warning: %s", logs.String())
 	}
 }
