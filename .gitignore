@@ -10,3 +10,5 @@ frontend/dist/*
 !frontend/dist/.gitkeep
 frontend/package.json.md5
 go.work.sum
+frontend/playwright-report/
+frontend/test-results/
