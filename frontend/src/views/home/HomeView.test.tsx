@@ -81,7 +81,7 @@ describe('FR-HOME-002 Holdings summary card', () => {
     expect(calls()).toBe(start + 1);
     // Go publishes the post-fill holdings (here: RELIANCE 20 @ 100, LTP 110); the card shows them without a read.
     const filled = { ...holdingA, qty: 20, investedPaise: 200_000, currentPaise: 220_000, pnlPaise: 20_000, dayChangePaise: 10_000 };
-    await act(async () => { backend.emit('holdings.changed', holdingsOf([filled, holdingB], Date.now())); });
+    await act(async () => { backend.emit('holdings.changed', holdingsOf([filled, holdingB], FIXED_NOW)); });
     expect(within(c).getByText('₹3,150.00')).toBeInTheDocument();
     expect(calls()).toBe(start + 1);
   });
@@ -121,6 +121,7 @@ describe('FR-HOME-001 dashboard layout', () => {
   it('leaves the P0-5 watchlist slot inside the right column', async () => {
     renderApp();
     const right = await screen.findByRole('complementary', { name: 'Watchlists and widgets' });
-    expect(within(right).getByRole('region', { name: 'Watchlists' })).toBeInTheDocument();
+    // P0-5 Task 16 renames the slot's region to its panel ("Watchlist"); either name is the watchlist slot.
+    expect(within(right).getByRole('region', { name: /^Watchlists?$/ })).toBeInTheDocument();
   });
 });
