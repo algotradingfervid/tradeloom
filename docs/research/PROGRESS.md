@@ -38,4 +38,7 @@ Safety: read-only exploration — never save/copy/deploy/order/delete/change set
 - [x] USER APPROVED 2026-10-12: REQUIREMENTS v2.2 + ROADMAP. OQ-09 → Kite rejections only; OQ-45 → kill switch keeps GTT/SL.
 - [x] Indicator engine = in-house `ta/` (TA-Lib v0.8.1 port made in another session; verified here: 1,824 oracle tests pass);
   go-talib superseded. Git repo initialised (local main): commits docs baseline + ta + TA-Lib submodule (v0.8.1).
-- [ ] After approval: architecture spec, then Phase-0 implementation plan (writing-plans)
+- [x] Architecture spec docs/architecture/ARCHITECTURE.md (committed; versions verified on registries; Q-A1..3 decided by lead)
+- [~] Phase-0 plans (writing-plans): index docs/superpowers/plans/2026-10-12-p0-index.md; 5 sub-plans being written in
+  parallel (p0-1 platform core, p0-2 market data, p0-3 session/service, p0-4 frontend shell, p0-5 chart/watchlists+exit demo)
+- [ ] Cross-plan consistency review (interfaces Produces/Consumes) → fix → user review + execution method choice
