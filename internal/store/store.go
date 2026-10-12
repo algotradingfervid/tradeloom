@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"modernc.org/sqlite"
@@ -82,6 +83,9 @@ type DB struct {
 	path   string
 	schema int
 	now    func() time.Time
+
+	closeOnce sync.Once // Close runs once: a restore closes app.db before app.Boot.Shutdown does (P0-3 Task 23)
+	closeErr  error
 }
 
 func dsn(path string, readOnly bool) string {
@@ -292,9 +296,13 @@ func (db *DB) Path() string { return db.path }
 func (db *DB) SchemaVersion() int { return db.schema }
 
 // Close checkpoints the WAL into the main file and closes both pools (ARCHITECTURE §3.3 step 6).
+// It is idempotent: later calls return the first call's result.
 func (db *DB) Close() error {
-	_, cerr := db.W.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
-	rerr := db.R.Close()
-	werr := db.W.Close()
-	return errors.Join(cerr, rerr, werr)
+	db.closeOnce.Do(func() {
+		_, cerr := db.W.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+		rerr := db.R.Close()
+		werr := db.W.Close()
+		db.closeErr = errors.Join(cerr, rerr, werr)
+	})
+	return db.closeErr
 }

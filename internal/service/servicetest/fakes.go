@@ -28,6 +28,7 @@ type FakeSession struct {
 	LoginURL  string
 	RunBlock  chan struct{} // non-nil: Run keeps running after ctx is cancelled until RunBlock is closed (slow-exit tests)
 	completed []string
+	forwarded []string
 }
 
 func (f *FakeSession) Set(st kite.SessionState) { f.mu.Lock(); defer f.mu.Unlock(); f.St = st }
@@ -36,6 +37,19 @@ func (f *FakeSession) Completed() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.completed...)
+}
+
+// Forwarded lists the redirect URLs handed over by a second launch (CompleteForwardedLogin, Ruling 57).
+func (f *FakeSession) Forwarded() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.forwarded...)
+}
+func (f *FakeSession) CompleteForwardedLogin(_ context.Context, u string) (kite.SessionState, error) {
+	f.mu.Lock()
+	f.forwarded = append(f.forwarded, u)
+	f.mu.Unlock()
+	return f.State(), f.Err
 }
 func (f *FakeSession) CredentialsInfo() kite.CredentialsInfo {
 	return kite.CredentialsInfo{Port: 7420, RedirectURL: kite.RedirectURL(7420), SecretBackend: "memory"}

@@ -26,6 +26,7 @@ vendors:
   xtools:     { in: [golang.org/x/tools/go/packages] }
   websocket:  { in: [github.com/gorilla/websocket] }
   uuid:       { in: [github.com/google/uuid] }
+  godbus:     { in: [github.com/godbus/dbus/v5] }       # P0-3 Task 23: second-launch hand-off (Wails' Linux single-instance protocol)
 
 components:
   cmd:        { in: cmd/tradeloom }
@@ -60,19 +61,19 @@ components:
   orders:     { in: internal/orders }
   service:    { in: internal/service }                  # P0-3 Task 14: transport-neutral façade (§2.2, AD-09)
   servicetest: { in: internal/service/servicetest }     # P0-3 Task 22 test helper: no production component may depend on it
-  licences:   { in: internal/licences }                 # P0-3 Task 33: embedded THIRD_PARTY_NOTICES.md copy (leaf; wired by cmd in Task 23)
+  licences:   { in: internal/licences }                 # P0-3 Task 33: embedded THIRD_PARTY_NOTICES.md copy (leaf; wired by cmd)
 
 commonComponents:
   - logging
   - clock
 
 deps:
-  cmd:
-    mayDependOn: [frontend, app, store]
-    canUse: [wails]
+  cmd:        # P0-3 Task 23: the composition root wires P0-1, P0-2 and P0-3 (ARCH §3.2)
+    mayDependOn: [frontend, app, service, bus, settings, store, secrets, calendar, candles, candles_sqlite, candles_backfill, candles_builder, instruments, kite, ratelimit, ticker, feed, orders, licences]
+    canUse: [wails, uuid]
   app:
     mayDependOn: [bus, settings, store, secrets, service, api]   # P0-3 Task 22: lifecycle + event bridge over the façade
-    canUse: [wails]
+    canUse: [wails, godbus]
   api:        # P0-3 Task 22: bound structs reach the engine only through service (rule 7)
     mayDependOn: [service, settings]
   eventsgen:  # reads service.EventCatalogue() only (rule 7: app reaches the engine through service)

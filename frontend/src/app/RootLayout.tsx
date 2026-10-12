@@ -1,9 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useBackend } from '../api/BackendContext';
 import { bootstrap, startEventBridge } from '../api/events';
-import { Button } from '../components/Button';
-import { bootCopy } from '../i18n/copy';
 import { useAppStore } from '../store/app';
 import './shell.css';
 import { useTrackHistoryDepth } from '../store/nav';
@@ -13,8 +11,7 @@ export function RootLayout() {
   const backend = useBackend();
   const navigate = useNavigate();
   const navRef = useRef(navigate);
-  const [attempt, setAttempt] = useState(0);
-  const bootError = useAppStore((s) => s.bootError);
+  const attempt = useAppStore((s) => s.bootAttempt);
   useLayoutEffect(() => {
     navRef.current = navigate;
   });
@@ -28,13 +25,7 @@ export function RootLayout() {
   useTrackHistoryDepth();
   return (
     <>
-      {bootError && (
-        <div role="alert" className="boot-notice">
-          <span>{bootCopy.failed}</span>
-          <span className="boot-notice__reason">{bootError.reason}</span>
-          <Button onClick={() => setAttempt((n) => n + 1)}>{bootCopy.retry}</Button>
-        </div>
-      )}
+      {/* The boot-failure notice renders in the AppShell banner slot (BootNotice, ShellLayout). */}
       <Outlet />
       <ToastRegion />
     </>
