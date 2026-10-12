@@ -19,6 +19,7 @@ import (
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/logging"
 	"tradeloom/internal/orders"
+	"tradeloom/internal/secrets"
 	"tradeloom/internal/settings"
 	"tradeloom/internal/store"
 )
@@ -98,10 +99,11 @@ type CandleAdmin interface {
 	OpenJobs(ctx context.Context) ([]candles.Job, error)
 }
 
-// InstrumentRefresher is *instruments.Refresher (Task 30). Its Trigger method is used through an optional
-// interface after each new login (P0-2 Ruling 49).
+// InstrumentRefresher is *instruments.Refresher (Task 30): Refresh for the manual refresh, Trigger after
+// each new login (P0-2 Ruling 49; non-blocking, coalescing).
 type InstrumentRefresher interface {
 	Refresh(ctx context.Context) error
+	Trigger()
 }
 
 // liveChart is one open chart subscription (OpenLive).
@@ -141,6 +143,13 @@ type Deps struct {
 	ImportedAt      func() time.Time    // Master.ImportedAt
 	CloseForRestore func() error        // stops the platform and closes app.db before store.Restore
 	supportedSchema func() int          // store.SupportedSchema; tests override it
+
+	// Secret storage (Task 27, FR-ACCT-013).
+	Secrets      *SecretSwitch        // the Session's secrets.Store; swapped by setup, unlock and migration
+	SecretsFile  string               // Layout.SecretsFile
+	Detection    secrets.Detection    // Boot.Secrets
+	KeyringProbe func() error         // secrets.ProbeKeyringWithin(secrets.ProbeTimeout); nil = available
+	NewKeyring   func() secrets.Store // secrets.NewKeyring; tests inject a memory store
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.

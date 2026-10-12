@@ -197,3 +197,39 @@ func TestMigrate_SameStoreRejected(t *testing.T) {
 		t.Fatalf("secret lost: %q %v", v, err)
 	}
 }
+
+// readOnlyDir makes dir non-writable (os.Remove of its entries fails) until the test ends.
+func readOnlyDir(t *testing.T, dir string) {
+	t.Helper()
+	must(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	probe := filepath.Join(dir, "probe")
+	if err := os.WriteFile(probe, nil, 0o600); err == nil {
+		os.Remove(probe)
+		t.Skip("directory permissions are not enforced (running as root?)")
+	}
+}
+
+// Ruling 68 (1): when every key was copied and verified but the source file cannot be removed, Migrate
+// reports ErrSourceNotRemoved (checked with errors.Is), and the target keeps every secret.
+func TestMigrate_SourceNotRemoved_Sentinel(t *testing.T) {
+	fastKDF(t)
+	keyring.MockInit()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.enc")
+	f, err := CreateEncFile(path, []byte("passphrase-1"))
+	must(t, err)
+	must(t, f.Set(KeyAPISecret, "api-secret-1"))
+	readOnlyDir(t, dir)
+	kr := NewKeyring()
+	err = Migrate(f, kr)
+	if !errors.Is(err, ErrSourceNotRemoved) {
+		t.Fatalf("Migrate = %v, want ErrSourceNotRemoved", err)
+	}
+	if v, err := kr.Get(KeyAPISecret); err != nil || v != "api-secret-1" {
+		t.Fatalf("target after partial success %q %v", v, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("precondition: file should still exist")
+	}
+}

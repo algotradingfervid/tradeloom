@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"tradeloom/internal/bus"
@@ -84,6 +85,86 @@ type JobProgress struct {
 	ResultPath string `json:"resultPath"`
 }
 
+// Payload DTOs for the P0-2 shapes that carry time.Time / time.Duration: every timestamp is Unix ms
+// (0 = never/unset) and every duration is ms (Ruling 67, Global Constraints "no time.Time in a payload").
+
+// FeedStateDTO is ticker.FeedState for the UI (event feed.state).
+type FeedStateDTO struct {
+	State       string `json:"state"`
+	Attempt     int    `json:"attempt"`
+	NextRetryMs int64  `json:"nextRetryMs"`
+	LastTickMs  int64  `json:"lastTickMs"`
+	Connections int    `json:"connections"`
+	Tokens      int    `json:"tokens"`
+}
+
+// OffsetDTO is clock.Offset for the UI (event clock.offset).
+type OffsetDTO struct {
+	Millis      int64  `json:"millis"`
+	Source      string `json:"source"`
+	Samples     int    `json:"samples"`
+	Warn        bool   `json:"warn"`
+	Skewed      bool   `json:"skewed"`
+	UpdatedAtMs int64  `json:"updatedAtMs"`
+}
+
+// ClassUsageDTO is ratelimit.ClassUsage for the UI.
+type ClassUsageDTO struct {
+	Class          string                       `json:"class"`
+	RatePerSec     int                          `json:"ratePerSec"`
+	Queued         [ratelimit.NumPriorities]int `json:"queued"` // by priority
+	HTTP429        int64                        `json:"http429"`
+	BackoffUntilMs int64                        `json:"backoffUntilMs"`
+}
+
+// UsageDTO is ratelimit.Usage for the UI (event limits.usage).
+type UsageDTO struct {
+	AtMs        int64           `json:"atMs"`
+	Paused      bool            `json:"paused"`
+	PauseReason string          `json:"pauseReason"`
+	Classes     []ClassUsageDTO `json:"classes"`
+}
+
+// BackfillProgressDTO is backfill.Progress for the UI (event backfill.progress); the ETA is in ms.
+type BackfillProgressDTO struct {
+	JobID    string `json:"jobId"`
+	Token    uint32 `json:"token"`
+	Interval string `json:"interval"`
+	Done     int    `json:"done"`
+	Failed   int    `json:"failed"`
+	Total    int    `json:"total"`
+	ETAMs    int64  `json:"etaMs"`
+	State    string `json:"state"`
+}
+
+// unixMs is t in Unix ms, 0 for the zero time.
+func unixMs(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
+func FeedStateDTOFrom(v ticker.FeedState) FeedStateDTO {
+	return FeedStateDTO{State: v.State, Attempt: v.Attempt, NextRetryMs: unixMs(v.NextRetry), LastTickMs: unixMs(v.LastTick), Connections: v.Connections, Tokens: v.Tokens}
+}
+
+func OffsetDTOFrom(v clock.Offset) OffsetDTO {
+	return OffsetDTO{Millis: v.Millis, Source: string(v.Source), Samples: v.Samples, Warn: v.Warn, Skewed: v.Skewed, UpdatedAtMs: unixMs(v.UpdatedAt)}
+}
+
+func UsageDTOFrom(v ratelimit.Usage) UsageDTO {
+	out := UsageDTO{AtMs: unixMs(v.At), Paused: v.Paused, PauseReason: v.PauseReason, Classes: make([]ClassUsageDTO, 0, len(v.Classes))}
+	for _, c := range v.Classes {
+		out.Classes = append(out.Classes, ClassUsageDTO{Class: c.Class, RatePerSec: c.RatePerSec, Queued: c.Queued, HTTP429: c.HTTP429, BackoffUntilMs: unixMs(c.BackoffUntil)})
+	}
+	return out
+}
+
+func BackfillProgressDTOFrom(v backfill.Progress) BackfillProgressDTO {
+	return BackfillProgressDTO{JobID: v.JobID, Token: v.Token, Interval: v.Interval, Done: v.Done, Failed: v.Failed, Total: v.Total, ETAMs: v.ETA.Milliseconds(), State: v.State}
+}
+
 // Navigate asks the UI router to show a route (a second launch with --view <route>).
 type Navigate struct {
 	Route string `json:"route"`
@@ -101,16 +182,18 @@ var (
 func EventCatalogue() []EventSpec {
 	return []EventSpec{
 		{EvSessionState, reflect.TypeOf(SessionStatus{}), true},
-		{EvFeedState, reflect.TypeOf(ticker.FeedState{}), false},
+		{EvFeedState, reflect.TypeOf(FeedStateDTO{}), false},
 		{EvTickBatch, reflect.TypeOf([]TickDTO{}), false},
 		{EvCandleForming, reflect.TypeOf([]CandleEventDTO{}), false},
 		{EvCandleClosed, reflect.TypeOf(CandleEventDTO{}), true},
-		{EvClockOffset, reflect.TypeOf(clock.Offset{}), false},
-		{EvBackfillProgress, reflect.TypeOf([]backfill.Progress{}), false},
-		{EvLimitsUsage, reflect.TypeOf(ratelimit.Usage{}), false},
+		{EvClockOffset, reflect.TypeOf(OffsetDTO{}), false},
+		{EvBackfillProgress, reflect.TypeOf([]BackfillProgressDTO{}), false},
+		{EvLimitsUsage, reflect.TypeOf(UsageDTO{}), false},
 		{EvOrdersChanged, reflect.TypeOf(orders.BookSnapshot{}), false},
 		{EvPositionsChanged, reflect.TypeOf(orders.PositionsSnapshot{}), false},
 		{EvHoldingsChanged, reflect.TypeOf(orders.HoldingsSnapshot{}), false},
+		// order.update is a notification (FR-ORD-014: show the change at once); orders.changed is the truth.
+		// A dropped update triggers an order-book refresh, so the UI must rebuild state from orders.changed.
 		{EvOrderUpdate, reflect.TypeOf(kite.Order{}), true},
 		{EvWatchlistsChanged, reflect.TypeOf(WatchlistsState{}), true},
 		{EvSettingsChanged, reflect.TypeOf(settings.Changed{}), true},
@@ -126,17 +209,17 @@ func (s *Service) EventSources() []EventSource {
 		// kite.Session publishes outside its lock, so payloads can arrive out of order (Rulings 59, 61):
 		// the event is a wake-up and the bridge forwards the authoritative Session.State().
 		forwardNow(s, kite.TopicSessionState, func(kite.SessionState) any { return s.statusFrom(s.d.Session.State()) }),
-		forwardLatest(s, ticker.TopicFeed, func(v ticker.FeedState) any { s.rememberFeed(v); return v }),
+		forwardLatest(s, ticker.TopicFeed, func(v ticker.FeedState) any { s.rememberFeed(v); return FeedStateDTOFrom(v) }),
 		forwardTicks(s),
 		forwardKeyed(s, builder.TopicForming, func(e builder.Event) string { return fmt.Sprintf("%d|%s", e.Token, e.Interval) }, CandleEventFrom),
 		forwardNow(s, builder.TopicClosed, func(e builder.Event) any { return CandleEventFrom(e) }),
-		forwardLatest(s, clock.TopicOffset, func(v clock.Offset) any { return v }),
-		forwardKeyed(s, backfill.TopicProgress, func(p backfill.Progress) string { return p.JobID }, func(p backfill.Progress) backfill.Progress { return p }),
-		forwardLatest(s, ratelimit.TopicUsage, func(v ratelimit.Usage) any { return v }),
+		forwardLatest(s, clock.TopicOffset, func(v clock.Offset) any { return OffsetDTOFrom(v) }),
+		forwardKeyed(s, backfill.TopicProgress, func(p backfill.Progress) string { return p.JobID }, BackfillProgressDTOFrom),
+		forwardLatest(s, ratelimit.TopicUsage, func(v ratelimit.Usage) any { return UsageDTOFrom(v) }),
 		forwardLatest(s, orders.TopicBook, func(v orders.BookSnapshot) any { return v }),
 		forwardLatest(s, orders.TopicPositions, func(v orders.PositionsSnapshot) any { return v }),
 		forwardLatest(s, orders.TopicHoldings, func(v orders.HoldingsSnapshot) any { return v }),
-		forwardNow(s, kite.TopicOrderUpdate, func(o kite.Order) any { return o }),
+		forwardOrderUpdates(s),
 		forwardNow(s, TopicWatchlists, func(v WatchlistsState) any { return v }),
 		forwardNow(s, settings.Topic, func(v settings.Changed) any { return v }),
 		marketStatusSource(s),
@@ -156,6 +239,13 @@ func timerC(t clock.Timer) <-chan time.Time {
 // forward is the coalescing core: immediate topics emit every value; others accumulate for CoalesceWindow.
 // A closed subscription channel (bus closed) ends the source.
 func forward[T any, A any](s *Service, t bus.Topic[T], immediate bool, empty func() A, add func(A, T) A, flush func(A) any) EventSource {
+	return forwardWatch(s, t, immediate, empty, add, flush, nil)
+}
+
+// forwardWatch is forward with an optional hook that runs after every receive with the subscription
+// (order.update uses it to detect drops).
+func forwardWatch[T any, A any](s *Service, t bus.Topic[T], immediate bool, empty func() A, add func(A, T) A, flush func(A) any,
+	onRecv func(ctx context.Context, sub *bus.Sub[T])) EventSource {
 	name := t.Name()
 	return EventSource{Name: name, Start: func(ctx context.Context, emit Emit) {
 		sub := bus.Subscribe(s.d.Bus, t, bus.SubOpts[T]{Name: "events." + name, Buffer: 256})
@@ -176,6 +266,9 @@ func forward[T any, A any](s *Service, t bus.Topic[T], immediate bool, empty fun
 					if !ok {
 						return
 					}
+					if onRecv != nil {
+						onRecv(ctx, sub)
+					}
 					if immediate {
 						emit(name, flush(add(empty(), v)))
 						continue
@@ -194,6 +287,35 @@ func forward[T any, A any](s *Service, t bus.Topic[T], immediate bool, empty fun
 			}
 		})
 	}}
+}
+
+// forwardOrderUpdates forwards kite.TopicOrderUpdate unchanged and at once. Order updates cannot be
+// re-read, so after each receive it compares the subscription's drop counter: on an increase it logs
+// the number lost and refreshes the order book (one refresh at a time), whose orders.changed snapshot
+// is the source of truth for the UI.
+func forwardOrderUpdates(s *Service) EventSource {
+	var (
+		seen       uint64
+		refreshing atomic.Bool
+	)
+	return forwardWatch(s, kite.TopicOrderUpdate, true, zero[kite.Order], latest[kite.Order], func(o kite.Order) any { return o },
+		func(ctx context.Context, sub *bus.Sub[kite.Order]) {
+			d := sub.Drops()
+			if d <= seen {
+				return
+			}
+			s.d.Log.Warn("order updates dropped; refreshing the order book", "dropped", d-seen)
+			seen = d
+			if !refreshing.CompareAndSwap(false, true) {
+				return
+			}
+			logging.Go("events.order.update.refresh", func() {
+				defer refreshing.Store(false)
+				if err := s.d.Orders.Refresh(ctx, orders.ScopeOrders); err != nil {
+					s.d.Log.Warn("order book refresh after dropped updates failed", "err", err)
+				}
+			})
+		})
 }
 
 func latest[T any](_ T, v T) T { return v }
@@ -249,10 +371,15 @@ func forwardTicks(s *Service) EventSource {
 				}
 			}()
 			add := func(d TickDTO) {
-				if _, ok := acc.m[d.Token]; !ok {
+				prev, ok := acc.m[d.Token]
+				if !ok {
 					acc.order = append(acc.order, d.Token)
 				}
-				acc.m[d.Token] = d
+				// Live and polled quotes of one token in one window: the newer quote (higher TsMs) wins;
+				// on a tie the later arrival does.
+				if !ok || d.TsMs >= prev.TsMs {
+					acc.m[d.Token] = d
+				}
 				if fire == nil {
 					fire = s.d.Clock.At(s.d.Clock.Now().Add(CoalesceWindow))
 				}
@@ -353,21 +480,25 @@ func (s *Service) marketStatusAt(now time.Time) MarketStatus {
 	return st
 }
 
-// nextMarketBoundary is the next instant the phase can change: the current phase's end, else the start of the
-// first phase of the next day that has one (up to 10 days ahead), capped by marketPoll.
+// nextMarketBoundary is the next instant the phase can change: the earliest of the current phase's end and
+// the first phase start after now, scanning today first and then up to 10 later days; capped by marketPoll.
 func (s *Service) nextMarketBoundary(now time.Time) time.Time {
-	next := now.Add(marketPoll)
-	ph, _ := s.d.Calendar.PhaseAt(calendar.NSE, now)
-	boundary := ph.End
-	if !boundary.After(now) {
-		d := calendar.DateOf(now)
-		for i := 1; i <= 10 && !boundary.After(now); i++ {
-			if day := s.d.Calendar.Day(calendar.NSE, d.AddDays(i)); len(day.Phases) > 0 {
-				boundary = day.Phases[0].Start
-			}
+	var boundary time.Time
+	consider := func(t time.Time) {
+		if t.After(now) && (boundary.IsZero() || t.Before(boundary)) {
+			boundary = t
 		}
 	}
-	if boundary.After(now) && boundary.Before(next) {
+	ph, _ := s.d.Calendar.PhaseAt(calendar.NSE, now)
+	consider(ph.End)
+	d := calendar.DateOf(now)
+	for i := 0; i <= 10 && boundary.IsZero(); i++ {
+		for _, p := range s.d.Calendar.Day(calendar.NSE, d.AddDays(i)).Phases {
+			consider(p.Start)
+		}
+	}
+	next := now.Add(marketPoll)
+	if !boundary.IsZero() && boundary.Before(next) {
 		next = boundary
 	}
 	return next
@@ -414,7 +545,7 @@ func marketStatusSource(s *Service) EventSource {
 // Navigate asks the UI to show an in-app route (app.navigate). Anything that is not a route is ignored.
 func (s *Service) Navigate(route string) {
 	route = strings.TrimSpace(route)
-	if !strings.HasPrefix(route, "/") || strings.ContainsAny(route, " \t\r\n") {
+	if err := settings.ValidateRoute(route); err != nil {
 		// The rejected value comes from argv (it may be a pasted URL): log only its length.
 		s.d.Log.Warn("navigation request ignored", "len", len(route))
 		return

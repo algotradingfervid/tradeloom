@@ -8,6 +8,14 @@ export interface kite_CredentialsInfo {
   secretBackend: string;
 }
 
+export interface service_SecretStorageInfo {
+  mode: string;
+  backend: string;
+  keyringAvailable: boolean;
+  fileExists: boolean;
+  choices: Array<string> | null;
+}
+
 export interface service_SessionStatus {
   state: string;
   sessionId: string;
@@ -20,13 +28,14 @@ export interface service_SessionStatus {
   errorCode: string;
   errorMessage: string;
   credentials: kite_CredentialsInfo;
+  secrets: service_SecretStorageInfo;
 }
 
-export interface ticker_FeedState {
+export interface service_FeedStateDTO {
   state: string;
   attempt: number;
-  nextRetry: string;
-  lastTick: string;
+  nextRetryMs: number;
+  lastTickMs: number;
   connections: number;
   tokens: number;
 }
@@ -60,39 +69,39 @@ export interface service_CandleEventDTO {
   partial: boolean;
 }
 
-export interface clock_Offset {
+export interface service_OffsetDTO {
   millis: number;
   source: string;
   samples: number;
   warn: boolean;
   skewed: boolean;
-  updatedAt: string;
+  updatedAtMs: number;
 }
 
-export interface backfill_Progress {
+export interface service_BackfillProgressDTO {
   jobId: string;
   token: number;
   interval: string;
   done: number;
   failed: number;
   total: number;
-  etaNs: number;
+  etaMs: number;
   state: string;
 }
 
-export interface ratelimit_ClassUsage {
+export interface service_ClassUsageDTO {
   class: string;
   ratePerSec: number;
   queued: Array<number>;
   http429: number;
-  backoffUntil: string;
+  backoffUntilMs: number;
 }
 
-export interface ratelimit_Usage {
-  at: string;
+export interface service_UsageDTO {
+  atMs: number;
   paused: boolean;
   pauseReason: string;
-  classes: Array<ratelimit_ClassUsage>;
+  classes: Array<service_ClassUsageDTO> | null;
 }
 
 export interface orders_OrderRow {
@@ -126,7 +135,7 @@ export interface orders_SectionCounts {
 }
 
 export interface orders_BookSnapshot {
-  orders: Array<orders_OrderRow>;
+  orders: Array<orders_OrderRow> | null;
   counts: orders_SectionCounts;
   outOfScopeCount: number;
   asOfMs: number;
@@ -150,8 +159,8 @@ export interface orders_PositionRow {
 }
 
 export interface orders_PositionsSnapshot {
-  net: Array<orders_PositionRow>;
-  day: Array<orders_PositionRow>;
+  net: Array<orders_PositionRow> | null;
+  day: Array<orders_PositionRow> | null;
   netTotalPnlPaise: number;
   dayTotalPnlPaise: number;
   outOfScopeCount: number;
@@ -187,7 +196,7 @@ export interface orders_HoldingsSummary {
 }
 
 export interface orders_HoldingsSnapshot {
-  rows: Array<orders_HoldingRow>;
+  rows: Array<orders_HoldingRow> | null;
   summary: orders_HoldingsSummary;
   asOfMs: number;
   stale: boolean;
@@ -207,7 +216,7 @@ export interface kite_Order {
   exchange_timestamp: string;
   variety: string;
   modified: boolean;
-  meta: Record<string, unknown>;
+  meta: Record<string, unknown> | null;
   exchange: string;
   tradingsymbol: string;
   instrument_token: number;
@@ -227,7 +236,7 @@ export interface kite_Order {
   auction_number: string;
   market_protection: number;
   tag: string;
-  tags: Array<string>;
+  tags: Array<string> | null;
   guid: string;
 }
 
@@ -244,11 +253,11 @@ export interface service_WatchlistItem {
 export interface service_Watchlist {
   id: string;
   name: string;
-  items: Array<service_WatchlistItem>;
+  items: Array<service_WatchlistItem> | null;
 }
 
 export interface service_WatchlistsState {
-  lists: Array<service_Watchlist>;
+  lists: Array<service_Watchlist> | null;
   activeId: string;
 }
 
@@ -303,13 +312,13 @@ export const EventNames = {
 
 export interface EventPayloads {
   "session.state": service_SessionStatus;
-  "feed.state": ticker_FeedState;
-  "tick.batch": Array<service_TickDTO>;
-  "candle.forming": Array<service_CandleEventDTO>;
+  "feed.state": service_FeedStateDTO;
+  "tick.batch": Array<service_TickDTO> | null;
+  "candle.forming": Array<service_CandleEventDTO> | null;
   "candle.closed": service_CandleEventDTO;
-  "clock.offset": clock_Offset;
-  "backfill.progress": Array<backfill_Progress>;
-  "limits.usage": ratelimit_Usage;
+  "clock.offset": service_OffsetDTO;
+  "backfill.progress": Array<service_BackfillProgressDTO> | null;
+  "limits.usage": service_UsageDTO;
   "orders.changed": orders_BookSnapshot;
   "positions.changed": orders_PositionsSnapshot;
   "holdings.changed": orders_HoldingsSnapshot;
