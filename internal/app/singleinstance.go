@@ -53,8 +53,16 @@ func ForwardToRunningInstance(uniqueID string, args []string, workDir string) er
 // SecondInstance is options.SingleInstanceLock.OnSecondInstanceLaunch: focus; route a Kite redirect to the
 // login (callback rule: the current attempt's state nonce is required, Ruling 57); "--view <route>" asks
 // the UI router to show that route (app.navigate).
+// Wails calls it on its own goroutine, so a panic here is recorded as a crash report (Ruling 89 M2); a
+// launch that arrives before Startup installed the runtime is logged and ignored.
 func (a *App) SecondInstance(data options.SecondInstanceData) {
-	a.runtime().Focus()
+	defer logging.Recover("app.secondinstance")
+	rt := a.runtime()
+	if rt.Focus == nil {
+		a.d.Log.Warn("second launch arrived before the window runtime was ready; ignored", "args", len(data.Args))
+		return
+	}
+	rt.Focus()
 	for i, arg := range data.Args {
 		if strings.Contains(arg, "request_token=") {
 			ctx := a.context()

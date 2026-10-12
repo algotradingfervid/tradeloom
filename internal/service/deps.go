@@ -32,7 +32,7 @@ type SessionAPI interface {
 	SetRedirectPort(port int) (kite.CredentialsInfo, error)
 	BeginLogin(ctx context.Context) (kite.LoginStart, error)
 	CompleteLogin(ctx context.Context, pasted string) (kite.SessionState, error)
-	CompleteForwardedRedirect(ctx context.Context, redirectURL string) (kite.SessionState, error) // Ruling 57 (Task 23)
+	CompleteForwardedLogin(ctx context.Context, redirectURL string) (kite.SessionState, error) // Ruling 57 (Task 23)
 	CancelLogin() kite.SessionState
 	Logout(ctx context.Context) (kite.LogoutResult, error)
 	AckRisk(ctx context.Context) (kite.SessionState, error)

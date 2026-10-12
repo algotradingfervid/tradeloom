@@ -22,7 +22,7 @@ func TestLogin_ForwardedRedirect_RequiresCurrentState(t *testing.T) {
 	}
 	base := ls.RedirectURL + "?request_token=rtok12345678&action=login&status=success"
 	for _, u := range []string{base, base + "&state=forgedstate", "rtok12345678"} {
-		_, err := e.sess.CompleteForwardedRedirect(context.Background(), u)
+		_, err := e.sess.CompleteForwardedLogin(context.Background(), u)
 		var le *LoginError
 		if !errors.As(err, &le) || le.Code != CodeStateMismatch {
 			t.Fatalf("%q: err %v", u, err)
@@ -32,12 +32,12 @@ func TestLogin_ForwardedRedirect_RequiresCurrentState(t *testing.T) {
 		t.Fatalf("exchanged %d, state %s", e.auth.exchangeCount(), e.sess.State().State)
 	}
 	good := base + "&state=" + stateFrom(t, ls.LoginURL)
-	st, err := e.sess.CompleteForwardedRedirect(context.Background(), good)
+	st, err := e.sess.CompleteForwardedLogin(context.Background(), good)
 	if err != nil || st.State != StateReady {
 		t.Fatalf("state %+v err %v", st, err)
 	}
 	// A repeated hand-off of the same URL (the user launched the link twice) does not exchange again.
-	if _, err := e.sess.CompleteForwardedRedirect(context.Background(), good); err != nil || e.auth.exchangeCount() != 1 {
+	if _, err := e.sess.CompleteForwardedLogin(context.Background(), good); err != nil || e.auth.exchangeCount() != 1 {
 		t.Fatalf("repeat: err %v, exchanged %d", err, e.auth.exchangeCount())
 	}
 	if strings.Contains(e.logs.String(), "rtok12345678") {

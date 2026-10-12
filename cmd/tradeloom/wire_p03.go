@@ -214,9 +214,8 @@ func wireP03(p *p03Platform) *app.App {
 		Settings: boot.Settings, Secrets: p.Secrets, Repo: store.NewSessionsRepo(boot.DB), Clock: p.Clock, Bus: boot.Bus,
 		Auth:     kite.NewAuth(nil, ""), // nil: 10 s client on the NFR-04 allow-list transport
 		Profiles: p.Kite, Tokens: p.Kite, Limiter: p.Limiter, Feed: p.Feed,
-		Probe:    kite.NewCapabilityProbe(p.Kite, p.Clock, nil, p.Log.With("component", "kite.probe")),
-		Log:      p.Log.With("component", "kite.session"),
-		NewID:    newID,
+		Probe: kite.NewCapabilityProbe(p.Kite, p.Clock, nil, p.Log.With("component", "kite.probe")),
+		Log:   p.Log.With("component", "kite.session"), // NewID: NewSession's uuid v7 default (Ruling 89 M8)
 	})
 	p.Relay.Set(sess.HandleTokenError)
 	portfolio := orders.NewSync(orders.SyncDeps{Read: p.Kite, Cache: store.NewOrdersCacheRepo(boot.DB), Bus: boot.Bus, Clock: p.Clock,

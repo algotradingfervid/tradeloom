@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
-	"syscall"
 
 	"github.com/wailsapp/wails/v2"
 
@@ -19,6 +19,9 @@ import (
 	"tradeloom/internal/store"
 )
 
+// goos is runtime.GOOS; tests override it to exercise the non-Linux second launch.
+var goos = runtime.GOOS
+
 // exitRestart asks main to re-exec the binary (a finished restore, FR-DATA-005).
 const exitRestart = 3
 
@@ -27,7 +30,7 @@ func main() {
 	if code == exitRestart {
 		exe, err := os.Executable()
 		if err == nil {
-			err = syscall.Exec(exe, os.Args, os.Environ()) // returns only on failure
+			err = app.ReExec(exe, os.Args, os.Environ()) // returns only on failure
 		}
 		fmt.Fprintln(os.Stderr, "tradeloom: restart failed:", err)
 		code = 1
@@ -58,6 +61,11 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	if errors.Is(err, store.ErrLocked) {
 		// ARCH §3.7: the flock inside app.Start is authoritative and was taken before any log or app.db
 		// access. Hand the arguments (deep link, focus) to the running instance over Wails' D-Bus protocol.
+		// That protocol is Linux-only; elsewhere the second launch just says so (Ruling 89 M6).
+		if goos != "linux" {
+			fmt.Fprintln(stderr, app.ExitMessage(dataDir, err))
+			return 1
+		}
 		wd, _ := os.Getwd()
 		if ferr := app.ForwardToRunningInstance(app.UniqueID(dataDir), args, wd); ferr != nil {
 			fmt.Fprintf(stderr, "%s: %v\n", app.ExitMessage(dataDir, err), ferr)

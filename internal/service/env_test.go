@@ -54,7 +54,7 @@ func (f *fakeSession) CompleteLogin(_ context.Context, p string) (kite.SessionSt
 	f.mu.Unlock()
 	return f.State(), f.err
 }
-func (f *fakeSession) CompleteForwardedRedirect(_ context.Context, u string) (kite.SessionState, error) {
+func (f *fakeSession) CompleteForwardedLogin(_ context.Context, u string) (kite.SessionState, error) {
 	f.mu.Lock()
 	f.forwarded = append(f.forwarded, u)
 	f.mu.Unlock()

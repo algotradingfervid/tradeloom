@@ -111,6 +111,6 @@ func (s *Service) CloseAllLive(ctx context.Context) int {
 // (internal/app.SecondInstance). It follows the loopback callback rule, not the paste rule (Ruling 57):
 // the URL must carry the state nonce of the current login attempt.
 func (s *Service) CompleteForwardedLogin(ctx context.Context, redirectURL string) (SessionStatus, error) {
-	st, err := s.d.Session.CompleteForwardedRedirect(ctx, redirectURL)
+	st, err := s.d.Session.CompleteForwardedLogin(ctx, redirectURL)
 	return s.statusFrom(st), s.refuse("login", err)
 }

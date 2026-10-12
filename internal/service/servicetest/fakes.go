@@ -38,13 +38,14 @@ func (f *FakeSession) Completed() []string {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.completed...)
 }
-// Forwarded lists the redirect URLs handed over by a second launch (CompleteForwardedRedirect, Ruling 57).
+
+// Forwarded lists the redirect URLs handed over by a second launch (CompleteForwardedLogin, Ruling 57).
 func (f *FakeSession) Forwarded() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.forwarded...)
 }
-func (f *FakeSession) CompleteForwardedRedirect(_ context.Context, u string) (kite.SessionState, error) {
+func (f *FakeSession) CompleteForwardedLogin(_ context.Context, u string) (kite.SessionState, error) {
 	f.mu.Lock()
 	f.forwarded = append(f.forwarded, u)
 	f.mu.Unlock()

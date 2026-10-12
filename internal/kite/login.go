@@ -250,11 +250,11 @@ func (s *Session) CompleteLogin(ctx context.Context, pasted string) (SessionStat
 	return s.exchange(ctx, red.RequestToken, "")
 }
 
-// CompleteForwardedRedirect completes a login from a Kite redirect URL that a second launch handed over
+// CompleteForwardedLogin completes a login from a Kite redirect URL that a second launch handed over
 // (argv, internal/app.SecondInstance). Unlike CompleteLogin it is not an explicit paste, so it follows the
 // loopback callback rule (Rulings 36, 57): the URL must carry the state nonce of the current login attempt;
 // once that attempt succeeded only the request token it exchanged is accepted (a repeat is a no-op).
-func (s *Session) CompleteForwardedRedirect(ctx context.Context, raw string) (SessionState, error) {
+func (s *Session) CompleteForwardedLogin(ctx context.Context, raw string) (SessionState, error) {
 	red, err := ParseRedirect(raw)
 	if err != nil {
 		return s.State(), safeRedirectError(err)
