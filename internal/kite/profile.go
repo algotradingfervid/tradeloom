@@ -34,14 +34,24 @@ func ProfileFrom(p kiteconnect.UserProfile) Profile {
 	return Profile{
 		UserID: p.UserID, Name: p.UserName, ShortName: p.UserShortName, Email: p.Email, Broker: broker,
 		AvatarURL: allowedAvatar(p.AvatarURL), Initials: initials(p.UserName),
-		Exchanges: append([]string(nil), p.Exchanges...), Products: append([]string(nil), p.Products...),
-		OrderTypes: append([]string(nil), p.OrderTypes...),
+		Exchanges: copyStrings(p.Exchanges), Products: copyStrings(p.Products),
+		OrderTypes: copyStrings(p.OrderTypes),
 	}
 }
 
 // LogValue keeps PII out of logs if a Profile is ever logged.
 func (p Profile) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("user", MaskUserID(p.UserID)))
+}
+
+// String keeps PII out of %v / %s formatting; it matches LogValue.
+func (p Profile) String() string { return "Profile{user=" + MaskUserID(p.UserID) + "}" }
+
+// copyStrings copies in so JSON encodes a nil list as [] and never null.
+func copyStrings(in []string) []string {
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 func allowedAvatar(raw string) string {
