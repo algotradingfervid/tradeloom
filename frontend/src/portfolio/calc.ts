@@ -2,10 +2,18 @@ import type { HoldingRow, HoldingsSummary, PositionRow, TickDTO } from '../api/b
 
 /** Go sends money as integer paise (AD-04); the view layer works in rupees. Sums are always taken in paise. */
 export const rupees = (paise: number): number => paise / 100;
-/** Same rounding as Go `orders.Paise` for the non-negative prices the UI converts. */
-export const toPaise = (r: number): number => Math.round(r * 100);
+/** Same rounding as Go `orders.Paise` (`math.Round`: half away from zero); never returns -0. */
+export const toPaise = (r: number): number => {
+  const p = Math.sign(r) * Math.round(Math.abs(r * 100));
+  return p === 0 ? 0 : p;
+};
 
-/** num/den in basis points, rounded like Go `orders.RatioBp`; null when there is no base. */
+/**
+ * num/den in basis points, rounded like Go `orders.RatioBp`, then as a percentage. Deliberate divergence from Go:
+ * with no base (den ≤ 0) Go returns 0 bp, which would render as "+0.00%"; the UI returns null so the cell shows "—"
+ * (FR-SHELL-016: missing values never render as 0.00). The UI recomputes from paise rather than reading Go's `…Bp`
+ * fields only because a live LTP changes the numerator.
+ */
 function ratioPct(num: number, den: number): number | null {
   if (den <= 0) return null;
   const bp = Math.sign(num) * Math.round(Math.abs(num * 10_000) / den);

@@ -109,7 +109,17 @@ describe('FR-ORD-003 Holdings view', () => {
     expect(totals).toHaveTextContent('₹72,000.00');
     expect(totals).toHaveTextContent('₹73,050.00');
   });
-  it('order.update is a notification only: it announces the fill and does not re-read (P0-3 Ruling 71)', async () => {
+  it('Ruling 96 I2: the "View only" flag is never clipped by the name truncation and is in the cell title', async () => {
+    const backend = createMockBackend({ ...demoSeed(), holdings: holdingsOf([holdingA, goldm]) });
+    renderApp({ route: '/holdings', backend });
+    const row = await screen.findByRole('row', { name: 'GOLDM' });
+    const flag = within(row).getByText('View only');
+    expect(flag.closest('.cell-truncate')).toBeNull();
+    expect(row.querySelector('[title="GOLDM · View only"]')).not.toBeNull();
+    expect(within(row).getByText('GOLDM')).toHaveClass('instrument__name');
+    expect(within(screen.getByRole('row', { name: 'RELIANCE' })).getByText('RELIANCE').closest('[title="RELIANCE"]')).not.toBeNull();
+  });
+  it('order.update only toasts its terminal status ("Order RELIANCE: Complete") and does not re-read (P0-3 Ruling 71)', async () => {
     const { backend } = renderApp({ route: '/holdings' });
     await screen.findByRole('row', { name: 'RELIANCE' });
     const before = backend.callsTo('portfolio.holdings').length;

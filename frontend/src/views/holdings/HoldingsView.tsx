@@ -13,13 +13,15 @@ import { useTicksStore } from '../../store/ticks';
 
 const columns: Column<LiveHolding>[] = [
   {
-    id: 'symbol', header: copy.cols.symbol, width: '24%', title: (r) => r.row.symbol,
+    // P0-3 Ruling 38: out-of-scope rows are kept, read-only, flagged in text and counted in the totals.
+    id: 'symbol', header: copy.cols.symbol, width: '24%',
     cell: (r) => (
-      <>
-        <InstrumentName name={r.row.symbol} exchange={r.row.exchange} />
-        {/* P0-3 Ruling 38: kept, read-only, flagged in text and counted in the totals. */}
-        {r.row.outOfScope && <span className="chip" title={copy.outOfScopeHint}>{copy.outOfScope}</span>}
-      </>
+      <InstrumentName
+        name={r.row.symbol}
+        exchange={r.row.exchange}
+        flag={r.row.outOfScope ? copy.outOfScope : undefined}
+        flagHint={copy.outOfScopeHint}
+      />
     ),
   },
   { id: 'qty', header: copy.cols.qty, align: 'end', cell: (r) => formatNumber(r.row.qty, 0) },

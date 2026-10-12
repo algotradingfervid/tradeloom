@@ -7,6 +7,7 @@ import type { ListStatus } from '../components/ListBody';
 import { ordersCopy } from '../i18n/copy';
 import { isTerminalStatus, orderStatusLabel } from '../portfolio/calc';
 import { registerReset } from './reset';
+import { useSessionStore } from './session';
 import { pushToast } from './toasts';
 
 interface PortfolioData { holdings: HoldingsSnapshot; positions: PositionsSnapshot; orders: BookSnapshot }
@@ -53,12 +54,32 @@ export const usePortfolioStore = create<PortfolioStore>()((set) => ({
   applyOrderUpdate: (o) => {
     if (!isTerminalStatus(o.status)) return;
     const status = o.status.toUpperCase();
+    // Kite can deliver the same postback more than once (postback + WebSocket); one toast per order and status.
+    const key = `${o.order_id}|${status}`;
+    if (announced.has(key)) return;
+    announced.add(key);
     pushToast({ level: status === 'REJECTED' ? 'warning' : 'info', message: ordersCopy.updated(o.tradingsymbol, orderStatusLabel(o.status)) });
   },
 }));
 
+/** order id + status pairs already toasted (Ruling 96 M5); account data, so cleared with the store. */
+const announced = new Set<string>();
+
+/**
+ * Bumped by every reset. A read or refresh started before a sign-out (or before the session switched to another
+ * user) must not write its result into the store afterwards (Ruling 96 I1).
+ */
+let epoch = 0;
+interface ReadGuard { epoch: number; userId: string | undefined }
+const guard = (): ReadGuard => ({ epoch, userId: useSessionStore.getState().session?.userId });
+const stillCurrent = (g: ReadGuard): boolean => g.epoch === epoch && g.userId === useSessionStore.getState().session?.userId;
+
 // Account data: cleared on sign-out (default onLogout: true, Ruling 83-F M5).
-registerReset(() => usePortfolioStore.setState(initial()));
+registerReset(() => {
+  epoch += 1;
+  announced.clear();
+  usePortfolioStore.setState(initial());
+});
 
 const FETCH: { [K in PortfolioKind]: (b: Backend) => Promise<PortfolioData[K]> } = {
   holdings: (b) => b.portfolio.holdings(),
@@ -71,16 +92,23 @@ const latestRequest: Record<PortfolioKind, number> = { holdings: 0, positions: 0
 /** Reads the Go cache (no Kite call); a slower, older response never overwrites a newer one. */
 export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: Backend): Promise<void> {
   const mine = ++latestRequest[kind];
+  const g = guard();
   const store = usePortfolioStore.getState;
   const shownAsOf = store()[kind].data.asOfMs;
   store().patch(kind, { loading: true });
+  // Dropped results: after a reset the store is already initial; after a user switch only the spinner is cleared.
+  const dropped = () => {
+    if (g.epoch === epoch) store().patch(kind, { loading: false });
+  };
   try {
     const data = await FETCH[kind](backend);
     if (mine !== latestRequest[kind]) return;
+    if (!stillCurrent(g)) return dropped();
     store().applySnapshot(kind, data);
     store().patch(kind, { loading: false });
   } catch (e) {
     if (mine !== latestRequest[kind]) return;
+    if (!stillCurrent(g)) return dropped();
     const cur = store()[kind];
     // A "*.changed" snapshot that arrived while this read was in flight is newer than anything the read could
     // return: keep showing it rather than replacing it with the read's error.
@@ -91,12 +119,21 @@ export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: B
 
 /** The Refresh button: Go re-fetches from Kite (`Portfolio.Refresh(scope)`), then the cache is re-read. */
 export async function refreshPortfolio(kind: PortfolioKind, backend: Backend): Promise<void> {
+  const g = guard();
   usePortfolioStore.getState().patch(kind, { loading: true });
   try {
     await backend.portfolio.refresh(SCOPE[kind]);
   } catch (e) {
+    if (!stillCurrent(g)) {
+      if (g.epoch === epoch) usePortfolioStore.getState().patch(kind, { loading: false });
+      return;
+    }
     usePortfolioStore.getState().patch(kind, { loading: false });
     pushToast({ level: 'error', message: parseBackendError(e).reason });
+    return;
+  }
+  if (!stillCurrent(g)) {
+    if (g.epoch === epoch) usePortfolioStore.getState().patch(kind, { loading: false });
     return;
   }
   await loadPortfolio(kind, backend);

@@ -7,6 +7,11 @@ describe('portfolio arithmetic (paise from Go → rupees in the view)', () => {
     expect(rupees(151_025)).toBe(1510.25);
     expect(toPaise(1510.25)).toBe(151_025);
   });
+  it('Ruling 96 M2: toPaise rounds half away from zero, like Go orders.Paise', () => {
+    expect(toPaise(0.125)).toBe(13);
+    expect(toPaise(-0.125)).toBe(-13);
+    expect(Object.is(toPaise(-0.001), 0)).toBe(true);
+  });
   it('FR-ORD-003 AC2: 10 @ 100 with LTP 110 → invested 1,000, current 1,100, P&L 100, net change +10 %', () => {
     expect(holdingRow(holdingA)).toMatchObject({ ltp: 110, invested: 1000, current: 1100, pnl: 100, netChangePct: 10, dayChange: 50 });
   });
