@@ -23,25 +23,33 @@ type CredentialsInput struct {
 
 // SessionStatus is the payload of Session.Status() and of the "session.state" event.
 type SessionStatus struct {
-	State           string          `json:"state"`
-	SessionID       string          `json:"sessionId"`
-	UserID          string          `json:"userId"`
-	LoggedInAtMs    int64           `json:"loggedInAtMs"`
-	ExpiresAtMs     int64           `json:"expiresAtMs"`
-	DataPlan        string          `json:"dataPlan"`
-	Offline         bool            `json:"offline"`
-	RiskAckRequired bool            `json:"riskAckRequired"`
-	ErrorCode       string          `json:"errorCode"`
-	ErrorMessage    string          `json:"errorMessage"`
-	Credentials     CredentialsInfo `json:"credentials"`
+	State           string            `json:"state"`
+	SessionID       string            `json:"sessionId"`
+	UserID          string            `json:"userId"`
+	LoggedInAtMs    int64             `json:"loggedInAtMs"`
+	ExpiresAtMs     int64             `json:"expiresAtMs"`
+	DataPlan        string            `json:"dataPlan"`
+	Offline         bool              `json:"offline"`
+	RiskAckRequired bool              `json:"riskAckRequired"`
+	ErrorCode       string            `json:"errorCode"`
+	ErrorMessage    string            `json:"errorMessage"`
+	Credentials     CredentialsInfo   `json:"credentials"`
+	Secrets         SecretStorageInfo `json:"secrets"`
 }
 
+// StateLocked is reported while an encrypted secrets file exists but has not been unlocked this start.
+const StateLocked = "locked"
+
 func (s *Service) statusFrom(st kite.SessionState) SessionStatus {
-	return SessionStatus{
+	out := SessionStatus{
 		State: string(st.State), SessionID: st.SessionID, UserID: st.UserID, LoggedInAtMs: st.LoggedInAtMs,
 		ExpiresAtMs: st.ExpiresAtMs, DataPlan: string(st.DataPlan), Offline: st.Offline, RiskAckRequired: st.RiskAckRequired,
-		ErrorCode: st.ErrorCode, ErrorMessage: st.ErrorMessage, Credentials: s.d.Session.CredentialsInfo(),
+		ErrorCode: st.ErrorCode, ErrorMessage: st.ErrorMessage, Credentials: s.d.Session.CredentialsInfo(), Secrets: s.secretInfo(),
 	}
+	if s.d.Secrets != nil && s.d.Secrets.Locked() {
+		out.State = StateLocked
+	}
+	return out
 }
 
 func (s *Service) SessionStatus(_ context.Context) SessionStatus {
@@ -96,7 +104,11 @@ func (s *Service) Profile(ctx context.Context) (Profile, error) {
 	return p, s.refuse("profile", err)
 }
 
+// Restore resumes the session at startup, unless the secrets file is still locked (Unlock restores later).
 func (s *Service) Restore(ctx context.Context) SessionStatus {
+	if s.d.Secrets != nil && s.d.Secrets.Locked() {
+		return s.SessionStatus(ctx)
+	}
 	return s.statusFrom(s.d.Session.Restore(ctx))
 }
 
@@ -138,6 +150,7 @@ func (s *Service) Run(ctx context.Context) {
 		c, cn := context.WithCancel(ctx)
 		d := make(chan struct{})
 		cancel, done, session = cn, d, st.SessionID
+		s.triggerInstrumentRefresh() // new login: fetch today's instrument list if due (P0-2 Ruling 49, Task 30)
 		logging.Go("orders.sync", func() {
 			defer close(d)
 			s.d.Orders.Run(c)

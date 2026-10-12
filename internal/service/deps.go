@@ -9,14 +9,17 @@ import (
 	"time"
 
 	"tradeloom/internal/bus"
+	"tradeloom/internal/calendar"
 	"tradeloom/internal/candles"
 	"tradeloom/internal/candles/backfill"
 	"tradeloom/internal/clock"
 	"tradeloom/internal/instruments"
 	"tradeloom/internal/kite"
+	"tradeloom/internal/kite/ratelimit"
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/logging"
 	"tradeloom/internal/orders"
+	"tradeloom/internal/secrets"
 	"tradeloom/internal/settings"
 	"tradeloom/internal/store"
 )
@@ -72,6 +75,49 @@ type LiveSubscriber interface {
 	Release(c ticker.Consumer, owner string)
 }
 
+// HistoricalFetcher is *kite.Client (kite.HistoricalPicker): the manual refresh fetches one window at Interactive priority.
+type HistoricalFetcher interface {
+	HistoricalPick(ctx context.Context, prio ratelimit.Priority, pick func() (kite.HistoricalRequest, bool)) (kite.HistoricalRequest, []kite.HistoricalData, bool, error)
+}
+
+// CandleUpserter is the covered-write half of candles.Store (*sqlite.Store): the manual refresh records
+// coverage for the window it fetched, up to the first candle that has not ended (Ruling 66).
+type CandleUpserter interface {
+	UpsertCovered(ctx context.Context, token uint32, iv candles.Interval, window candles.Range, cs []candles.Candle, src candles.Source) error
+}
+
+// CandleTracker is *builder.Builder: forming/closed candles are built only for tracked (token, interval) pairs.
+type CandleTracker interface {
+	Track(token uint32, ivs ...candles.Interval)
+	Untrack(token uint32, ivs ...candles.Interval)
+}
+
+// CandleAdmin is the maintenance half of *sqlite.Store (FR-DATA-002) (Task 30).
+type CandleAdmin interface {
+	Stats(ctx context.Context) (candles.Stats, error)
+	Clear(ctx context.Context, confirmRuns []string) error
+	OpenJobs(ctx context.Context) ([]candles.Job, error)
+}
+
+// InstrumentRefresher is *instruments.Refresher (Task 30): Refresh for the manual refresh, Trigger after
+// each new login (P0-2 Ruling 49; non-blocking, coalescing).
+type InstrumentRefresher interface {
+	Refresh(ctx context.Context) error
+	Trigger()
+}
+
+// QuoteReader is *kite.Client's quote half (REST fallback for tokens the feed cannot carry; Task 29).
+type QuoteReader interface {
+	LTP(ctx context.Context, ids ...string) (kite.QuoteLTP, error)
+	OHLC(ctx context.Context, ids ...string) (kite.QuoteOHLC, error)
+}
+
+// liveChart is one open chart subscription (OpenLive).
+type liveChart struct {
+	token uint32
+	iv    candles.Interval
+}
+
 type Deps struct {
 	Session     SessionAPI
 	Orders      PortfolioSync
@@ -88,6 +134,31 @@ type Deps struct {
 
 	Shortcuts *store.ShortcutsRepo   // user rebinds (Task 28)
 	UiState   *store.WindowStateRepo // window_state key/value (Task 28)
+
+	// Task 16 (chart data)
+	Calendar     *calendar.Service // trading-day arithmetic, market phase (Task 21), calendar settings (Task 31)
+	Historical   HistoricalFetcher // *kite.Client
+	CandleWriter CandleUpserter    // *sqlite.Store
+	Tracker      CandleTracker     // *builder.Builder
+	// Task 30 (data façade)
+	DB              *store.DB           // app.db (backups, calendar overrides, support files)
+	Layout          store.Layout        // data directory layout
+	AppVersion      string              // app.Version
+	CandleAdmin     CandleAdmin         // candle stats / clear
+	Refresher       InstrumentRefresher // manual instrument refresh; Trigger after login
+	ImportedAt      func() time.Time    // Master.ImportedAt
+	CloseForRestore func() error        // stops the platform and closes app.db before store.Restore
+	supportedSchema func() int          // store.SupportedSchema; tests override it
+
+	// Task 29 (quotes)
+	Quotes QuoteReader // *kite.Client
+
+	// Secret storage (Task 27, FR-ACCT-013).
+	Secrets      *SecretSwitch        // the Session's secrets.Store; swapped by setup, unlock and migration
+	SecretsFile  string               // Layout.SecretsFile
+	Detection    secrets.Detection    // Boot.Secrets
+	KeyringProbe func() error         // secrets.ProbeKeyringWithin(secrets.ProbeTimeout); nil = available
+	NewKeyring   func() secrets.Store // secrets.NewKeyring; tests inject a memory store
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
@@ -101,6 +172,39 @@ type Service struct {
 
 	liveMu sync.Mutex
 	live   map[ticker.Consumer]map[uint32]bool
+
+	chartMu    sync.Mutex
+	liveCharts map[string]liveChart // subscription id → (token, interval)
+
+	// Task 21 (events): initialised lazily in events.go so New is untouched.
+	quoteMu    sync.Mutex
+	lastQuote  map[uint32]TickDTO // last quote per token (tick.batch, live or polled); Task 29 persists it
+	quoteDirty bool
+
+	feedMu   sync.Mutex
+	lastFeed ticker.FeedState // last feed.state (System.Status); zero State reads as "stopped"
+
+	// Task 30: the single job slot (backup, restore, support bundle).
+	jobMu      sync.Mutex
+	jobRunning string // kind of the running job, "" when idle
+	jobSeq     int
+
+	// Task 29 (quotes): the maps are initialised lazily in quotes.go so New is untouched.
+	quotesOnce   sync.Once                                // loads the persisted quote cache
+	watchMu      sync.Mutex                               // serialises set changes with their feed calls (WatchQuotes, linger)
+	pollMu       sync.Mutex                               // guards polled, deferred, pending, pollOff, closeSession, closes, quitQuotes
+	polled       map[ticker.Consumer]map[uint32]bool      // tokens on the REST path, per consumer
+	deferred     map[ticker.Consumer]map[uint32]bool      // subscribed while the feed was stopped; polled until feed.state is live
+	pending      map[ticker.Consumer]map[uint32]time.Time // removed tokens awaiting UnsubscribeLinger (their deadline)
+	pollOff      string                                   // session id whose quote polling Kite refused (no data permission)
+	closeSession string                                   // session id the closes belong to
+	closes       map[uint32]float64                       // previous close per token, fetched once per session (OHLC)
+	quitQuotes   chan struct{}                            // closed when RunQuotes exits; ends pending linger goroutines
+	quitOnce     sync.Once
+
+	// Task 31 (calendar façade): serialises override writes so app.db, the coverage setting and the
+	// running calendar.Service change in the same order.
+	calMu sync.Mutex
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
@@ -118,7 +222,7 @@ func New(d Deps) *Service {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Service{d: d, live: map[ticker.Consumer]map[uint32]bool{}}
+	return &Service{d: d, live: map[ticker.Consumer]map[uint32]bool{}, liveCharts: map[string]liveChart{}}
 }
 
 func (s *Service) nowMs() int64 { return s.d.Clock.Now().UnixMilli() }

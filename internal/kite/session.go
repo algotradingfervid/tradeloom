@@ -34,6 +34,10 @@ const (
 // A variable only so tests can shorten it.
 var secretsTimeout = secrets.ProbeTimeout
 
+// endedInvalidateTimeout bounds the best-effort Kite invalidation of an ended session's token at startup
+// (Ruling 63). A variable only so tests can shorten it.
+var endedInvalidateTimeout = 5 * time.Second
+
 // msgSecretStore is the fixed, user-facing text for any secret-store failure (the cause is only logged).
 const msgSecretStore = "secret store not answering — unlock it and retry"
 
@@ -138,6 +142,23 @@ type TokenSink interface {
 	SetAccessToken(token string)
 }
 
+// tokenGenerations is implemented by a TokenSink that numbers the tokens it installs (*Client.TokenGen,
+// Ruling 70). A sink without it gives generation 0 (unknown), and token errors then end the session
+// whatever generation they carry, as before Ruling 70.
+type tokenGenerations interface {
+	TokenGen() uint64
+}
+
+// installedTokenGen returns the generation of the token the sink holds now, or 0 when it does not number
+// them. Callers read it right after SetAccessToken while holding exMu or feedMu, the locks every token
+// install by the Session runs under, so no other install can come in between.
+func (s *Session) installedTokenGen() uint64 {
+	if g, ok := s.d.Tokens.(tokenGenerations); ok {
+		return g.TokenGen()
+	}
+	return 0
+}
+
 type ProfileReader interface {
 	Profile(ctx context.Context) (kiteconnect.UserProfile, error)
 }
@@ -175,7 +196,13 @@ type Session struct {
 	nonces map[string]nonceBinding // state nonces issued in this run (Ruling 57)
 	done   map[string]bool         // request tokens already exchanged in this run (reload-safe)
 	gen    int                     // login attempt generation
-	runCtx context.Context
+	// tokGen is the token generation (Client.TokenGen) of the current session's token, set with rec at
+	// each commit; 0 = unknown. HandleTokenError ignores errors from any other generation (Ruling 70).
+	tokGen uint64
+	// hookEndAtRestore is a test-only seam (nil in production): endSessionAtRestore calls it right after
+	// its gen check, with feedMu and mu held (Ruling 72 (a) test). It must not take mu itself.
+	hookEndAtRestore func()
+	runCtx           context.Context
 	// cancelBase cancels the base run context made by NewSession (Ruling 58 (2)): login timers and
 	// probes started before Run wait on it, and Close (also at the end of Run) cancels it.
 	cancelBase context.CancelFunc
@@ -350,12 +377,14 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	s.mu.Unlock()
 
 	configured, err := s.configured()
-	if err != nil || !configured {
-		if err != nil {
-			s.storeFailed("read api secret", err)
-		}
+	if err != nil {
+		s.storeFailed("read api secret", err)
 		s.d.Limiter.PauseAll("no credentials")
-		return s.set(idle(configured, err, "", ""))
+		return s.restoreIdle(gen, idle(false, err, "", ""))
+	}
+	if !configured {
+		s.d.Limiter.PauseAll("no credentials")
+		return s.set(idle(false, nil, "", ""))
 	}
 	apiKey := s.apiKey()
 	s.d.Tokens.SetAPIKey(apiKey)
@@ -363,10 +392,10 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	if err != nil {
 		s.d.Limiter.PauseAll("logged out")
 		if errors.Is(err, secrets.ErrNotFound) {
-			return s.set(idle(true, nil, "", ""))
+			return s.restoreIdle(gen, idle(true, nil, "", ""))
 		}
 		s.storeFailed("read access token", err)
-		return s.set(idle(true, err, "", ""))
+		return s.restoreIdle(gen, idle(true, err, "", ""))
 	}
 	var rec TokenRecord
 	if err := json.Unmarshal([]byte(raw), &rec); err != nil || rec.AccessToken == "" || rec.SessionID == "" {
@@ -374,10 +403,17 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 			s.storeFailed("delete unreadable access token", derr)
 		}
 		s.d.Limiter.PauseAll("logged out")
-		return s.set(idle(true, nil, "", ""))
+		return s.restoreIdle(gen, idle(true, nil, "", ""))
 	}
 	logging.RegisterSecret(rec.AccessToken)
 	row, rowErr := s.d.Repo.Get(ctx, rec.SessionID)
+	if rowErr != nil && !errors.Is(rowErr, store.ErrNoRow) {
+		// Ruling 63 (3): without the row we cannot tell whether this session was logged out; fail closed.
+		// The token is kept (the read error may be transient); a new login replaces it.
+		s.d.Log.Warn("restore: reading the session row failed; not resuming", "session_id", rec.SessionID, "err", rowErr)
+		s.d.Limiter.PauseAll("logged out")
+		return s.restoreIdle(gen, idle(true, nil, "", ""))
+	}
 	if rowErr == nil && row.EndedAtMs != 0 {
 		s.d.Log.Warn("restore: the stored token belongs to an ended session; deleting it", "session_id", rec.SessionID, "end_reason", row.EndReason)
 		s.d.Limiter.PauseAll("logged out")
@@ -385,17 +421,21 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		if derr != nil {
 			s.storeFailed("delete ended session's access token", derr)
 		}
-		return s.set(idle(true, derr, "", ""))
+		if row.EndReason == endReasonLogout && s.d.Clock.Now().UnixMilli() < rec.ExpiresAtMs {
+			s.invalidateEnded(apiKey, rec)
+		}
+		return s.restoreIdle(gen, idle(true, derr, "", ""))
 	}
 	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
-		return s.endSession(rec, CodeSessionExpired)
+		return s.endSessionAtRestore(gen, rec, CodeSessionExpired)
 	}
 	s.d.Tokens.SetAccessToken(rec.AccessToken)
+	tokGen := s.installedTokenGen()
 	s.d.Limiter.Resume()
 	offline := false
 	if _, err := s.d.Profiles.Profile(ctx); err != nil {
 		if isTokenError(err) {
-			return s.endSession(rec, CodeTokenRejected)
+			return s.endSessionAtRestore(gen, rec, CodeTokenRejected)
 		}
 		offline = true
 		s.d.Log.Warn("Kite unreachable at startup; continuing with cached data", "kind", errKind(err))
@@ -407,39 +447,134 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 			plan = DataPlan(row.DataPlan)
 		}
 		ackRequired = row.RiskAckAtMs == 0
-	case errors.Is(rowErr, store.ErrNoRow):
+	default: // store.ErrNoRow; any other read error returned above (Ruling 63 (3))
 		// The token outlived its row (e.g. app.db restored from a backup): recreate it so the risk
 		// acknowledgement and the data plan of this session can be persisted.
 		s.d.Log.Warn("restore: session row missing; recreating it", "session_id", rec.SessionID)
 		if ierr := s.insertRow(ctx, rec, plan); ierr != nil {
 			s.d.Log.Warn("recreating the session row failed", "session_id", rec.SessionID, "err", ierr)
 		}
-	default:
-		s.d.Log.Warn("reading the session row failed", "err", rowErr)
 	}
 	s.feedMu.Lock()
 	s.mu.Lock()
 	if s.gen != gen || s.supersededLocked(rec.SessionID) || s.st.State == StateLoggingIn {
 		// A login began during Restore: it owns the session state now.
-		if s.st.State == StateLoggingIn && s.prior == StateNoCredentials {
-			s.prior = StateLoggedOut // credentials exist; a cancelled login falls back to logged_out
-		}
-		cur := s.st
+		cur, corrected := s.correctNoCredentialsLocked()
 		s.mu.Unlock()
 		s.d.Tokens.SetAccessToken("")
 		s.d.Limiter.PauseAll("logged out")
 		s.feedMu.Unlock()
+		if corrected {
+			bus.Publish(s.d.Bus, TopicSessionState, cur)
+		}
 		s.d.Log.Info("restore abandoned: a login began meanwhile", "session_id", rec.SessionID)
 		return cur
 	}
 	st := readyState(rec, plan, ackRequired, offline)
 	s.rec = &rec
+	s.tokGen = tokGen
 	s.st = st
 	s.mu.Unlock()
 	s.feedMu.Unlock()
 	bus.Publish(s.d.Bus, TopicSessionState, st)
 	s.afterReady(apiKey, rec)
 	return st
+}
+
+// endReasonLogout is the session-row end reason Logout records.
+const endReasonLogout = "logout"
+
+// correctNoCredentialsLocked (mu held) fixes the state after Restore saw configured credentials while a
+// login attempt began meanwhile: BeginLogin's fallback may be the initial no_credentials state, which is
+// wrong once credentials are known to exist (Ruling 63 (1)). It reports whether the visible state changed.
+func (s *Session) correctNoCredentialsLocked() (SessionState, bool) {
+	if s.prior == StateNoCredentials {
+		s.prior = StateLoggedOut // a cancelled or failed login falls back to logged_out
+	}
+	if s.st.State != StateNoCredentials {
+		return s.st, false
+	}
+	s.st.State = StateLoggedOut
+	return s.st, true
+}
+
+// restoreIdle commits Restore's idle result st only while no login attempt began since Restore started
+// (gen unchanged); otherwise that attempt owns the state and Restore only corrects a stale
+// no_credentials fallback (Ruling 63 (2)). Restore's callers know the credentials are configured.
+func (s *Session) restoreIdle(gen int, st SessionState) SessionState {
+	s.mu.Lock()
+	if s.gen == gen {
+		s.st = st
+		s.mu.Unlock()
+		bus.Publish(s.d.Bus, TopicSessionState, st)
+		return st
+	}
+	cur, corrected := s.correctNoCredentialsLocked()
+	s.mu.Unlock()
+	if corrected {
+		bus.Publish(s.d.Bus, TopicSessionState, cur)
+	}
+	return cur
+}
+
+// endSessionAtRestore ends rec's session at startup (expired or rejected token). When a login attempt
+// began since Restore started (gen changed), that attempt owns the state: the token is still deleted, the
+// traffic stopped and the row ended, but the state is left alone apart from the no_credentials correction
+// (Ruling 68 (2)). A login cannot commit meanwhile: its exchange waits for exMu, which Restore holds.
+func (s *Session) endSessionAtRestore(gen int, rec TokenRecord, code string) SessionState {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	s.mu.Lock()
+	if s.gen == gen {
+		// Ruling 72 (a): the gen check and the state write share one mu critical section, so a BeginLogin
+		// cannot slip in between and be overwritten with expired.
+		if s.hookEndAtRestore != nil {
+			s.hookEndAtRestore()
+		}
+		return s.endSessionMuLocked(rec, code)
+	}
+	cur, corrected := s.correctNoCredentialsLocked()
+	s.mu.Unlock()
+	s.stopTraffic("session expired")
+	if err := s.deleteToken(); err != nil {
+		s.storeFailed("delete access token", err)
+	}
+	s.endRow(rec.SessionID, code)
+	s.d.Log.Info("kite session ended at startup; a login in progress keeps the state", "reason", code)
+	if corrected {
+		bus.Publish(s.d.Bus, TopicSessionState, cur)
+	}
+	return cur
+}
+
+// invalidateEnded asks Kite to invalidate the unexpired token of a session that was logged out but whose
+// token survived (Ruling 63 (4)). It is best effort, runs off the startup path on the run context and is
+// bounded by endedInvalidateTimeout (the Kite client ignores ctx, so the wait is bounded, not the call).
+// The outcome is logged at Warn with the error kind only; the token never reaches a log line.
+func (s *Session) invalidateEnded(apiKey string, rec TokenRecord) {
+	ctx, cancel := context.WithTimeout(s.ctx(), endedInvalidateTimeout)
+	auth := s.d.Auth(apiKey)
+	logging.Go("kite.restore.invalidate", func() {
+		defer cancel()
+		res := make(chan error, 1)
+		logging.Go("kite.restore.invalidate.call", func() { res <- auth.Invalidate(ctx, rec.AccessToken) })
+		var err error
+		kind := ""
+		select {
+		case err = <-res:
+			if err != nil {
+				kind = errKind(err)
+			}
+		case <-ctx.Done():
+			err = ctx.Err()
+			kind = "canceled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				kind = "timeout"
+			}
+		}
+		s.d.Log.Warn("restore: invalidating the ended session's token", "session_id", rec.SessionID,
+			"invalidated", err == nil, "kind", kind)
+	})
 }
 
 // AckRisk records the FR-SHELL-020 acknowledgement for the current session id.
@@ -558,8 +693,14 @@ func (s *Session) endSession(rec TokenRecord, code string) SessionState {
 // running finishes first and is stopped. Ruling 58 (1): when a newer session committed while this call
 // waited for feedMu, only rec's row is ended; the new session's state, feed and token are left alone.
 func (s *Session) endSessionLocked(rec TokenRecord, code string) SessionState {
-	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	s.mu.Lock()
+	return s.endSessionMuLocked(rec, code)
+}
+
+// endSessionMuLocked is endSessionLocked entered with mu held as well (feedMu, then mu); it releases mu
+// once the state is written, before the side effects.
+func (s *Session) endSessionMuLocked(rec TokenRecord, code string) SessionState {
+	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	if s.supersededLocked(rec.SessionID) {
 		cur := s.st
 		s.mu.Unlock()

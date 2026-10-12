@@ -178,6 +178,15 @@ func (b *Backfill) Submit(ctx context.Context, j Job) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if j.OI { // an OI job reuses only OI windows: a non-OI window's candles carry no open interest (Ruling 66)
+		oiOnly := active[:0:0]
+		for _, a := range active {
+			if a.OI {
+				oiOnly = append(oiOnly, a)
+			}
+		}
+		active = oiOnly
+	}
 	var ws []candles.Window
 	var activeRanges []candles.Range
 	for _, a := range active {

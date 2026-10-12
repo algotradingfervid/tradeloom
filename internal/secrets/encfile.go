@@ -268,13 +268,23 @@ func (f *EncFile) Close() {
 	f.closed = true
 }
 
-// Destroy closes the store and removes secrets.enc (used after migrating to the keyring).
+// Destroy closes the store and removes secrets.enc (used after migrating to the keyring). A failed
+// removal is retried once.
 func (f *EncFile) Destroy() error {
 	f.Close()
-	if err := os.Remove(f.path); err != nil && !os.IsNotExist(err) {
-		return err
+	return RemoveFile(f.path)
+}
+
+// RemoveFile removes path, retrying once on failure; an absent file is not an error.
+func RemoveFile(path string) error {
+	err := os.Remove(path)
+	if err == nil || os.IsNotExist(err) {
+		return nil
 	}
-	return nil
+	if err = os.Remove(path); err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func zero(b []byte) {

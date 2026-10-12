@@ -732,3 +732,41 @@ func TestStartIsSingleUse(t *testing.T) {
 		t.Fatal("second Start succeeded")
 	}
 }
+
+// Ruling 66 (3a): an OI job never reuses a non-OI window (its candles would lack open interest);
+// a non-OI job may still reuse an OI window.
+func TestOIJobDoesNotReuseNonOIWindows(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	ctx := context.Background()
+	j := Job{Token: 12345, Interval: candles.Day, From: ist(2026, 6, 1, 0, 0), To: ist(2026, 10, 1, 0, 0), Requester: "backtest:R1", Priority: ratelimit.Backtest}
+	if _, err := r.bf.Submit(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	j.Requester, j.Priority, j.OI = "chart", ratelimit.Interactive, true
+	if _, err := r.bf.Submit(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	active, err := r.store.ActiveWindows(ctx, 12345, candles.Day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oi, plain int
+	for _, w := range active {
+		if w.OI {
+			oi++
+		} else {
+			plain++
+		}
+	}
+	if oi == 0 || plain == 0 {
+		t.Fatalf("OI windows %d, non-OI windows %d: the OI job must queue its own windows", oi, plain)
+	}
+	j.Requester, j.Priority, j.OI = "backtest:R2", ratelimit.Backtest, false
+	before := len(active)
+	if _, err := r.bf.Submit(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := r.store.ActiveWindows(ctx, 12345, candles.Day); len(after) != before {
+		t.Fatalf("a non-OI job queued %d new windows instead of reusing", len(after)-before)
+	}
+}
