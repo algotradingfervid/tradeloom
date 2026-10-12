@@ -1,0 +1,21 @@
+/* Chart symbol search (FR-CHART-005). Colours come only from the P0-4 theme variables. */
+.symbol-search { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.symbol-search__input { width: 100%; font-size: var(--fs-md); color: var(--text); }
+.symbol-search__chips { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.symbol-search__chip {
+  padding: 2px var(--space-3); border-radius: var(--radius-pill); border: 1px solid var(--border);
+  background: none; color: inherit; cursor: pointer;
+}
+.symbol-search__chip:hover { background: var(--surface-2); }
+.symbol-search__error { margin: 0; color: var(--down); font-size: var(--fs-sm); }
+.symbol-search__hint { margin: 0; padding: 0 var(--space-2); font-size: var(--fs-xs); color: var(--text-muted); }
+.symbol-search__hint:empty { display: none; }
+.symbol-search__head, .symbol-search__row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+}
+.symbol-search__head { font-size: var(--fs-xs); color: var(--text-muted); border-bottom: 1px solid var(--border); }
+.symbol-search__results { max-height: 50vh; overflow-y: auto; }
+.symbol-search__row { cursor: pointer; border-radius: var(--radius-1); }
+.symbol-search__row.is-active { background: var(--surface-2); outline: 1px solid var(--focus); outline-offset: -1px; }
+.symbol-search__company { text-align: right; text-transform: uppercase; font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
