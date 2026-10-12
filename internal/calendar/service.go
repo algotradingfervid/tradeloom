@@ -23,6 +23,7 @@ type Service struct {
 	overrides map[key]Entry
 	version   string
 	coversTo  Date
+	extra     Date // furthest `# covers:` end of imported files
 }
 
 // New builds a Service from a parsed shipped file.
@@ -50,6 +51,7 @@ func NewDefault() (*Service, error) {
 func (s *Service) SetOverrides(es []Entry) {
 	m := make(map[key]Entry, len(es))
 	for _, e := range es {
+		e.Phases = append([]PhaseSpec(nil), e.Phases...)
 		m[key{e.Exchange, e.Date}] = e
 	}
 	s.mu.Lock()
@@ -62,6 +64,7 @@ func (s *Service) SetOverrides(es []Entry) {
 func (s *Service) MergeOverrides(es []Entry) []Entry {
 	s.mu.Lock()
 	for _, e := range es {
+		e.Phases = append([]PhaseSpec(nil), e.Phases...)
 		s.overrides[key{e.Exchange, e.Date}] = e
 	}
 	s.mu.Unlock()
@@ -216,17 +219,25 @@ func (s *Service) PrevTradingDay(ex Exchange, d Date) (Date, bool) {
 	return Date{}, false
 }
 
+// ExtendCoverage records the `# covers:` end date of an imported calendar file. Only shipped
+// files and imported files with an explicit covers range extend coverage; single user rows or
+// inferred entries never do (FR-DATA-001 AC6).
+func (s *Service) ExtendCoverage(to Date) {
+	s.mu.Lock()
+	if to.After(s.extra) {
+		s.extra = to
+	}
+	s.mu.Unlock()
+}
+
 // CoversUntil is the last date the list is known to describe.
 func (s *Service) CoversUntil() Date {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	to := s.coversTo
-	for _, e := range s.overrides {
-		if e.Source != "inferred" && e.Date.After(to) {
-			to = Date{e.Date.Year, time.December, 31}
-		}
+	if s.extra.After(s.coversTo) {
+		return s.extra
 	}
-	return to
+	return s.coversTo
 }
 
 // Stale reports whether the list does not cover the next 30 calendar days from now.
