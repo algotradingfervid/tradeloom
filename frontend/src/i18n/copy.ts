@@ -569,3 +569,27 @@ export const watchlistRowsCopy = {
   moved: (name: string, position: number, count: number) => `${name} moved to ${position} of ${count}`,
   readOnlyMisuse: 'WatchlistRows: the list is not the active watchlist; rendering it read-only (store actions act on the active list)',
 } as const;
+
+/** Shared multi-select instrument picker (FR-WATCH-007, P0-5 Task 17). Count and no-match text: instrumentSearchCopy. */
+export const instrumentPickerCopy = {
+  title: 'Add instruments',
+  search: 'Search instruments',
+  placeholder: 'Search, e.g. SBIN, TCS',
+  typeToSearch: 'Type to search',
+  lists: 'Lists',
+  results: 'Instruments',
+  selectAll: 'Select all',
+  select: (name: string) => `Select ${name}`,
+  remove: (name: string) => `Remove ${name}`,
+  selected: (n: number, max?: number) => (max === undefined ? `Selected (${n})` : `Selected (${n} / ${max})`),
+  selectedList: 'Selected instruments',
+  noneSelected: 'Nothing selected yet',
+  limit: (max: number) => `Up to ${max} instruments`,
+  emptyList: 'This list has no instruments to offer here',
+  saveAs: 'Save as watchlist',
+  name: 'Watchlist name',
+  save: 'Save',
+  cancel: 'Cancel',
+  created: (name: string) => `Watchlist ${name} created`,
+  done: 'Done',
+} as const;

@@ -21,12 +21,13 @@ import { createMockBackend, type MockBackend } from '../../api/mock/index';
 import { watchlistItemOf } from '../../api/mock/market';
 import { SEARCH_DEBOUNCE_MS } from '../../instruments/useInstrumentSearch';
 import { useSubscription } from '../../market/hooks';
+import * as copyModule from '../../i18n/copy';
 import { InstrumentPicker } from './InstrumentPicker';
 import { useInstruments } from '../../store/instrumentsStore';
 import { resetOnLogout } from '../../store/reset';
 import { useToastStore } from '../../store/toasts';
 import { useWatchlists } from '../../store/watchlistsStore';
-import { NIFTY_OPTION, RELIANCE, RELIANCE_OCT_FUT, SBIN, TCS } from '../../instruments/fixtures';
+import { INFY, NIFTY_OPTION, RELIANCE, RELIANCE_OCT_FUT, SBIN, TCS } from '../../instruments/fixtures';
 import type { Instrument } from '../../instruments/types';
 
 let backend: MockBackend;
@@ -304,5 +305,179 @@ describe('InstrumentPicker', () => {
   it('G-0: no order actions', () => {
     setup({ initial: [SBIN] });
     expect(screen.queryByRole('button', { name: /^(buy|sell|b|s)$/i })).toBeNull();
+  });
+});
+
+describe('InstrumentPicker fix round 1 (Ruling 118)', () => {
+  it('I1: a reset clears the selection in place (picker stays open); the widget set empties; Done returns []', async () => {
+    const { onDone, onClose } = setup({ initial: [SBIN] });
+    await type('tcs');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TCS' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save as watchlist' }));
+    expect(heading('Selected (2)')).toBeInTheDocument();
+    act(() => resetOnLogout());
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(heading('Selected (0)')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Watchlist name' })).toBeNull();
+    expect(vi.mocked(useSubscription)).toHaveBeenLastCalledWith('instrument-picker', 'widget', []);
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onDone).toHaveBeenCalledWith([]);
+  });
+
+  it('I1: a reset also clears the limit message', async () => {
+    setup({ max: 1, initial: [SBIN] });
+    await type('tcs');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TCS' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Up to 1 instruments');
+    act(() => resetOnLogout());
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('I2: a save dropped by a reset shows no toast and no error, even when a list of that name shows up later', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const create = backend.watchlists.create;
+    backend.watchlists.create = async (name: string) => { await gate; return create(name); };
+    setup({ initial: [SBIN] });
+    fireEvent.click(screen.getByRole('button', { name: 'Save as watchlist' }));
+    const name = screen.getByRole('textbox', { name: 'Watchlist name' });
+    fireEvent.change(name, { target: { value: 'Banks' } });
+    fireEvent.keyDown(name, { key: 'Enter' });
+    await flush(0);
+    act(() => resetOnLogout());
+    // The next session's load already lists a "Banks" (Go created it before the Adds were dropped).
+    act(() => useWatchlists.setState({ lists: [wl('w1', 'Watchlist 1'), wl('w9', 'Banks')], activeId: 'w1', status: 'ready' }));
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
+    expect(useToastStore.getState().visible).toHaveLength(0);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('I2: a list of the same name that already existed is not reported as created when Go refuses', async () => {
+    seedLists([wl('w1', 'Watchlist 1'), wl('w2', 'Banks ')]); // trailing space: the local check folds it, Go is the backstop
+    useWatchlists.setState({ lists: [wl('w1', 'Watchlist 1')] }); // the store has not seen w2 yet
+    backend.failNext('watchlists.create', 'A watchlist with this name exists', 'duplicate_name');
+    setup({ initial: [SBIN] });
+    fireEvent.click(screen.getByRole('button', { name: 'Save as watchlist' }));
+    const name = screen.getByRole('textbox', { name: 'Watchlist name' });
+    fireEvent.change(name, { target: { value: 'Banks' } });
+    fireEvent.keyDown(name, { key: 'Enter' });
+    await flush(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('A watchlist with this name exists'); // Go's duplicate_name
+    expect(name).toHaveAttribute('aria-invalid', 'true');
+    expect(useToastStore.getState().visible).toHaveLength(0);
+  });
+
+  it('I3: the strings come from i18n/copy.ts', () => {
+    const c = (copyModule as Record<string, unknown>).instrumentPickerCopy as { title: string; typeToSearch: string } | undefined;
+    expect(c).toBeDefined();
+    setup();
+    expect(screen.getByRole('dialog', { name: c!.title })).toBeInTheDocument();
+    expect(screen.getByText(c!.typeToSearch)).toBeInTheDocument();
+  });
+
+  it('double-save guard: Enter twice while the save runs creates one list', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const create = backend.watchlists.create;
+    backend.watchlists.create = async (name: string) => { await gate; return create(name); };
+    setup({ initial: [SBIN] });
+    fireEvent.click(screen.getByRole('button', { name: 'Save as watchlist' }));
+    const name = screen.getByRole('textbox', { name: 'Watchlist name' });
+    fireEvent.change(name, { target: { value: 'Banks' } });
+    fireEvent.keyDown(name, { key: 'Enter' });
+    fireEvent.keyDown(name, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
+    expect(useWatchlists.getState().lists.filter((l) => l.name === 'Banks')).toHaveLength(1);
+    expect(useToastStore.getState().visible.filter((t) => t.message === 'Watchlist Banks created')).toHaveLength(1);
+  });
+
+  it('minor 1: empty segments mean all tags, for the search and for a chip', async () => {
+    seedLists([wl('w1', 'Watchlist 1', [SBIN, RELIANCE_OCT_FUT])]);
+    setup({ segments: [] });
+    await type('sbin');
+    expect(searchInstruments).toHaveBeenCalledWith('sbin', ['INDICES', 'NSE', 'BSE', 'NFO-FUT', 'BFO-FUT'], 50);
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist 1' }));
+    await flush(0);
+    expect(screen.getByRole('checkbox', { name: 'Select SBIN' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: `Select ${RELIANCE_OCT_FUT.displayName}` })).toBeInTheDocument();
+  });
+
+  it('minor 2: initial is deduped by token and clamped to max', () => {
+    setup({ max: 2, initial: [SBIN, SBIN, TCS, INFY] });
+    expect(heading('Selected (2 / 2)')).toBeInTheDocument();
+    const names = within(screen.getByRole('list', { name: 'Selected instruments' })).getAllByRole('button').map((b) => b.getAttribute('aria-label'));
+    expect(names).toEqual(['Remove SBIN', 'Remove TCS']);
+  });
+
+  it('minor 3: a failed chip load shows the error; clicking the chip again retries', async () => {
+    seedLists([wl('w1', 'Watchlist 1', [SBIN])]);
+    vi.mocked(instrumentsByTokens).mockRejectedValueOnce(new Error('Instruments unavailable'));
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist 1' }));
+    await flush(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('Instruments unavailable');
+    expect(screen.queryByRole('checkbox', { name: 'Select SBIN' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist 1' }));
+    await flush(0);
+    expect(instrumentsByTokens).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('checkbox', { name: 'Select SBIN' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('minor 4: a repeated limit refusal is announced again (a new alert element)', async () => {
+    setup({ max: 1, initial: [SBIN] });
+    await type('tcs');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TCS' }));
+    const first = screen.getByRole('alert');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TCS' }));
+    const second = screen.getByRole('alert');
+    expect(second).toHaveTextContent('Up to 1 instruments');
+    expect(second).not.toBe(first);
+  });
+
+  it('select all is cut short at max, in row order, with the limit message', async () => {
+    seedLists([wl('w1', 'Watchlist 1', [SBIN, TCS, INFY])]);
+    setup({ max: 2 });
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist 1' }));
+    await flush(0);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all' }));
+    expect(heading('Selected (2 / 2)')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select SBIN' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Select TCS' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Select INFY' })).not.toBeChecked();
+    expect(screen.getByRole('alert')).toHaveTextContent('Up to 2 instruments');
+  });
+
+  it('keyboard: Space and Enter pressed on a row toggle it', async () => {
+    seedLists([wl('w1', 'Watchlist 1', [SBIN, TCS])]);
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Watchlist 1' }));
+    await flush(0);
+    fireEvent.keyDown(searchBox(), { key: 'ArrowDown' });
+    const sbin = screen.getByRole('checkbox', { name: 'Select SBIN' });
+    expect(sbin).toHaveFocus();
+    fireEvent.keyDown(sbin, { key: ' ' });
+    expect(sbin).toBeChecked();
+    expect(heading('Selected (1)')).toBeInTheDocument();
+    fireEvent.keyDown(sbin, { key: 'Enter' });
+    expect(sbin).not.toBeChecked();
+    fireEvent.keyDown(sbin, { key: 'ArrowDown' });
+    const tcs = screen.getByRole('checkbox', { name: 'Select TCS' });
+    fireEvent.keyDown(tcs, { key: 'Enter' });
+    expect(tcs).toBeChecked();
+    expect(heading('Selected (1)')).toBeInTheDocument();
+  });
+
+  it('focus after removing: the next remove button, else the previous, else the search box', () => {
+    setup({ initial: [SBIN, TCS, INFY] });
+    const pane = () => within(screen.getByRole('list', { name: 'Selected instruments' }));
+    fireEvent.click(pane().getByRole('button', { name: 'Remove TCS' }));
+    expect(pane().getByRole('button', { name: 'Remove INFY' })).toHaveFocus();
+    fireEvent.click(pane().getByRole('button', { name: 'Remove INFY' }));
+    expect(pane().getByRole('button', { name: 'Remove SBIN' })).toHaveFocus();
+    fireEvent.click(pane().getByRole('button', { name: 'Remove SBIN' }));
+    expect(searchBox()).toHaveFocus();
   });
 });

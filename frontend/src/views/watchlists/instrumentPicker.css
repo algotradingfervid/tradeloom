@@ -26,3 +26,8 @@
   padding: var(--space-1) var(--space-2);
 }
 .picker__save { display: flex; align-items: center; gap: var(--space-2); margin-right: auto; flex-wrap: wrap; }
+/* Dialog lg (760px) leaves each pane ~356px: the company name may shrink and truncate here (the label title has it). */
+.picker__cell--label { overflow: hidden; }
+.picker__cell--label .instrument-label { width: 100%; }
+.picker__cell--label .instrument-label__company { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.picker__selected-row .instrument-label { min-width: 0; overflow: hidden; }

@@ -20,6 +20,7 @@ vi.mock('../../api/instruments', async () => {
 import { InstrumentPicker } from './InstrumentPicker';
 import { SEARCH_DEBOUNCE_MS } from '../../instruments/useInstrumentSearch';
 import { RELIANCE, SBIN, TCS } from '../../instruments/fixtures';
+import { resetOnLogout } from '../../store/reset';
 
 const lastWidget = () => watch.mock.calls.filter(([c]) => c === 'widget').at(-1)?.[1];
 const sorted = (t: readonly number[] | undefined) => [...(t ?? [])].sort((a, b) => a - b);
@@ -55,5 +56,17 @@ describe('InstrumentPicker subscriptions', () => {
     unmount();
     await flush();
     expect(lastWidget()).toEqual([]);
+  });
+
+  it('a reset (sign-out) while open releases the previous user\'s selection: Watch(widget, [])', async () => {
+    const { unmount } = render(<StrictMode><InstrumentPicker open initial={[TCS, SBIN]} onClose={() => {}} onDone={() => {}} /></StrictMode>);
+    await flush();
+    expect(sorted(lastWidget())).toEqual(sorted([TCS.token, SBIN.token]));
+    act(() => resetOnLogout());
+    await flush();
+    expect(lastWidget()).toEqual([]);
+    expect(screen.getByRole('dialog')).toBeInTheDocument(); // cleared in place, not closed
+    unmount();
+    await flush();
   });
 });

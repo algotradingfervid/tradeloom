@@ -4,11 +4,13 @@ import { Dialog } from '../../components/Dialog';
 import { IconButton } from '../../components/IconButton';
 import { InstrumentLabel } from '../../components/instrument/InstrumentLabel';
 import { PriceChange } from '../../components/instrument/PriceChange';
+import { instrumentPickerCopy } from '../../i18n/copy';
 import { EXCHANGE_TAGS, displayName, isInScope, type ExchangeTag } from '../../instruments/naming';
 import type { Instrument } from '../../instruments/types';
 import { instrumentSearchCopy, useInstrumentSearch } from '../../instruments/useInstrumentSearch';
 import { useSubscription } from '../../market/hooks';
 import { ensureInstruments, useInstruments } from '../../store/instrumentsStore';
+import { registerReset } from '../../store/reset';
 import { pushToast } from '../../store/toasts';
 import { tokensOf, useWatchlists } from '../../store/watchlistsStore';
 import { nextWatchlistName } from './names';
@@ -17,29 +19,11 @@ import './instrumentPicker.css';
 /** Go's maxSearchLimit (internal/service/chart.go): a larger limit is clamped to it. */
 const SEARCH_LIMIT = 50;
 
-export const instrumentPickerCopy = {
-  title: 'Add instruments',
-  search: 'Search instruments',
-  placeholder: 'Search, e.g. SBIN, TCS',
-  typeToSearch: 'Type to search',
-  lists: 'Lists',
-  results: 'Instruments',
-  selectAll: 'Select all',
-  select: (name: string) => `Select ${name}`,
-  remove: (name: string) => `Remove ${name}`,
-  selected: (n: number, max?: number) => (max === undefined ? `Selected (${n})` : `Selected (${n} / ${max})`),
-  selectedList: 'Selected instruments',
-  noneSelected: 'Nothing selected yet',
-  limit: (max: number) => `Up to ${max} instruments`,
-  emptyList: 'This list has no instruments to offer here',
-  saveAs: 'Save as watchlist',
-  name: 'Watchlist name',
-  save: 'Save',
-  cancel: 'Cancel',
-  created: (name: string) => `Watchlist ${name} created`,
-  done: 'Done',
-} as const;
 const copy = instrumentPickerCopy;
+
+// Resets (logout or user switch) seen by this module: a save that awaited across one is never reported (Ruling 118 I2).
+let resets = 0;
+registerReset(() => { resets += 1; }, { name: 'instrumentPickerResets', inspect: () => ({ resets }) });
 
 export interface InstrumentPickerProps {
   open: boolean;
@@ -48,7 +32,7 @@ export interface InstrumentPickerProps {
   max?: number;
   /** Tags offered (default: all five in-scope tags). */
   segments?: readonly ExchangeTag[];
-  /** The selection the picker opens with (read on each opening). */
+  /** The selection the picker opens with (read on each opening; deduped by token and clamped to `max`). */
   initial?: readonly Instrument[];
   onClose(): void;
   onDone(selected: Instrument[]): void;
@@ -70,6 +54,22 @@ type ChipRows = { id: string; key: string; rows: readonly Instrument[] };
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const NONE: readonly Instrument[] = [];
 
+/**
+ * The opening selection: in scope only (NFR-15), one per token, at most `max`. The caller owns the maximum; an
+ * `initial` longer than it is cut here rather than shown over the limit.
+ */
+function openingSelection(initial: readonly Instrument[], max: number | undefined): Instrument[] {
+  const seen = new Set<number>();
+  const out: Instrument[] = [];
+  for (const i of initial) {
+    if (!isInScope(i) || seen.has(i.token)) continue;
+    if (max !== undefined && out.length >= max) break;
+    seen.add(i.token);
+    out.push(i);
+  }
+  return out;
+}
+
 function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initial = NONE, onClose, onDone }: Omit<InstrumentPickerProps, 'open'>) {
   const inputRef = useRef<HTMLInputElement>(null);
   const saveErrorId = useId();
@@ -81,28 +81,38 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
   const [source, setSource] = useState<Source>({ kind: 'search' });
   const [chip, setChip] = useState<ChipRows | null>(null);
   const [chipError, setChipError] = useState<string | null>(null);
-  // NFR-15: an out-of-scope instrument is never offered or selected, also when a caller passes one.
-  const [selected, setSelected] = useState<Instrument[]>(() => initial.filter(isInScope));
-  const [limitMsg, setLimitMsg] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Instrument[]>(() => openingSelection(initial, max));
+  // `n` keys the alert, so a repeated refusal mounts a new one and is announced again.
+  const [limitMsg, setLimitMsg] = useState<{ text: string; n: number } | null>(null);
+  const [chipNonce, setChipNonce] = useState(0); // clicking a chip again retries its load
   const [active, setActive] = useState(0);
   const [naming, setNaming] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false); // set synchronously: a second Enter in the same frame does not save twice
   const chipSeq = useRef(0); // latest chip load; bumped on reset, on a new source and on unmount
   const alive = useRef(true);
   const focusAfter = useRef<(() => void) | null>(null);
-  const tagsKey = segments.join(',');
+  const tags = segments.length > 0 ? segments : EXCHANGE_TAGS; // [] means all, as in Go
+  const tagsKey = tags.join(',');
 
-  // A reset (logout or user switch) drops the answers and the chip load in flight; the box and source start over.
+  // A reset (logout or user switch) clears the picker in place (Ruling 118 I1): the answers and the chip load in flight
+  // are dropped, and the previous user's selection goes too, so its tokens leave the widget set and Done cannot write
+  // them into the next user's list. The picker stays open.
   const onReset = useCallback(() => {
     chipSeq.current += 1;
     setQuery('');
     setSource({ kind: 'search' });
     setChip(null);
     setChipError(null);
+    setSelected([]);
+    setLimitMsg(null);
+    setNaming(null);
+    setSaveError(null);
+    setActive(0);
   }, []);
   // While a watchlist chip is the source no search is sent ('' is never searched).
-  const search = useInstrumentSearch(source.kind === 'search' ? query : '', { limit: SEARCH_LIMIT, tags: segments, onReset });
+  const search = useInstrumentSearch(source.kind === 'search' ? query : '', { limit: SEARCH_LIMIT, tags, onReset });
 
   const chipList = source.kind === 'watchlist' ? lists.find((l) => l.id === source.id) : undefined;
   const chipKey = chipList ? tokensOf(chipList).join(',') : '';
@@ -126,7 +136,8 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
       (e: unknown) => { if (my === chipSeq.current) setChipError(message(e)); },
     );
     return () => { chipSeq.current += 1; };
-  }, [chipId, chipKey, tagsKey]);
+    // chipNonce: the same chip clicked again retries (e.g. after a failed load).
+  }, [chipId, chipKey, tagsKey, chipNonce]);
 
   useEffect(() => {
     alive.current = true;
@@ -172,7 +183,7 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
     }
     if (fromSearch && added.length > 0) useInstruments.getState().put(added);
     setSelected(next);
-    setLimitMsg(refused && max !== undefined ? copy.limit(max) : null);
+    setLimitMsg((m) => (refused && max !== undefined ? { text: copy.limit(max), n: (m?.n ?? 0) + 1 } : null));
   };
   const removeTokens = (tokens: ReadonlySet<number>) => {
     setSelected((s) => s.filter((i) => !tokens.has(i.token)));
@@ -195,6 +206,7 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
     setQuery('');
     setActive(0);
     setSource({ kind: 'watchlist', id });
+    setChipNonce((n) => n + 1);
   };
 
   // Grid pattern (Ruling 115 I3): one tab stop on the active row's checkbox; arrows, Home and End move it.
@@ -223,7 +235,8 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
       to = current - 1;
     } else if (e.key === 'Home') to = 0;
     else if (e.key === 'End') to = last;
-    else if (e.key === 'Enter' && current >= 0) {
+    else if ((e.key === 'Enter' || e.key === ' ') && current >= 0) {
+      // Handled here (not by the native checkbox) so Space and Enter act alike and Space does not toggle twice.
       e.preventDefault();
       toggle(rows[current]);
       return;
@@ -243,14 +256,20 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
     focusAfter.current = () => saveAsRef.current?.focus();
   };
   const saveAsWatchlist = async () => {
-    if (naming === null || saving) return;
+    if (naming === null || savingRef.current) return;
     const name = naming;
+    savingRef.current = true;
     setSaving(true);
+    const at = resets;
     // activate = false: Go's Create activates the new list, the store puts the previous one back (Ruling 87).
     const err = await useWatchlists.getState().create(name, selected.map((s) => s.token), false);
-    // The store also answers null for a call dropped by a reset or a user switch: only a list that exists is reported.
-    const created = err === null && useWatchlists.getState().lists.some((l) => l.name.toLowerCase() === name.trim().toLowerCase());
-    if (created) pushToast({ level: 'info', message: copy.created(name.trim()) });
+    savingRef.current = false;
+    // The store answers null also for a call dropped by a reset: such a save is neither reported nor shown as failed.
+    if (resets !== at) {
+      if (alive.current) setSaving(false);
+      return;
+    }
+    if (err === null) pushToast({ level: 'info', message: copy.created(name.trim()) });
     if (!alive.current) return;
     setSaving(false);
     if (err !== null) { setSaveError(err); return; }
@@ -350,7 +369,7 @@ function PickerDialog({ title = copy.title, max, segments = EXCHANGE_TAGS, initi
         </div>
         <div className="picker__right">
           <h3 className="picker__heading" aria-live="polite">{copy.selected(selected.length, max)}</h3>
-          {limitMsg !== null && <p role="alert" className="picker__error">{limitMsg}</p>}
+          {limitMsg !== null && <p key={limitMsg.n} role="alert" className="picker__error">{limitMsg.text}</p>}
           {selected.length === 0 && <p className="picker__hint">{copy.noneSelected}</p>}
           <ul ref={selectedRef} aria-label={copy.selectedList} className="picker__selected">
             {selected.map((s, k) => (
