@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Profile } from '../../api/backend';
 import { demoSeed, FIXED_NOW, profileFixture, readySession } from '../../api/mock/fixtures';
 import { createMockBackend } from '../../api/mock/index';
+import { loadProfile } from '../../app/useProfile';
 import { useSessionStore } from '../../store/session';
 import { useToastStore } from '../../store/toasts';
 import { renderApp } from '../../test/render';
@@ -61,6 +62,10 @@ describe('FR-ACCT-001 Profile view', () => {
     await user.click(await screen.findByRole('button', { name: 'Log out' }));
     await user.click(within(screen.getByRole('dialog', { name: 'Log out of Kite?' })).getByRole('button', { name: 'Log out' }));
     expect(await screen.findByText('Kite was not reachable; the token was deleted on this computer')).toBeInTheDocument();
+    // Fix round 1 (Minor 5): a gentle info note, the login screen, and no dialog left behind.
+    expect(useToastStore.getState().visible.map((t) => t.level)).toEqual(['info']);
+    expect(await screen.findByRole('heading', { name: 'Log in to Kite' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
   it('Escape cancels the log-out confirmation', async () => {
     const { user, backend } = renderApp({ route: '/profile' });
@@ -68,6 +73,14 @@ describe('FR-ACCT-001 Profile view', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(backend.callsTo('session.logout')).toHaveLength(0);
+  });
+  it('Cancel closes the confirmation and returns focus to Log out (fix round 1, Minor 5)', async () => {
+    const { user } = renderApp({ route: '/profile' });
+    const trigger = await screen.findByRole('button', { name: 'Log out' });
+    await user.click(trigger);
+    await user.click(within(screen.getByRole('dialog', { name: 'Log out of Kite?' })).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(trigger).toHaveFocus();
   });
 });
 
@@ -111,14 +124,79 @@ describe('Task 13 adaptations (rulings and brief)', () => {
   });
   it('a failed profile load says so in text and offers Retry (Ruling 90 M1), and Log out stays available', async () => {
     const backend = createMockBackend(demoSeed());
-    // The top-bar menu and this view each load once (two useProfile instances): fail both.
+    // Ruling 116 I1: the top-bar menu and this view share one load per user, so one rejection fails both.
     const refused = new Error(JSON.stringify({ code: 'network', stage: 'session', reason: 'Kite is unreachable' }));
-    vi.spyOn(backend.session, 'profile').mockRejectedValueOnce(refused).mockRejectedValueOnce(refused);
+    const spy = vi.spyOn(backend.session, 'profile').mockRejectedValueOnce(refused);
     const { user } = renderApp({ route: '/profile', backend });
-    expect(await screen.findByText('Your profile could not be loaded from Kite.')).toBeInTheDocument();
+    const note = await screen.findByText('Your profile could not be loaded from Kite.');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(useToastStore.getState().visible.map((t) => t.level)).toEqual(['error']);
+    // Minor 3: the notice mounts with its text, so it is not a live region.
+    expect(note.closest('[role="status"]')).toBeNull();
     expect(screen.getByRole('button', { name: 'Log out' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByLabelText('Name')).toHaveValue('Asha Rao');
+  });
+  it('Retry while a load is in flight adds no call, and Refresh shows it is busy (Ruling 116 I1, Minor 2)', async () => {
+    const backend = createMockBackend(demoSeed());
+    const refused = new Error(JSON.stringify({ code: 'network', stage: 'session', reason: 'Kite is unreachable' }));
+    const pending = deferred<Profile>();
+    const spy = vi.spyOn(backend.session, 'profile').mockRejectedValueOnce(refused).mockReturnValueOnce(pending.promise);
+    const { user } = renderApp({ route: '/profile', backend });
+    await screen.findByText('Your profile could not be loaded from Kite.');
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(spy).toHaveBeenCalledTimes(2);
+    const refresh = screen.getByRole('button', { name: 'Refresh profile' });
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    await user.click(refresh);
+    expect(spy).toHaveBeenCalledTimes(2);
+    await act(async () => pending.resolve(profileFixture));
+    expect(await screen.findByLabelText('Name')).toHaveValue('Asha Rao');
+    expect(refresh).not.toHaveAttribute('aria-busy');
+  });
+  it('concurrent loads for the same user share one Profile call and one promise (Ruling 116 I1)', async () => {
+    const backend = createMockBackend(demoSeed());
+    renderApp({ route: '/profile', backend });
+    await screen.findByLabelText('Name');
+    const pending = deferred<Profile>();
+    const spy = vi.spyOn(backend.session, 'profile').mockReturnValueOnce(pending.promise);
+    const first = loadProfile(backend);
+    const second = loadProfile(backend);
+    expect(second).toBe(first);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      pending.resolve(profileFixture);
+      await first;
+    });
+    void loadProfile(backend);
+    expect(spy).toHaveBeenCalledTimes(2); // once settled, a new load is a new call
+  });
+  it('a failed Refresh keeps the shown profile and shows exactly one toast (fix round 1, Minor 5)', async () => {
+    const backend = createMockBackend(demoSeed());
+    const { user } = renderApp({ route: '/profile', backend });
+    await screen.findByLabelText('Name');
+    backend.failNext('session.profile', 'Kite is unreachable', 'network');
+    await user.click(screen.getByRole('button', { name: 'Refresh profile' }));
+    await waitFor(() => expect(useToastStore.getState().visible).toHaveLength(1));
+    expect(useToastStore.getState().visible[0]).toMatchObject({ level: 'error', message: 'Your Kite profile could not be loaded: Kite is unreachable' });
+    expect(screen.getByLabelText('Name')).toHaveValue('Asha Rao');
+    expect(screen.queryByText('Your profile could not be loaded from Kite.')).toBeNull();
+  });
+  it('the confirmation closes when the session leaves ready and does not reopen on the next login (fix round 1, Minor 1)', async () => {
+    const backend = createMockBackend(demoSeed());
+    const { user } = renderApp({ route: '/profile', backend });
+    await user.click(await screen.findByRole('button', { name: 'Log out' }));
+    expect(screen.getByRole('dialog', { name: 'Log out of Kite?' })).toBeInTheDocument();
+    act(() => backend.emit('session.state', readySession({ state: 'expired' })));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    act(() => backend.emit('session.state', readySession()));
+    await screen.findByLabelText('Name');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('the client id and the broker chip are read as separate words (fix round 1, Minor 4)', async () => {
+    renderApp({ route: '/profile' });
+    const chip = await screen.findByText('Zerodha', { selector: '.chip' });
+    expect(chip.parentElement?.textContent).toBe('AB1234 Zerodha');
   });
   it('an expired session says so in text instead of loading forever, and links to the login', async () => {
     const backend = createMockBackend(demoSeed());
@@ -126,6 +204,7 @@ describe('Task 13 adaptations (rulings and brief)', () => {
     await screen.findByLabelText('Name');
     act(() => backend.emit('session.state', readySession({ state: 'expired' })));
     const note = await screen.findByText('Your Kite session has ended. Log in again to see your profile.');
+    expect(note.closest('[role="status"]')).toBeNull();
     expect(screen.queryByLabelText('Name')).toBeNull();
     expect(screen.queryByRole('status', { name: 'Loading profile' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Log out' })).toBeNull();

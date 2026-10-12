@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useBackend } from '../../api/BackendContext';
 import { logOut } from '../../app/logout';
 import { Avatar } from '../../app/ProfileMenu';
 import { useNow } from '../../app/useNow';
-import { useProfile } from '../../app/useProfile';
+import { useProfile, useProfileLoading } from '../../app/useProfile';
 import { Button } from '../../components/Button';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { ListPage } from '../../components/ListPage';
@@ -25,12 +25,21 @@ export function ProfileView() {
   const backend = useBackend();
   const navigate = useNavigate();
   const { profile, failed, reload } = useProfile();
+  const loading = useProfileLoading();
   const session = useSessionStore((s) => s.session);
   const ready = session?.state === 'ready';
   const now = useNow();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fix round 1 (Minor 1): leaving `ready` drops the confirmation, so it never reopens on the next login.
+  useEffect(() => {
+    if (!ready) {
+      setConfirming(false);
+      setError(null);
+    }
+  }, [ready]);
 
   const logout = async () => {
     setBusy(true);
@@ -48,7 +57,7 @@ export function ProfileView() {
   if (!ready) {
     // Only `expired` reaches here (the gate sends every other non-ready state to setup/login).
     body = (
-      <div className="profile-notice" role="status">
+      <div className="profile-notice">
         <p>{copy.expired}</p>
         <Button variant="primary" onClick={() => void navigate('/login')}>{copy.logIn}</Button>
       </div>
@@ -60,7 +69,7 @@ export function ProfileView() {
           <Avatar profile={profile} size={56} />
           <div>
             <strong>{profile.name}</strong>
-            <div className="muted">{profile.userId}<span className="chip">{profile.broker}</span></div>
+            <div className="muted">{profile.userId}{' '}<span className="chip">{profile.broker}</span></div>
           </div>
         </div>
         <div className="profile-fields">
@@ -76,7 +85,7 @@ export function ProfileView() {
     );
   } else if (failed) {
     body = (
-      <div className="profile-notice" role="status">
+      <div className="profile-notice">
         <p>{copy.loadFailed}</p>
         <Button icon="refresh" onClick={() => void reload()}>{copy.retry}</Button>
       </div>
@@ -86,7 +95,7 @@ export function ProfileView() {
   }
 
   return (
-    <ListPage title={copy.title} description={copy.description} onRefresh={ready ? () => void reload() : undefined}>
+    <ListPage title={copy.title} description={copy.description} onRefresh={ready ? () => void reload() : undefined} refreshing={loading}>
       {body}
       {ready && (
         <>
@@ -101,7 +110,7 @@ export function ProfileView() {
         </>
       )}
       <ConfirmDialog
-        open={confirming && ready}
+        open={confirming}
         title={copy.confirmTitle}
         message={copy.confirmMessage}
         confirmLabel={copy.logOut}
