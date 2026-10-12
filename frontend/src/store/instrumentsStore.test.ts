@@ -1,9 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../api/instruments', () => ({ instrumentsByTokens: vi.fn(), instrumentByIdentifier: vi.fn() }));
 import { instrumentByIdentifier, instrumentsByTokens } from '../api/instruments';
-import { ensureInstruments, resolveIdentifier, useInstrument, useInstruments, useResolvedInstrument } from './instrumentsStore';
+import { ensureInstruments, RESOLVE_RETRY_MS, resolveIdentifier, useInstrument, useInstruments, useResolvedInstrument } from './instrumentsStore';
 import { INFY, NIFTY50, NIFTY_OPTION, RELIANCE, SBIN, TCS } from '../instruments/fixtures';
 import { BindingError } from '../api/call';
 import type { Instrument } from '../instruments/types';
@@ -214,5 +214,94 @@ describe('Ruling 107 m6/m7', () => {
     expect(await resolveIdentifier('NSE:NIFTY 50')).toEqual(NIFTY50);
     expect(instrumentByIdentifier).toHaveBeenCalledTimes(1);
     expect(instrumentByIdentifier).toHaveBeenCalledWith('NSE:NIFTY 50');
+  });
+});
+
+describe('Ruling 113 I2: useResolvedInstrument retries a failed lookup while mounted', () => {
+  const notFound = () => new BindingError('not_found', 'No instrument NSE:NIFTY 50 in the instrument list.');
+  const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('retries after 5 s, 15 s and 60 s, then stops', async () => {
+    expect(RESOLVE_RETRY_MS).toEqual([5_000, 15_000, 60_000]);
+    vi.mocked(instrumentByIdentifier).mockRejectedValue(notFound());
+    const { result } = renderHook(() => useResolvedInstrument('NSE:NIFTY 50'));
+    await flush();
+    expect(result.current.error).toBe('No instrument NSE:NIFTY 50 in the instrument list.');
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(1);
+    await advance(4_999);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(2);
+    await advance(15_000);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(3);
+    await advance(60_000);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(4);
+    await advance(10 * 60_000);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a retry that succeeds fills the hook and leaves no timer behind', async () => {
+    vi.mocked(instrumentByIdentifier).mockRejectedValueOnce(notFound()).mockResolvedValueOnce(NIFTY50);
+    const { result } = renderHook(() => useResolvedInstrument('NSE:NIFTY 50'));
+    await flush();
+    expect(result.current.instrument).toBeUndefined();
+    await advance(5_000);
+    expect(result.current).toEqual({ instrument: NIFTY50, error: undefined });
+    expect(vi.getTimerCount()).toBe(0);
+    await advance(10 * 60_000);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(2);
+  });
+
+  it('unmounting clears the pending retry', async () => {
+    vi.mocked(instrumentByIdentifier).mockRejectedValue(notFound());
+    const { unmount } = renderHook(() => useResolvedInstrument('NSE:NIFTY 50'));
+    await flush();
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    await advance(10 * 60_000);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(1);
+  });
+
+  it('every transition to ready retries, even after the backoff is used up', async () => {
+    vi.mocked(instrumentByIdentifier).mockRejectedValue(notFound());
+    useSessionStore.getState().setSession(session('expired', 'AB1234'));
+    const { result } = renderHook(() => useResolvedInstrument('NSE:NIFTY 50'));
+    await flush();
+    for (const ms of RESOLVE_RETRY_MS) await advance(ms); // act flushes each re-run when it exits
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(4);
+    vi.mocked(instrumentByIdentifier).mockResolvedValueOnce(NIFTY50);
+    act(() => useSessionStore.getState().setSession(session('ready', 'AB1234')));
+    await flush();
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(5);
+    expect(result.current.instrument).toEqual(NIFTY50);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a →ready while resolved asks nothing; a reset clears the pending retry and starts a fresh lookup (Ruling 107)', async () => {
+    vi.mocked(instrumentByIdentifier).mockRejectedValue(notFound());
+    useSessionStore.getState().setSession(session('expired', 'AB1234'));
+    renderHook(() => useResolvedInstrument('NSE:NIFTY 50'));
+    await flush();
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => resetOnLogout()); // generation bump: the old timer goes, a new lookup runs at once
+    await flush();
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+    await advance(4_999);
+    expect(instrumentByIdentifier).toHaveBeenCalledTimes(2);
+
+    vi.mocked(instrumentByIdentifier).mockReset().mockResolvedValue(NIFTY50);
+    const ok = renderHook(() => useResolvedInstrument('NSE:NIFTY BANK'));
+    await flush();
+    act(() => useSessionStore.getState().setSession(session('ready', 'AB1234')));
+    await flush();
+    expect(ok.result.current.instrument).toEqual(NIFTY50);
+    expect(vi.mocked(instrumentByIdentifier).mock.calls.filter(([id]) => id === 'NSE:NIFTY BANK')).toHaveLength(1);
   });
 });

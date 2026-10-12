@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const nav = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock('react-router-dom', () => ({ useNavigate: () => nav.navigate }));
@@ -15,6 +15,15 @@ import { useTicksStore } from '../store/ticks';
 import { tick } from '../market/testing';
 import { FIXED_NOW } from '../api/mock/fixtures';
 import { NIFTY50, NIFTYBANK, SENSEX } from '../instruments/fixtures';
+import { instrumentByIdentifier } from '../api/instruments';
+import { BindingError } from '../api/call';
+import { useSessionStore } from '../store/session';
+import type { SessionStatus } from '../api/backend';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const realLookup = vi.mocked(instrumentByIdentifier).getMockImplementation()!;
+const notFound = (id: string) => new BindingError('not_found', `No instrument ${id} in the instrument list.`);
 
 // Deviation: showOnDashboard (P0-5 Task 10, store/chartContextsStore) is not on this branch; the strip takes it as
 // the onShow prop until Task 10 lands.
@@ -25,7 +34,7 @@ const pill = (name: string) => screen.getByRole('button', { name: new RegExp(`^$
 const resolved = () => waitFor(() => expect(document.querySelectorAll('[data-instrument-name]')).toHaveLength(3));
 const fresh = { tsMs: FIXED_NOW }; // stamped in this run, so not stale (Ruling 93)
 
-beforeEach(() => { useTicksStore.setState({ latest: {} }); vi.clearAllMocks(); setWidth(1600); });
+beforeEach(() => { useTicksStore.setState({ latest: {} }); vi.clearAllMocks(); vi.mocked(instrumentByIdentifier).mockImplementation(realLookup); setWidth(1600); });
 
 describe('IndexTickerStrip', () => {
   it('subscribes the three indices as a widget consumer', async () => {
@@ -133,5 +142,67 @@ describe('IndexTickerStrip', () => {
     const el = screen.getByText('NIFTY BANK');
     expect(el).toHaveAttribute('data-instrument-name');
     expect(el).toHaveAttribute('data-instrument-token', String(NIFTYBANK.token));
+  });
+
+  it('m3: unresolved (lookup failed) shows the fallback label and "no price yet", and a click still navigates', async () => {
+    vi.mocked(instrumentByIdentifier).mockImplementation(async (id: string) => { throw notFound(id); });
+    render(<IndexTickerStrip onShow={showOnDashboard} />);
+    await waitFor(() => expect(instrumentByIdentifier).toHaveBeenCalledTimes(3));
+    await act(async () => {});
+    expect(document.querySelector('[data-instrument-name]')).toBeNull();
+    expect(screen.getAllByText('—')).toHaveLength(3);
+    const p = pill('NIFTY 50');
+    expect(p).toHaveTextContent('NIFTY 50');
+    expect(p).toHaveAccessibleName('NIFTY 50, no price yet');
+    fireEvent.click(p);
+    expect(showOnDashboard).toHaveBeenCalledWith('NSE:NIFTY 50');
+    expect(nav.navigate).toHaveBeenCalledWith('/home');
+    expect(useSubscription).toHaveBeenLastCalledWith('index-ticker-strip', 'widget', []);
+  });
+
+  it('I1: the focus ring sits inside the clipped ticker area; long names truncate instead of overflowing', () => {
+    const tickerCss = readFileSync(join(process.cwd(), 'src/app/tickerStrip.css'), 'utf8');
+    expect(tickerCss).toMatch(/\.ticker-pill:focus-visible\s*\{[^}]*outline-offset:\s*-2px/);
+    expect(tickerCss).toMatch(/\.ticker-pill__name\s*\{[^}]*min-width:\s*0[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
+  });
+});
+
+describe('IndexTickerStrip: a failed lookup is retried (Ruling 113 I2)', () => {
+  const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('the master is not imported yet: after the 5 s retry the pill gets its name and subscribes', async () => {
+    vi.mocked(instrumentByIdentifier).mockImplementationOnce(async (id: string) => { throw notFound(id); });
+    const { unmount } = render(<IndexTickerStrip />);
+    await flush();
+    expect(pill('NIFTY 50').querySelector('[data-instrument-name]')).toBeNull();
+    expect(useSubscription).toHaveBeenLastCalledWith('index-ticker-strip', 'widget', [NIFTYBANK.token, SENSEX.token]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(pill('NIFTY 50').querySelector('[data-instrument-name]')).not.toBeNull();
+    expect(useSubscription).toHaveBeenLastCalledWith('index-ticker-strip', 'widget', [NIFTY50.token, NIFTYBANK.token, SENSEX.token]);
+    expect(vi.getTimerCount()).toBe(0);
+    unmount();
+  });
+
+  it('no timers survive unmount', async () => {
+    vi.mocked(instrumentByIdentifier).mockImplementation(async (id: string) => { throw notFound(id); });
+    const { unmount } = render(<IndexTickerStrip />);
+    await flush();
+    expect(vi.getTimerCount()).toBe(3);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a transition to ready retries the unresolved pills', async () => {
+    useSessionStore.getState().setSession({ state: 'expired', userId: 'AB1234' } as SessionStatus);
+    vi.mocked(instrumentByIdentifier).mockImplementation(async (id: string) => { throw notFound(id); });
+    render(<IndexTickerStrip />);
+    await flush();
+    vi.mocked(instrumentByIdentifier).mockImplementation(realLookup);
+    act(() => useSessionStore.getState().setSession({ state: 'ready', userId: 'AB1234' } as SessionStatus));
+    await flush();
+    expect(document.querySelectorAll('[data-instrument-name]')).toHaveLength(3);
+    expect(useSubscription).toHaveBeenLastCalledWith('index-ticker-strip', 'widget', [NIFTY50.token, NIFTYBANK.token, SENSEX.token]);
   });
 });
