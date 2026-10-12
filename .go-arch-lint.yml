@@ -110,7 +110,7 @@ deps:
   service:   # §2.3: the façade sits above every domain package; only app/api (Task 22) and cmd depend on it
     mayDependOn: [bus, settings, store, secrets, calendar, kite, ratelimit, ticker, feed, candles, candles_backfill, candles_builder, instruments, orders]
   orders:
-    mayDependOn: [kite]   # §2.3 also allows orderwrite; added when P4 wires it
+    mayDependOn: [bus, kite, ratelimit, store, ticker]   # P0-3 Task 19 Sync: bus topics, poll priority, orders cache, ticker ticks; §2.3 also allows orderwrite (P4)
   storetest:
     mayDependOn: [store]
   ratelimit:
