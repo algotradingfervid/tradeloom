@@ -4,12 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"regexp"
 
 	"tradeloom/internal/logging"
 )
 
 // JournalTailRows is how many order-journal rows a support bundle carries (FR-SHELL-018).
 const JournalTailRows = 200
+
+// secretLikeKey mirrors settings' secret-key guard (store cannot import settings).
+var secretLikeKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|passphrase|totp|authorization|checksum)`)
 
 type journalRow struct {
 	ID          int64   `json:"id"`
@@ -34,6 +38,9 @@ func (db *DB) SupportFiles(ctx context.Context) ([]logging.BundleFile, error) {
 	}
 	setJSON := map[string]json.RawMessage{}
 	for k, v := range set {
+		if logging.Default.IsSensitiveKey(k) || secretLikeKey.MatchString(k) {
+			continue // defence in depth: settings never hold secrets, but a stray row must not ship
+		}
 		if json.Valid([]byte(v)) {
 			setJSON[k] = json.RawMessage(v)
 		}
