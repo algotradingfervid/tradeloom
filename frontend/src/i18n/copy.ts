@@ -157,19 +157,24 @@ export const calendarCopy = {
   edit: 'Edit',
   remove: 'Remove',
   removeTitle: 'Remove calendar entry?',
-  removeMessage: (date: string) => `The entry for ${date} is removed. Weekdays without an entry count as trading days.`,
+  removeMessage: (date: string) => `The entry for ${date} is removed. The bundled calendar applies to that day again.`,
   save: 'Save',
   empty: 'No holidays or special sessions are listed.',
   cols: { date: 'Date', exchange: 'Exchange', type: 'Type', session: 'Session', source: 'Source' },
-  types: { holiday: 'Holiday', special: 'Special session', trading: 'Trading day' },
-  // Labels for every `CalendarEntryDTO.type` Go can list (an inferred day is not offered in the dialog).
-  typeLabels: { holiday: 'Holiday', special: 'Special session', trading: 'Trading day', 'inferred-non-trading': 'Non-trading day (inferred)' } as Record<string, string>,
-  // `CalendarEntryDTO.source`: bundled file, Settings dialog, CSV import or inference (P0-2 `calendar.Entry.Source`).
-  sources: { shipped: 'Bundled', user: 'Added by you', import: 'Imported', inferred: 'Inferred' } as Record<string, string>,
+  tableCaption: 'Calendar entries',
+  // One label per `CalendarEntryDTO.type` Go lists; the dialog offers all but the inferred type.
+  dayTypes: { holiday: 'Holiday', special: 'Special session', trading: 'Trading day', 'inferred-non-trading': 'Non-trading day (inferred)' },
+  // `CalendarEntryDTO.source` of an override: Settings dialog, CSV import or inference (Go lists overrides only).
+  sources: { user: 'Added by you', import: 'Imported', inferred: 'Inferred' } as Record<string, string>,
   phases: { 'pre-open': 'Pre-open', continuous: 'Continuous trading', closing: 'Closing session', 'post-closing': 'Post-closing', closed: 'Closed' },
-  fields: { date: 'Date', exchange: 'Exchange', type: 'Type', phase: 'Session phase', start: 'Start', end: 'End' },
+  fields: { date: 'Date', exchange: 'Exchange', type: 'Type', target: 'Phase to edit', phase: 'Session phase', start: 'Start', end: 'End' },
+  phaseList: 'Phases of this day',
+  newPhase: 'New phase',
+  inferredHint: 'This day was marked closed because no market data arrived for it. Saving it makes it a holiday added by you.',
   tradingTimesHint: 'Leave Start and End empty for the regular session times.',
   dateRequired: 'Choose a date',
   timesInvalid: 'Enter a start time before the end time',
   continuousRequired: 'A session needs a continuous trading phase',
+  // Go's own wording (internal/service/calendar.go parseEntry).
+  duplicateKind: 'Each phase kind appears at most once.',
 } as const;

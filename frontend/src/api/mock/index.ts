@@ -3,6 +3,7 @@ import type {
   EventMap, EventName, HoldingsSnapshot, JobProgress, PositionsSnapshot, Profile, RefreshScope, SessionStatus, ShortcutAction,
   ShortcutScope, StatusSnapshot,
 } from '../backend';
+import { CalendarRefusal, checkEntry, mergeOverrides, parseCalendarCsv } from './calendar';
 import { next0600Ist } from './fixtures';
 import { createMarketDomains, type MarketMockState } from './market';
 
@@ -19,7 +20,10 @@ export interface MockState extends MarketMockState {
   shortcuts: ShortcutAction[];
   stats: DataStats;
   backup: BackupInfo;
+  /** Go lists overrides only (user, import, inferred) — never the bundled days. */
   calendar: CalendarInfo;
+  /** Contents of the CSV `Calendar.Import` reads (whatever path was chosen); undefined = file not found. */
+  calendarCsv?: string;
   info: AppInfo;
   crash: CrashInfo;
   folderChoice: string;
@@ -47,6 +51,16 @@ const copy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 function refusal(code: string, stage: string, reason: string): Error {
   return new Error(JSON.stringify({ code, stage, reason }));
+}
+
+/** Runs a calendar operation, turning a `CalendarRefusal` into Go's `{code, stage: "calendar", reason}` rejection. */
+function goLike<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (e instanceof CalendarRefusal) throw refusal(e.code, 'calendar', e.reason);
+    throw e;
+  }
 }
 
 const TIMEFRAMES = ['minute', '3minute', '5minute', '10minute', '15minute', '30minute', '60minute', 'day'];
@@ -294,18 +308,25 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
     }),
     calendar: wrap('calendar', {
+      // Go-like (Ruling 100 M4): overrides only, Go's refusal codes and reasons (./calendar.ts).
       info: () => copy(state.calendar),
       chooseImportFile: () => state.fileChoice,
-      import: (_path: string) => copy(state.calendar),
-      upsert: (entry: CalendarEntryInput) => {
-        const others = state.calendar.entries.filter((e) => !(e.exchange === entry.exchange && e.date === entry.date));
-        state.calendar.entries = [...others, { ...entry, source: 'user' }].sort((a, b) => a.date.localeCompare(b.date));
+      import: (path: string) => goLike(() => {
+        if (!path || state.calendarCsv === undefined) throw new CalendarRefusal('not_found', 'The calendar file was not found.');
+        mergeOverrides(state.calendar, parseCalendarCsv(state.calendarCsv));
         return copy(state.calendar);
-      },
-      remove: (exchange: string, date: string) => {
+      }),
+      upsert: (entry: CalendarEntryInput) => goLike(() => {
+        mergeOverrides(state.calendar, [checkEntry(entry)]);
+        return copy(state.calendar);
+      }),
+      remove: (exchange: string, date: string) => goLike(() => {
+        if (!state.calendar.entries.some((e) => e.exchange === exchange && e.date === date)) {
+          throw new CalendarRefusal('not_found', `No override for ${exchange} on ${date}.`);
+        }
         state.calendar.entries = state.calendar.entries.filter((e) => !(e.exchange === exchange && e.date === date));
         return copy(state.calendar);
-      },
+      }),
     }),
     diagnostics: wrap('diagnostics', {
       openLogsFolder: () => undefined,

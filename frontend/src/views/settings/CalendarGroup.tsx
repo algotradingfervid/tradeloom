@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
-import type { CalendarDayType, CalendarEntryDTO, CalendarEntryInput, CalendarExchange, CalendarInfo, PhaseDTO, PhaseKind } from '../../api/backend';
+import type {
+  CalendarDayType, CalendarEntryDTO, CalendarEntryInput, CalendarExchange, CalendarInfo, CalendarListedDayType, PhaseDTO, PhaseKind,
+} from '../../api/backend';
 import { useBackend } from '../../api/BackendContext';
 import { parseBackendError } from '../../api/errors';
 import { Button } from '../../components/Button';
@@ -43,12 +45,13 @@ export function isoDayMs(iso: string): number {
 }
 
 const EXCHANGES: { value: CalendarExchange; label: string }[] = ['NSE', 'BSE', 'NFO', 'BFO'].map((x) => ({ value: x as CalendarExchange, label: x }));
-const TYPES = (Object.keys(copy.types) as CalendarDayType[]).map((t) => ({ value: t, label: copy.types[t] }));
+// One label table (copy.dayTypes); the dialog offers the types a user can save.
+const DIALOG_TYPES: readonly CalendarDayType[] = ['holiday', 'special', 'trading'];
+const TYPES = DIALOG_TYPES.map((t) => ({ value: t, label: copy.dayTypes[t] }));
 const PHASES = (Object.keys(copy.phases) as PhaseKind[]).filter((k) => k !== 'closed').map((k) => ({ value: k, label: copy.phases[k] }));
-const isDialogType = (t: string): t is CalendarDayType => t in copy.types;
-
-// Go lists inferred non-trading days too (type `inferred-non-trading`), so labels fall back to the raw value.
-const typeLabel = (t: string): string => copy.typeLabels[t] ?? t;
+const isDialogType = (t: CalendarListedDayType): t is CalendarDayType => (DIALOG_TYPES as readonly string[]).includes(t);
+const typeLabel = (t: CalendarListedDayType): string => copy.dayTypes[t];
+const phaseText = (p: PhaseDTO): string => `${copy.phases[p.kind]} ${p.start}–${p.end}`;
 
 const sessionText = (e: CalendarEntryDTO): string =>
   e.phases.filter((p) => p.kind !== 'closed' && p.start && p.end).map((p) => `${p.start}–${p.end}`).join(', ') || DASH;
@@ -61,43 +64,74 @@ const columns: Column<CalendarEntryDTO>[] = [
   { id: 'source', header: copy.cols.source, width: '16%', cell: (e) => copy.sources[e.source] ?? e.source },
 ];
 
-/** One editable phase; other phases of an existing entry are kept as they are. */
-interface Draft { exchange: CalendarExchange; date: string; type: CalendarDayType; kind: PhaseKind; start: string; end: string }
+/** Which phase the dialog edits: an index into the day's phases, or a phase to add. */
+type Target = number | 'new';
+interface PhaseDraft { kind: PhaseKind; start: string; end: string }
+interface FieldErrors { date?: string; kind?: string; times?: string }
+
+const draftFor = (phases: PhaseDTO[], target: Target): PhaseDraft => {
+  if (target !== 'new') return { ...phases[target] };
+  const used = new Set(phases.map((p) => p.kind));
+  const kind = used.has('continuous') ? (PHASES.find((o) => !used.has(o.value))?.value ?? 'continuous') : 'continuous';
+  return { kind, start: '', end: '' };
+};
 
 function EntryDialog({ initial, onClose, onSaved }: { initial: CalendarEntryDTO | null; onClose: () => void; onSaved: (info: CalendarInfo) => void }) {
   const backend = useBackend();
-  const first = initial?.phases.find((p) => p.kind !== 'closed');
-  const [draft, setDraft] = useState<Draft>({
-    exchange: initial?.exchange ?? 'NSE', date: initial?.date ?? '',
-    type: initial && isDialogType(initial.type) ? initial.type : 'holiday',
-    kind: first?.kind ?? 'continuous', start: first?.start ?? '', end: first?.end ?? '',
-  });
-  const [error, setError] = useState<string | null>(null);
+  const [phases] = useState<PhaseDTO[]>(() => (initial?.phases ?? []).filter((p) => p.kind !== 'closed'));
+  const [exchange, setExchange] = useState<CalendarExchange>(initial?.exchange ?? 'NSE');
+  const [date, setDate] = useState(initial?.date ?? '');
+  // An inferred non-trading day is saved as a user holiday (copy.inferredHint).
+  const [type, setType] = useState<CalendarDayType>(initial && isDialogType(initial.type) ? initial.type : 'holiday');
+  const [target, setTarget] = useState<Target>(phases.length > 0 ? 0 : 'new');
+  const [draft, setDraft] = useState<PhaseDraft>(() => draftFor(phases, phases.length > 0 ? 0 : 'new'));
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const showTimes = draft.type !== 'holiday';
-  // A trading day without times keeps the regular session (Go: no phases = regular phases).
-  const needsTimes = draft.type === 'special' || (draft.type === 'trading' && (draft.start !== '' || draft.end !== ''));
-  const set = (patch: Partial<Draft>) => setDraft((d) => ({ ...d, ...patch }));
+  const showPhases = type !== 'holiday';
+  const set = (patch: Partial<PhaseDraft>) => setDraft((d) => ({ ...d, ...patch }));
+  const chooseTarget = (t: Target) => {
+    setTarget(t);
+    setDraft(draftFor(phases, t));
+    setErrors({});
+  };
+
+  /** The phases to send, or field errors. Other phases are never dropped or merged (Ruling 100 I1). */
+  const build = (): { phases: PhaseDTO[] } | { errors: FieldErrors } => {
+    const errs: FieldErrors = {};
+    if (!date) errs.date = copy.dateRequired;
+    if (type === 'holiday') return Object.keys(errs).length ? { errors: errs } : { phases: [] };
+    const rest = target === 'new' ? phases : phases.filter((_, i) => i !== target);
+    // A trading day without times keeps the regular session (Go: no phases = regular phases).
+    const include = target !== 'new' || draft.start !== '' || draft.end !== '' || (type === 'special' && rest.length === 0);
+    let out = rest;
+    if (include) {
+      if (!draft.start || !draft.end || draft.start >= draft.end) errs.times = copy.timesInvalid;
+      if (rest.some((p) => p.kind === draft.kind)) errs.kind = copy.duplicateKind;
+      out = target === 'new' ? [...rest, draft] : phases.map((p, i) => (i === target ? draft : p));
+    }
+    // Go refuses trading/special days whose phases lack a continuous phase (P0-3 Ruling 77).
+    if (!errs.kind && out.length > 0 && !out.some((p) => p.kind === 'continuous')) errs.kind = copy.continuousRequired;
+    return Object.keys(errs).length ? { errors: errs } : { phases: out.map((p) => ({ kind: p.kind, start: p.start, end: p.end })) };
+  };
 
   const save = async () => {
     if (busy) return;
-    if (!draft.date) return setError(copy.dateRequired);
-    if (needsTimes && (!draft.start || !draft.end || draft.start >= draft.end)) return setError(copy.timesInvalid);
-    // The edited phase replaces the one it was opened with; the entry's other phases are kept.
-    const others = (initial?.phases ?? []).filter((p) => p !== first && p.kind !== draft.kind && p.kind !== 'closed');
-    const phases: PhaseDTO[] = needsTimes ? [{ kind: draft.kind, start: draft.start, end: draft.end }, ...others] : [];
-    // Go refuses trading/special days whose phases lack a continuous phase (P0-3 Ruling 77).
-    if (phases.length > 0 && !phases.some((p) => p.kind === 'continuous')) return setError(copy.continuousRequired);
-    const input: CalendarEntryInput = { exchange: draft.exchange, date: draft.date, type: draft.type, phases };
+    setRefusal(null);
+    const built = build();
+    if ('errors' in built) return setErrors(built.errors);
+    setErrors({});
+    const input: CalendarEntryInput = { exchange, date, type, phases: built.phases };
     setBusy(true);
     try {
       onSaved(await backend.calendar.upsert(input));
     } catch (e) {
-      setError(parseBackendError(e).reason);
+      setRefusal(parseBackendError(e).reason); // Go's reason, verbatim
       setBusy(false);
     }
   };
 
+  const targets = [...phases.map((p, i) => ({ value: String(i), label: phaseText(p) })), { value: 'new', label: copy.newPhase }];
   return (
     <Dialog
       open
@@ -106,17 +140,26 @@ function EntryDialog({ initial, onClose, onSaved }: { initial: CalendarEntryDTO 
       dismissible={!busy}
       footer={<><Button onClick={onClose} disabled={busy}>{componentCopy.cancel}</Button><Button variant="primary" onClick={() => void save()} disabled={busy}>{copy.save}</Button></>}
     >
-      <TextField label={copy.fields.date} type="date" value={draft.date} readOnly={initial !== null} onChange={(e) => set({ date: e.target.value })} />
-      <SelectField label={copy.fields.exchange} options={EXCHANGES} value={draft.exchange} disabled={initial !== null} onChange={(e) => set({ exchange: e.target.value as CalendarExchange })} />
-      <SelectField label={copy.fields.type} options={TYPES} value={draft.type} onChange={(e) => set({ type: e.target.value as CalendarDayType })} />
-      {showTimes && (
+      {initial?.type === 'inferred-non-trading' && <p className="muted">{copy.inferredHint}</p>}
+      <TextField label={copy.fields.date} type="date" value={date} readOnly={initial !== null} error={errors.date} onChange={(e) => setDate(e.target.value)} />
+      <SelectField label={copy.fields.exchange} options={EXCHANGES} value={exchange} disabled={initial !== null} onChange={(e) => setExchange(e.target.value as CalendarExchange)} />
+      <SelectField label={copy.fields.type} options={TYPES} value={type} onChange={(e) => { setType(e.target.value as CalendarDayType); setErrors({}); }} />
+      {showPhases && (
         <>
-          <SelectField label={copy.fields.phase} options={PHASES} value={draft.kind} onChange={(e) => set({ kind: e.target.value as PhaseKind })} />
-          <TextField label={copy.fields.start} type="time" value={draft.start} hint={draft.type === 'trading' ? copy.tradingTimesHint : undefined} onChange={(e) => set({ start: e.target.value })} />
-          <TextField label={copy.fields.end} type="time" value={draft.end} onChange={(e) => set({ end: e.target.value })} />
+          {phases.length > 0 && (
+            <>
+              <ul className="calendar__phases" aria-label={copy.phaseList}>
+                {phases.map((p) => <li key={p.kind}>{phaseText(p)}</li>)}
+              </ul>
+              <SelectField label={copy.fields.target} options={targets} value={String(target)} onChange={(e) => chooseTarget(e.target.value === 'new' ? 'new' : Number(e.target.value))} />
+            </>
+          )}
+          <SelectField label={copy.fields.phase} options={PHASES} value={draft.kind} error={errors.kind} onChange={(e) => set({ kind: e.target.value as PhaseKind })} />
+          <TextField label={copy.fields.start} type="time" value={draft.start} hint={type === 'trading' ? copy.tradingTimesHint : undefined} onChange={(e) => set({ start: e.target.value })} />
+          <TextField label={copy.fields.end} type="time" value={draft.end} error={errors.times} onChange={(e) => set({ end: e.target.value })} />
         </>
       )}
-      {error && <p className="field__error" role="alert">{error}</p>}
+      {refusal && <p className="field__error" role="alert">{refusal}</p>}
     </Dialog>
   );
 }
@@ -129,6 +172,7 @@ export function CalendarGroup() {
   const [importing, setImporting] = useState(false);
   const [editing, setEditing] = useState<CalendarEntryDTO | 'new' | null>(null);
   const [removing, setRemoving] = useState<CalendarEntryDTO | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -162,6 +206,8 @@ export function CalendarGroup() {
     }
   };
   const remove = async (entry: CalendarEntryDTO) => {
+    if (removeBusy) return;
+    setRemoveBusy(true);
     try {
       setInfo(await backend.calendar.remove(entry.exchange, entry.date));
     } catch (e) {
@@ -169,6 +215,7 @@ export function CalendarGroup() {
       // A rejected binding drops Go's CalendarInfo; re-read so the table matches Go (e.g. not_found).
       void load();
     } finally {
+      setRemoveBusy(false);
       setRemoving(null);
     }
   };
@@ -197,7 +244,7 @@ export function CalendarGroup() {
         <p className="muted">{copy.empty}</p>
       ) : (
         <DataTable
-          caption={copy.title}
+          caption={copy.tableCaption}
           columns={columns}
           rows={entries}
           rowKey={(e) => `${e.exchange}|${e.date}`}
@@ -221,6 +268,7 @@ export function CalendarGroup() {
         message={removing ? copy.removeMessage(isoToDisplay(removing.date)) : ''}
         confirmLabel={copy.remove}
         tone="danger"
+        busy={removeBusy}
         onConfirm={() => { if (removing) void remove(removing); }}
         onCancel={() => setRemoving(null)}
       />

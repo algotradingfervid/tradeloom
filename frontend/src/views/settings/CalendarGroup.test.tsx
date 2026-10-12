@@ -1,7 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { demoSeed } from '../../api/mock/fixtures';
-import type { CalendarDayType } from '../../api/backend';
 import { createMockBackend, type MockState } from '../../api/mock/index';
 import { istDayKey } from '../../i18n/format';
 import { resetAllStores } from '../../store/reset';
@@ -136,7 +135,7 @@ describe('FR-DATA-001 Settings → Market calendar', () => {
       const seed = demoSeed();
       seed.calendar.entries = [
         ...seed.calendar.entries,
-        { exchange: 'NSE', date: '2026-10-27', type: 'inferred-non-trading' as CalendarDayType, phases: [], source: 'inferred' },
+        { exchange: 'NSE', date: '2026-10-27', type: 'inferred-non-trading', phases: [], source: 'inferred' },
       ];
       renderApp({ route: '/settings/calendar', backend: createMockBackend(seed) });
       const row = await screen.findByRole('row', { name: /^27-10-2026/ });
@@ -157,10 +156,11 @@ describe('FR-DATA-001 Settings → Market calendar', () => {
       await waitFor(() => expect(backend.callsTo('calendar.info').length).toBeGreaterThan(reads));
     });
     it('a successful import replaces the table, toasts, and never shows the chosen path', async () => {
-      const backend = createMockBackend(demoSeed());
+      const seed = demoSeed();
+      seed.calendarCsv = 'date,exchange,type,phase,start,end\n2026-12-25,BSE,holiday,,,\n';
+      const backend = createMockBackend(seed);
       const { user } = renderApp({ route: '/settings/calendar', backend });
       await screen.findByRole('row', { name: /^20-10-2026/ });
-      backend.state.calendar.entries.push({ exchange: 'BSE', date: '2026-12-25', type: 'holiday', phases: [], source: 'import' });
       await user.click(screen.getByRole('button', { name: 'Import CSV…' }));
       expect(await screen.findByText('Calendar imported')).toBeInTheDocument();
       expect(backend.callsTo('calendar.import')[0].args).toEqual([backend.state.fileChoice]);
@@ -174,6 +174,133 @@ describe('FR-DATA-001 Settings → Market calendar', () => {
       await user.click(await screen.findByRole('button', { name: 'Import CSV…' }));
       await waitFor(() => expect(backend.callsTo('calendar.chooseImportFile')).toHaveLength(1));
       expect(backend.callsTo('calendar.import')).toHaveLength(0);
+    });
+  });
+
+  describe('fix round 1 (Ruling 100)', () => {
+    const twoPhaseSeed = () => {
+      const seed = demoSeed();
+      seed.calendar.entries = [{
+        exchange: 'NSE', date: '2026-11-08', type: 'special', source: 'import',
+        phases: [{ kind: 'pre-open', start: '18:00', end: '18:08' }, { kind: 'continuous', start: '18:15', end: '19:15' }],
+      }];
+      return createMockBackend(seed);
+    };
+    const openEdit = async (user: ReturnType<typeof renderApp>['user'], name: RegExp, dialogName = 'Edit calendar entry') => {
+      const row = await screen.findByRole('row', { name });
+      row.focus();
+      await user.keyboard('{Shift>}{F10}{/Shift}');
+      await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+      return screen.getByRole('dialog', { name: dialogName });
+    };
+
+    it('I1: switching a phase to a kind another phase already has is refused inline; no phase is dropped', async () => {
+      const backend = twoPhaseSeed();
+      const { user } = renderApp({ route: '/settings/calendar', backend });
+      const dialog = await openEdit(user, /^08-11-2026/);
+      await user.selectOptions(within(dialog).getByLabelText('Session phase'), 'continuous');
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+      expect(within(dialog).getByLabelText('Session phase')).toHaveAccessibleDescription('Each phase kind appears at most once.');
+      expect(backend.callsTo('calendar.upsert')).toHaveLength(0);
+    });
+    it('I2: the remove confirmation says the bundled calendar applies again', async () => {
+      const { user } = renderApp({ route: '/settings/calendar' });
+      const row = await screen.findByRole('row', { name: /^20-10-2026/ });
+      row.focus();
+      await user.keyboard('{Shift>}{F10}{/Shift}');
+      await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
+      const dialog = screen.getByRole('dialog', { name: 'Remove calendar entry?' });
+      expect(dialog).toHaveTextContent('The entry for 20-10-2026 is removed. The bundled calendar applies to that day again.');
+    });
+    it('M1: field errors are attached to their fields; Go refusals are a form-level alert', async () => {
+      const backend = createMockBackend(demoSeed());
+      const { user } = renderApp({ route: '/settings/calendar', backend });
+      await user.click(await screen.findByRole('button', { name: 'Add entry' }));
+      const dialog = screen.getByRole('dialog', { name: 'Add calendar entry' });
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+      const date = within(dialog).getByLabelText('Date');
+      expect(date).toHaveAttribute('aria-invalid', 'true');
+      expect(date).toHaveAccessibleDescription('Choose a date');
+      await user.type(date, '2026-11-09');
+      await user.selectOptions(within(dialog).getByLabelText('Type'), 'special');
+      await user.type(within(dialog).getByLabelText('Start'), '19:00');
+      await user.type(within(dialog).getByLabelText('End'), '18:00');
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+      expect(within(dialog).getByLabelText('End')).toHaveAccessibleDescription('Enter a start time before the end time');
+      expect(date).not.toHaveAttribute('aria-invalid');
+      backend.failNext('calendar.upsert', 'The date must be between 2000-01-01 and 2028-12-31.', 'invalid_entry');
+      await user.clear(within(dialog).getByLabelText('Start'));
+      await user.type(within(dialog).getByLabelText('Start'), '17:00');
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+      const alert = await within(dialog).findByText('The date must be between 2000-01-01 and 2028-12-31.');
+      expect(alert).toHaveAttribute('role', 'alert');
+      expect(within(dialog).getByLabelText('End')).not.toHaveAttribute('aria-invalid');
+    });
+    it('M2: the dialog lists every phase and edits the one the user chooses', async () => {
+      const backend = twoPhaseSeed();
+      const { user } = renderApp({ route: '/settings/calendar', backend });
+      const dialog = await openEdit(user, /^08-11-2026/);
+      const list = within(dialog).getByRole('list', { name: 'Phases of this day' });
+      expect(within(list).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['Pre-open 18:00–18:08', 'Continuous trading 18:15–19:15']);
+      await user.selectOptions(within(dialog).getByLabelText('Phase to edit'), '1');
+      expect(within(dialog).getByLabelText('Start')).toHaveValue('18:15');
+      await user.clear(within(dialog).getByLabelText('End'));
+      await user.type(within(dialog).getByLabelText('End'), '19:30');
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+      expect(backend.callsTo('calendar.upsert')[0].args[0]).toEqual({
+        exchange: 'NSE', date: '2026-11-08', type: 'special',
+        phases: [{ kind: 'pre-open', start: '18:00', end: '18:08' }, { kind: 'continuous', start: '18:15', end: '19:30' }],
+      });
+    });
+    it('M2: a new phase can be added to an existing day', async () => {
+      const backend = twoPhaseSeed();
+      const { user } = renderApp({ route: '/settings/calendar', backend });
+      const dialog = await openEdit(user, /^08-11-2026/);
+      await user.selectOptions(within(dialog).getByLabelText('Phase to edit'), 'new');
+      await user.selectOptions(within(dialog).getByLabelText('Session phase'), 'closing');
+      await user.type(within(dialog).getByLabelText('Start'), '19:15');
+      await user.type(within(dialog).getByLabelText('End'), '19:25');
+      await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+      expect((backend.callsTo('calendar.upsert')[0].args[0] as { phases: unknown }).phases).toEqual([
+        { kind: 'pre-open', start: '18:00', end: '18:08' }, { kind: 'continuous', start: '18:15', end: '19:15' },
+        { kind: 'closing', start: '19:15', end: '19:25' },
+      ]);
+    });
+    it('M5: the remove confirmation is busy while Go works and sends one request', async () => {
+      const backend = createMockBackend(demoSeed());
+      const real = backend.calendar.remove;
+      let release = () => {};
+      const gate = new Promise<void>((r) => { release = r; });
+      let sent = 0;
+      backend.calendar.remove = (exchange, date) => { sent++; return gate.then(() => real(exchange, date)); };
+      const { user } = renderApp({ route: '/settings/calendar', backend });
+      const row = await screen.findByRole('row', { name: /^20-10-2026/ });
+      row.focus();
+      await user.keyboard('{Shift>}{F10}{/Shift}');
+      await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
+      const dialog = screen.getByRole('dialog', { name: 'Remove calendar entry?' });
+      const confirm = within(dialog).getByRole('button', { name: 'Remove' });
+      await user.click(confirm);
+      await user.click(confirm);
+      await user.keyboard('{Escape}');
+      expect(confirm).toBeDisabled();
+      expect(screen.getByRole('dialog', { name: 'Remove calendar entry?' })).toBeInTheDocument();
+      release();
+      await waitFor(() => expect(screen.queryByRole('row', { name: /^20-10-2026/ })).toBeNull());
+      expect(sent).toBe(1);
+    });
+    it('M7: the table caption differs from the section heading', async () => {
+      renderApp({ route: '/settings/calendar' });
+      expect(await screen.findByRole('table', { name: 'Calendar entries' })).toBeInTheDocument();
+    });
+    it('M7: editing an inferred day explains it becomes a holiday you added', async () => {
+      const seed = demoSeed();
+      seed.calendar.entries = [{ exchange: 'NSE', date: '2026-10-27', type: 'inferred-non-trading', phases: [], source: 'inferred' }];
+      const backend = createMockBackend(seed);
+      const { user } = renderApp({ route: '/settings/calendar', backend });
+      const dialog = await openEdit(user, /^27-10-2026/);
+      expect(dialog).toHaveTextContent('This day was marked closed because no market data arrived for it. Saving it makes it a holiday added by you.');
+      expect(within(dialog).getByLabelText('Type')).toHaveValue('holiday');
     });
   });
 });
