@@ -44,7 +44,9 @@ components:
   calendardata: { in: assets/calendar }                 # embedded exchange-calendar CSV
   calendar:   { in: internal/calendar }
   candles:    { in: internal/candles }
-  candles_sqlite: { in: internal/candles/sqlite }       # §2.4 rule 4: the only other sqlite user
+  candles_sqlite: { in: internal/candles/sqlite }
+  candles_builder: { in: internal/candles/builder }   # P0-2 Task 19: ticks → candles
+  instruments: { in: internal/instruments }        # P0-2 Tasks 15–16: instrument master and refresher       # §2.4 rule 4: the only other sqlite user
   kite:       { in: internal/kite }
   ratelimit:  { in: internal/kite/ratelimit }
   ticker:     { in: internal/kite/ticker }
@@ -89,6 +91,10 @@ deps:
   kite:
     mayDependOn: [bus, ratelimit, settings]   # settings: registers kite.* keys (settings is a §2.3 leaf)
     canUse: [kite]
+  candles_builder:
+    mayDependOn: [bus, calendar, candles, ticker]
+  instruments:
+    mayDependOn: [bus, calendar, kite, ratelimit, store]
   ticker:
     mayDependOn: [bus, kite]
     canUse: [kite]
