@@ -29,12 +29,16 @@ describe('InstrumentLabel', () => {
     const root = container.firstElementChild!;
     expect(root).toHaveAttribute('data-instrument-token', String(RELIANCE_OCT_FUT.token));
     expect(root).toHaveAttribute('title', 'RELIANCE OCT FUT · NFO-FUT · Future');
+    expect(screen.getByText('NFO-FUT')).toHaveClass('chip');
     expect(screen.getByText('NFO-FUT').closest('.instrument-label__symbol')).toBeNull();
   });
   it('FR-WATCH-008: a BSE row also listed on NSE carries an "Also on NSE" flag in text', () => {
     render(<InstrumentLabel instrument={{ ...RELIANCE_BSE, alsoOnNse: true }} />);
     expect(screen.getByText('Also on NSE')).toBeInTheDocument();
+    expect(screen.getByText('Also on NSE')).toHaveClass('chip', 'chip--flag');
     expect(screen.getByText('Also on NSE').closest('.instrument-label__symbol')).toBeNull();
+    expect(screen.getByText('Also on NSE').closest('[title]')).toHaveAttribute(
+      'title', 'RELIANCE · BSE · Also on NSE — This company is also listed on NSE');
     render(<InstrumentLabel instrument={RELIANCE_BSE} />);
     expect(screen.getAllByText('Also on NSE')).toHaveLength(1);
   });
@@ -43,9 +47,16 @@ describe('InstrumentLabel', () => {
     const { container } = render(<InstrumentLabel instrument={labelOfItem(item)} />);
     expect(container.firstElementChild).toHaveAttribute('data-exchange-tag', 'NSE');
   });
-  it('NFR-15: an out-of-scope instrument renders nothing (and does not throw)', () => {
+  it('P0-3 Ruling 38: an out-of-scope instrument is shown flagged "View only", never silently dropped', () => {
     const { container } = render(<InstrumentLabel instrument={NIFTY_OPTION} />);
-    expect(container).toBeEmptyDOMElement();
+    const root = container.firstElementChild!;
+    expect(screen.getByText('NIFTY OCT 22500 CE')).toHaveClass('instrument-label__symbol');
+    expect(screen.getByText('View only')).toHaveClass('chip', 'chip--flag');
+    expect(screen.getByText('View only').closest('.instrument-label__symbol')).toBeNull();
+    expect(root).toHaveAttribute('data-out-of-scope', 'true');
+    expect(root).not.toHaveAttribute('data-exchange-tag');
+    expect(root.getAttribute('title')).toBe(
+      'NIFTY OCT 22500 CE · NFO-OPT · View only — Outside Tradeloom’s equity scope: shown for completeness and counted in the totals.');
   });
 });
 
@@ -97,5 +108,26 @@ describe('PriceChange', () => {
     rerender(<PriceChange token={SBIN.token} />);
     expect(container.firstElementChild).not.toHaveAttribute('data-stale');
     expect(screen.queryByText('Last known price, not live yet')).toBeNull();
+  });
+  it('negative absolute change keeps its sign (ticker pills)', () => {
+    useTicksStore.getState().applyBatch([tick(NIFTY50.token, 22400, 22500, { tsMs: FIXED_NOW })]);
+    const { container } = render(<PriceChange token={NIFTY50.token} showAbsolute />);
+    expect(screen.getByText('-100.00 (-0.44%)')).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute('data-direction', 'down');
+  });
+  it('decimals other than 2 apply to the price and the absolute change', () => {
+    useTicksStore.getState().applyBatch([tick(SBIN.token, 1000.1234, 1000, { tsMs: FIXED_NOW })]);
+    render(<PriceChange token={SBIN.token} decimals={4} showAbsolute />);
+    expect(screen.getByText('1,000.1234')).toBeInTheDocument();
+    expect(screen.getByText('+0.1234 (+0.01%)')).toBeInTheDocument();
+  });
+  it('m5: the tone follows what is shown — the percent alone, or the absolute change too', () => {
+    // +0.01 absolute is +0.00001%: flat when only the percent is shown, up when the absolute change is shown.
+    useTicksStore.getState().applyBatch([tick(SBIN.token, 100000.01, 100000, { tsMs: FIXED_NOW })]);
+    const { container } = render(<PriceChange token={SBIN.token} />);
+    expect(screen.getByText('(+0.00%)')).toBeInTheDocument();
+    expect(container.firstElementChild).toHaveAttribute('data-direction', 'flat');
+    const wide = render(<PriceChange token={SBIN.token} showAbsolute />);
+    expect(wide.container.firstElementChild).toHaveAttribute('data-direction', 'up');
   });
 });

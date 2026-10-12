@@ -9,17 +9,24 @@ import { useSessionStore } from './session';
 interface InstrumentsState {
   byToken: Record<number, Instrument>;
   byId: Record<string, number>;
+  /**
+   * Bumped when a load is dropped (reset, user switch) or the unknown-token set is cleared, so useInstrument /
+   * useResolvedInstrument ask again instead of staying empty (Ruling 107 I1).
+   */
+  generation: number;
   put(list: readonly Instrument[]): void;
 }
 
 export const useInstruments = create<InstrumentsState>()((set) => ({
   byToken: {},
   byId: {},
+  generation: 0,
   put: (list) => set((s) => {
+    const fresh = list.filter(isInScope); // NFR-15: never cache an option, MCX or currency row
+    if (fresh.length === 0) return s; // nothing added: no notification (Ruling 107 I2)
     const byToken = { ...s.byToken };
     const byId = { ...s.byId };
-    for (const i of list) {
-      if (!isInScope(i)) continue; // NFR-15: never cache an option, MCX or currency row
+    for (const i of fresh) {
       byToken[i.token] = i;
       byId[instrumentId(i)] = i.token;
     }
@@ -29,30 +36,47 @@ export const useInstruments = create<InstrumentsState>()((set) => ({
 
 const inflight = new Map<number, Promise<void>>();
 const idInflight = new Map<string, Promise<Instrument>>();
+/**
+ * Tokens Go omitted from ByTokens (not in the instrument master). Not asked for again until the master can have
+ * changed: Go re-imports it once per new login session (service.triggerInstrumentRefresh, data.go), which includes
+ * expired(A) → ready(A) where nothing resets, so the set is cleared on every transition to ready and on reset.
+ */
+const unknown = new Set<number>();
+const bumpGeneration = () => useInstruments.setState((s) => ({ generation: s.generation + 1 }));
 
 // Late-answer guard (Rulings 96, 98, 102). A reset (logout, or the bridge's user switch) bumps the epoch; a call also
 // drops its answer when the last known user changed to a different one while it was out. A session expiry of the same
 // user cancels nothing. Go serves the instrument master to every session (it is not gated on login), but it
-// re-imports the master after each login (service Deps.Refresher, "Trigger after login"), so the cache lives for one
-// sign-in: the reset runs on logout (default onLogout: true).
+// re-imports the master once per new login session (data.go triggerInstrumentRefresh): the reset runs on logout (default
+// onLogout: true), and since the daily re-import usually follows expired(A) → ready(A), which never resets, the
+// unknown-token set is also cleared on every transition to ready (Ruling 107).
 let epoch = 0;
 let lastUserId = useSessionStore.getState().session?.userId ?? '';
-useSessionStore.subscribe((s) => {
+useSessionStore.subscribe((s, prev) => {
   const id = s.session?.userId;
   if (id) lastUserId = id;
+  if (s.session?.state === 'ready' && prev.session?.state !== 'ready' && unknown.size > 0) {
+    unknown.clear();
+    bumpGeneration(); // hooks showing an unknown token try again against the new import
+  }
 });
 
 interface Guard { epoch: number; userId: string }
 const guard = (): Guard => ({ epoch, userId: lastUserId });
 const stillCurrent = (g: Guard): boolean =>
   g.epoch === epoch && (g.userId === '' || lastUserId === '' || g.userId === lastUserId);
+/** A dropped answer: a reset already bumped the generation; a user switch did not, so bump it here. */
+const dropped = (g: Guard): void => {
+  if (g.epoch === epoch) bumpGeneration();
+};
 
 registerReset(() => {
   epoch += 1;
   lastUserId = '';
   inflight.clear();
   idInflight.clear();
-  useInstruments.setState({ byToken: {}, byId: {} });
+  unknown.clear();
+  useInstruments.setState((s) => ({ byToken: {}, byId: {}, generation: s.generation + 1 }));
 });
 
 /**
@@ -63,15 +87,25 @@ registerReset(() => {
 export async function ensureInstruments(tokens: readonly number[]): Promise<void> {
   const { byToken } = useInstruments.getState();
   const waits = tokens.map((t) => inflight.get(t)).filter((p): p is Promise<void> => p !== undefined);
-  const missing = [...new Set(tokens)].filter((t) => !byToken[t] && !inflight.has(t));
+  const missing = [...new Set(tokens)].filter((t) => !byToken[t] && !inflight.has(t) && !unknown.has(t));
   if (missing.length > 0) {
     const g = guard();
-    const p: Promise<void> = instrumentsByTokens(missing)
-      .then(
-        (list) => { if (stillCurrent(g)) useInstruments.getState().put(list); },
-        (e: unknown) => { if (stillCurrent(g)) throw e; },
-      )
-      .finally(() => missing.forEach((t) => { if (inflight.get(t) === p) inflight.delete(t); }));
+    // Settle before any state change, so a hook re-run by the generation bump starts a fresh load.
+    const settle = () => missing.forEach((t) => { if (inflight.get(t) === p) inflight.delete(t); });
+    const p: Promise<void> = instrumentsByTokens(missing).then(
+      (list) => {
+        settle();
+        if (!stillCurrent(g)) return dropped(g);
+        const found = new Set(list.map((i) => i.token));
+        missing.forEach((t) => { if (!found.has(t)) unknown.add(t); });
+        useInstruments.getState().put(list);
+      },
+      (e: unknown) => {
+        settle();
+        if (!stillCurrent(g)) return dropped(g);
+        throw e;
+      },
+    );
     missing.forEach((t) => inflight.set(t, p));
     waits.push(p);
   }
@@ -83,7 +117,8 @@ export async function ensureInstruments(tokens: readonly number[]): Promise<void
  * Rejects with Go's `not_found` (or `out_of_scope` from the typed helper). An answer that arrives after a reset is
  * returned to its caller but not cached.
  */
-export async function resolveIdentifier(id: string): Promise<Instrument> {
+export async function resolveIdentifier(raw: string): Promise<Instrument> {
+  const id = raw.trim(); // Go: Instruments.ByID(strings.TrimSpace(id))
   const s = useInstruments.getState();
   const token = s.byId[id];
   if (token !== undefined && s.byToken[token]) return s.byToken[token];
@@ -102,21 +137,24 @@ export async function resolveIdentifier(id: string): Promise<Instrument> {
 
 export function useInstrument(token: number | undefined): Instrument | undefined {
   const inst = useInstruments((s) => (token === undefined ? undefined : s.byToken[token]));
+  const generation = useInstruments((s) => s.generation);
   useEffect(() => {
     if (token !== undefined && !inst) void ensureInstruments([token]).catch(() => undefined);
-  }, [token, inst]);
+  }, [token, inst, generation]);
   return inst;
 }
 
 export function useResolvedInstrument(id: string | undefined): { instrument?: Instrument; error?: string } {
-  const [state, setState] = useState<{ id?: string; instrument?: Instrument; error?: string }>({});
+  const generation = useInstruments((s) => s.generation);
+  const [state, setState] = useState<{ id?: string; generation?: number; instrument?: Instrument; error?: string }>({});
   useEffect(() => {
     if (!id) return;
     let alive = true;
     resolveIdentifier(id)
-      .then((instrument) => { if (alive) setState({ id, instrument }); })
-      .catch((e: unknown) => { if (alive) setState({ id, error: e instanceof Error ? e.message : String(e) }); });
+      .then((instrument) => { if (alive) setState({ id, generation, instrument }); })
+      .catch((e: unknown) => { if (alive) setState({ id, generation, error: e instanceof Error ? e.message : String(e) }); });
     return () => { alive = false; };
-  }, [id]);
-  return state.id === id ? { instrument: state.instrument, error: state.error } : {};
+  }, [id, generation]);
+  // An answer from before a reset or user switch (older generation) is never shown (Ruling 107 m4).
+  return state.id === id && state.generation === generation ? { instrument: state.instrument, error: state.error } : {};
 }

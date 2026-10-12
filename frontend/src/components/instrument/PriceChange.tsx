@@ -14,7 +14,10 @@ export function PriceChange({ token, decimals = 2, showAbsolute = false }: { tok
   const stale = useQuoteStale(token);
   if (!q) return <span className="price-change price-change--empty">—</span>;
   const ch = quoteChange(q);
-  const dir = ch ? toneOf(ch.abs) : 'flat';
+  // The tone follows the numbers shown: the percent alone, or the absolute change too (Ruling 107 m5).
+  const dir = ch ? toneOf(showAbsolute ? ch.abs : ch.pct) : 'flat';
+  // Ruling 92c: staleness is a hint only. The last known price and change are still shown; the cue never hides
+  // or replaces them.
   return (
     <span
       className={`price-change${stale ? ' price-change--stale' : ''}`}
