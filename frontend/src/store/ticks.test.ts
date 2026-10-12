@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TickDTO } from '../api/backend';
+import { startEventBridge } from '../api/events';
 import { tickFixture } from '../api/mock/fixtures';
+import { createMockBackend } from '../api/mock/index';
+import { demoSeed } from '../api/mock/fixtures';
+import { applySnapshot, isStaleQuote, runStartedMs } from '../market/quotes';
 import { useStatusStore } from './status';
 import { useTicksStore } from './ticks';
 
@@ -83,5 +87,51 @@ describe('applyBatch ordering (Ruling 92b)', () => {
     goLive(); // no transition (already live): nothing re-arms
     apply(t(2, 23, 100));
     expect(ltp(2)).toBe(22);
+  });
+
+  it('an older live tick after a newer polled tick (across batches) is rejected', () => {
+    apply(t(1, 10, 300, true));
+    apply(t(1, 9, 299, false));
+    expect(ltp(1)).toBe(10);
+    expect(useTicksStore.getState().latest[1].polled).toBe(true);
+  });
+
+  it('fix round 2: a Watch snapshot after →live does not use up the self-heal', () => {
+    goOffline();
+    apply(t(1, 10, 500));
+    goLive();
+    applySnapshot([t(1, 99, 9_999_999_999_999)]); // future-dated persisted quote, newer than the stored tick
+    expect(ltp(1)).toBe(99);
+    apply(t(1, 11, 600)); // the first real tick after →live heals the token
+    expect(ltp(1)).toBe(11);
+    apply(t(1, 12, 550));
+    expect(ltp(1)).toBe(11); // healed once; the normal rule again
+  });
+
+  it('an old persisted snapshot shows as stale until a fresh tick replaces it', () => {
+    applySnapshot([t(1, 10, runStartedMs() - 86_400_000)]);
+    expect(isStaleQuote(useTicksStore.getState().latest[1])).toBe(true);
+    apply(t(1, 11, runStartedMs() + 1_000, true));
+    expect(ltp(1)).toBe(11);
+    expect(isStaleQuote(useTicksStore.getState().latest[1])).toBe(false);
+  });
+
+  it('through the tick.batch event bridge: ordering holds and feed.state →live re-arms the heal', () => {
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    try {
+      backend.emit('feed.state', { ...useStatusStore.getState().feed, state: 'offline' });
+      backend.emit('tick.batch', [t(1, 10, 9_999_999_999_999)]);
+      backend.emit('tick.batch', [t(1, 9, 100)]);
+      expect(ltp(1)).toBe(10);
+      backend.emit('tick.batch', [t(2, 20, 200, false)]);
+      backend.emit('tick.batch', [t(2, 21, 200, true)]);
+      expect(ltp(2)).toBe(20);
+      backend.emit('feed.state', { ...useStatusStore.getState().feed, state: 'live' });
+      backend.emit('tick.batch', [t(1, 11, 100)]);
+      expect(ltp(1)).toBe(11);
+    } finally {
+      stop();
+    }
   });
 });

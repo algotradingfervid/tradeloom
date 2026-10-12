@@ -16,7 +16,8 @@ export function quoteChange(q: TickDTO | undefined): { abs: number; pct: number 
 export function applySnapshot(snapshot: readonly TickDTO[]): void {
   const latest = useTicksStore.getState().latest;
   const fresh = snapshot.filter((q) => !(latest[q.token] && latest[q.token].tsMs >= q.tsMs));
-  if (fresh.length > 0) useTicksStore.getState().applyBatch(fresh);
+  // heal: false — a snapshot is not a real tick and must not use up the self-heal after →live (fix round 2).
+  if (fresh.length > 0) useTicksStore.getState().applyBatch(fresh, { heal: false });
 }
 
 // Go persists the last quote per token (QuoteCacheKey) and serves it in Watch snapshots after a restart, so a
