@@ -63,7 +63,7 @@ export function OrderBookView() {
       refreshing={resource.loading}
       search={{ value: query, onChange: setQuery, placeholder: copy.searchPlaceholder, matches: visible.length }}
     >
-      <BackgroundErrorNotice error={resource.backgroundError} message={portfolioCopy.staleNotice} onRetry={() => void retryInBackground()} />
+      <BackgroundErrorNotice error={resource.backgroundError} seq={resource.backgroundErrorSeq} message={portfolioCopy.staleNotice} onRetry={retryInBackground} />
       <ListBody status={listStatusOf(resource, all.length === 0)} error={resource.error} onRetry={() => void reload()} empty={{ message: copy.empty }} loadingLabel={copy.loading}>
         {SECTIONS.map((section) => {
           const rows = visible.filter((o) => o.section === section);

@@ -68,7 +68,7 @@ export function PositionsView() {
       search={{ value: query, onChange: setQuery, matches: visible.length }}
       tabs={<Tabs label={copy.tabs} tabs={[{ id: 'net', label: copy.net }, { id: 'day', label: copy.day }]} value={tab} onChange={(id) => setTab(id as PositionTab)} idPrefix={tabsId} />}
     >
-      <BackgroundErrorNotice error={resource.backgroundError} message={portfolioCopy.staleNotice} onRetry={() => void retryInBackground()} />
+      <BackgroundErrorNotice error={resource.backgroundError} seq={resource.backgroundErrorSeq} message={portfolioCopy.staleNotice} onRetry={retryInBackground} />
       <div role="tabpanel" id={ids.panel} aria-labelledby={ids.tab}>
         <ListBody status={listStatusOf(resource, rows.length === 0)} error={resource.error} onRetry={() => void reload()} empty={{ message: copy.empty }} loadingLabel={copy.loading}>
           <DataTable

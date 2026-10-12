@@ -10,15 +10,16 @@ export interface TabDef { id: string; label: string }
 export const tabIds = (prefix: string, id: string) => ({ tab: `${prefix}-tab-${id}`, panel: `${prefix}-panel` });
 
 /**
- * WAI-ARIA tabs with automatic activation: ArrowLeft/ArrowRight wrap, Home/End jump to the first/last tab. Each tab's
- * `aria-controls` names `tabIds(panelPrefix ?? <own id>, tab.id).panel`; the owner renders that panel.
+ * WAI-ARIA tabs with automatic activation: ArrowLeft/ArrowRight wrap, Home/End jump to the first/last tab. With
+ * `idPrefix`, each tab's `aria-controls` names `tabIds(idPrefix, tab.id).panel`, which the owner must render; without
+ * it no aria-controls is set (it would point at nothing).
  */
 export function Tabs({ label, tabs, value, onChange, idPrefix }: {
   label: string;
   tabs: TabDef[];
   value: string;
   onChange: (id: string) => void;
-  /** The owner's `useId()` value, so it can name the panel; defaults to an id of this component's own. */
+  /** The owner's `useId()` value, so it can name the panel; tab ids default to an id of this component's own. */
   idPrefix?: string;
 }) {
   const ownId = useId();
@@ -46,7 +47,7 @@ export function Tabs({ label, tabs, value, onChange, idPrefix }: {
             type="button"
             role="tab"
             id={ids.tab}
-            aria-controls={ids.panel}
+            aria-controls={idPrefix ? ids.panel : undefined}
             aria-selected={t.id === value}
             tabIndex={t.id === value ? 0 : -1}
             onClick={() => onChange(t.id)}

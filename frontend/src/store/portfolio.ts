@@ -14,10 +14,19 @@ interface PortfolioData { holdings: HoldingsSnapshot; positions: PositionsSnapsh
 export type PortfolioKind = keyof PortfolioData;
 
 /**
- * `backgroundError`: the reason the latest background re-read (polling) failed while data was shown; the data stays,
- * `status` stays 'ready', and views show an inline notice with Retry (Ruling 103). Cleared by any fresh snapshot.
+ * `backgroundError`: why the latest read (background or foreground) failed while data was shown; the data stays,
+ * `status` stays 'ready', and views show a lasting inline notice with Retry (Rulings 103, 105). `status: 'error'`
+ * (the alert) only happens with no data held. Cleared by any fresh snapshot, by a failure with no data, and on reset.
+ * `backgroundErrorSeq` moves on every such failure so an identical repeated failure is announced again.
  */
-export interface Resource<T> { status: 'idle' | 'ready' | 'error'; data: T; error: string | null; loading: boolean; backgroundError: string | null }
+export interface Resource<T> {
+  status: 'idle' | 'ready' | 'error';
+  data: T;
+  error: string | null;
+  loading: boolean;
+  backgroundError: string | null;
+  backgroundErrorSeq: number;
+}
 
 interface PortfolioStore {
   holdings: Resource<HoldingsSnapshot>;
@@ -31,7 +40,7 @@ interface PortfolioStore {
   applyOrderUpdate(o: KiteOrder): void;
 }
 
-const idle = <T,>(data: T): Resource<T> => ({ status: 'idle', data, error: null, loading: false, backgroundError: null });
+const idle = <T,>(data: T): Resource<T> => ({ status: 'idle', data, error: null, loading: false, backgroundError: null, backgroundErrorSeq: 0 });
 const initial = () => ({
   holdings: idle<HoldingsSnapshot>({
     rows: [],
@@ -51,7 +60,7 @@ export const usePortfolioStore = create<PortfolioStore>()((set) => ({
     set((s) => {
       const cur = s[kind];
       if (cur.status === 'ready' && cur.data.asOfMs > data.asOfMs) return s;
-      return { [kind]: { status: 'ready', data, error: null, loading: false, backgroundError: null } } as Partial<PortfolioStore>;
+      return { [kind]: { ...cur, status: 'ready', data, error: null, loading: false, backgroundError: null } } as Partial<PortfolioStore>;
     }),
   // P0-3 Ruling 71 / Task 10 carry-forward: "order.update" is a notification only. Go publishes the new book,
   // positions and holdings on "*.changed"; those events are the truth, so nothing is re-read or patched here.
@@ -95,9 +104,9 @@ const latestRequest: Record<PortfolioKind, number> = { holdings: 0, positions: 0
 
 /**
  * Reads the Go cache (no Kite call); a slower, older response never overwrites a newer one. `background` (polling and
- * the notice's Retry): never touches `loading` (no busy indicator), is skipped while a foreground read is in flight
- * (that read is fresher and owns the spinner), and a failure while data is shown records `backgroundError` instead of
- * the error state (Task 10 M8, Ruling 103).
+ * the notice's Retry): never touches `loading` (no busy indicator) and is skipped while a foreground read or Refresh
+ * is in flight (that read is fresher and owns the spinner). Any failure while data is shown keeps it and records
+ * `backgroundError`; only a failure with no data held is the error state (Task 10 M8, Rulings 103, 105).
  */
 export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: Backend, opts: { background?: boolean } = {}): Promise<void> {
   const g = guard();
@@ -125,14 +134,12 @@ export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: B
     const cur = store()[kind];
     // A "*.changed" snapshot that arrived while this read was in flight is newer than anything the read could
     // return: keep showing it rather than replacing it with the read's error.
-    if (cur.status === 'ready' && cur.data.asOfMs > shownAsOf) {
-      if (!opts.background) store().patch(kind, { loading: false });
-    }
-    else if (opts.background && cur.status === 'ready') {
-      const reason = parseBackendError(e).reason;
-      if (cur.backgroundError !== reason) store().patch(kind, { backgroundError: reason });
-    } else if (opts.background) store().patch(kind, { status: 'error', error: parseBackendError(e).reason });
-    else store().patch(kind, { status: 'error', error: parseBackendError(e).reason, loading: false });
+    const done = opts.background ? {} : { loading: false };
+    const reason = parseBackendError(e).reason;
+    if (cur.status === 'ready' && cur.data.asOfMs > shownAsOf) store().patch(kind, done);
+    else if (cur.status === 'ready') {
+      store().patch(kind, { ...done, backgroundError: reason, backgroundErrorSeq: cur.backgroundErrorSeq + 1 });
+    } else store().patch(kind, { ...done, status: 'error', error: reason, backgroundError: null });
   }
 }
 

@@ -112,10 +112,11 @@ describe('background re-reads (Ruling 103)', () => {
     backend.failNext('portfolio.holdings', 'Network unavailable');
     await loadPortfolio('holdings', backend, { background: true });
     expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', loading: false, error: null, backgroundError: 'Network unavailable' });
-    const first = usePortfolioStore.getState().holdings;
+    const firstSeq = usePortfolioStore.getState().holdings.backgroundErrorSeq;
     backend.failNext('portfolio.holdings', 'Network unavailable');
     await loadPortfolio('holdings', backend, { background: true });
-    expect(usePortfolioStore.getState().holdings).toBe(first);
+    // Same reason, same single notice; the sequence moves so the notice is announced again (Ruling 105 M1).
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', backgroundError: 'Network unavailable', backgroundErrorSeq: firstSeq + 1 });
     expect(useToastStore.getState().visible).toHaveLength(toasts);
     await loadPortfolio('holdings', backend, { background: true });
     expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', backgroundError: null });
@@ -153,6 +154,65 @@ describe('background re-reads (Ruling 103)', () => {
     await loadPortfolio('holdings', backend, { background: true });
     backend.emit('session.state', readySession({ state: 'logged_out' }));
     expect(usePortfolioStore.getState().holdings.backgroundError).toBeNull();
+    stop();
+  });
+});
+
+describe('failed reads (Ruling 105)', () => {
+  it('a background failure then a foreground failure keeps the rows: status ready, the notice, no error state', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await loadPortfolio('holdings', backend, { background: true });
+    backend.failNext('portfolio.holdings', 'Gateway timeout');
+    await loadPortfolio('holdings', backend);
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', error: null, loading: false, backgroundError: 'Gateway timeout' });
+    expect(usePortfolioStore.getState().holdings.data.rows.length).toBeGreaterThan(0);
+    stop();
+  });
+  it('a first read that fails with no data held is the error state, with no notice', async () => {
+    const { backend, stop } = bridged();
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await loadPortfolio('holdings', backend);
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'error', error: 'Network unavailable', backgroundError: null, loading: false });
+    backend.failNext('portfolio.holdings', 'Still down');
+    await loadPortfolio('holdings', backend, { background: true });
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'error', error: 'Still down', backgroundError: null });
+    stop();
+  });
+  it('deviation (b): a poll during a pending Refresh (loading) is skipped and does not supersede the in-flight read', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    let finishKite!: () => void;
+    backend.portfolio.refresh = () => new Promise<void>((r) => { finishKite = r; });
+    const refreshing = refreshPortfolio('holdings', backend);
+    expect(usePortfolioStore.getState().holdings.loading).toBe(true);
+    const before = backend.callsTo('portfolio.holdings').length;
+    await loadPortfolio('holdings', backend, { background: true });
+    expect(backend.callsTo('portfolio.holdings')).toHaveLength(before);
+    expect(usePortfolioStore.getState().holdings.loading).toBe(true);
+    // The foreground read Refresh starts after Kite is still current (latestRequest was not bumped by the skipped poll).
+    const resolve = deferHoldings(backend);
+    finishKite();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const skipped = loadPortfolio('holdings', backend, { background: true });
+    resolve(holdingsOf([holdingA], 9_000_000_000_000));
+    await skipped;
+    await refreshing;
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ loading: false, data: { asOfMs: 9_000_000_000_000 } });
+    stop();
+  });
+  it('deviation (b): a background read that resolves during a Refresh’s Kite wait keeps loading true', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    const resolve = deferHoldings(backend);
+    const poll = loadPortfolio('holdings', backend, { background: true });
+    backend.portfolio.refresh = () => new Promise<void>(() => {});
+    void refreshPortfolio('holdings', backend);
+    expect(usePortfolioStore.getState().holdings.loading).toBe(true);
+    resolve(holdingsOf([holdingA], 8_000_000_000_000));
+    await poll;
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ loading: true, data: { asOfMs: 8_000_000_000_000 } });
     stop();
   });
 });

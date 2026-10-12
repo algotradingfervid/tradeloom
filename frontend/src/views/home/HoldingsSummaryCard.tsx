@@ -28,11 +28,14 @@ export function HoldingsSummaryCard() {
     [resource.data, latest],
   );
   const s = summarizeHoldings(resource.data.summary, rows);
+  // A failed re-read while figures are shown keeps them with a notice (Task 10 M8, Ruling 105); the alert is only for
+  // a failure with no data held.
+  const hasData = resource.data.asOfMs > 0;
 
   let body: ReactNode;
   if (resource.status === 'idle') {
     body = <Skeleton rows={3} label={copy.loading} />;
-  } else if (resource.status === 'error') {
+  } else if (resource.status === 'error' && !hasData) {
     body = (
       <div className="card__error" role="alert">
         <p>{copy.error(resource.error ?? '')}</p>
@@ -66,7 +69,7 @@ export function HoldingsSummaryCard() {
       <h2 id={titleId} className="card__title">{copy.title}</h2>
       {body}
       {/* A failed background re-read keeps the shown figures (Task 10 M8, Ruling 103). */}
-      <BackgroundErrorNotice error={resource.backgroundError} message={copy.staleNotice} onRetry={() => void retryInBackground()} className="card__notice" />
+      <BackgroundErrorNotice error={resource.backgroundError} seq={resource.backgroundErrorSeq} message={copy.staleNotice} onRetry={retryInBackground} className="card__notice" />
     </section>
   );
 }

@@ -87,6 +87,7 @@ describe('FR-ORD-003 Holdings view', () => {
     backend.failNext('portfolio.holdings', 'Network unavailable');
     const { user } = renderApp({ route: '/holdings', backend });
     expect(await screen.findByRole('alert')).toHaveTextContent('Network unavailable');
+    expect(screen.queryByText(/The latest read failed/)).toBeNull();
     expect(screen.queryByText('No holdings')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('row', { name: 'RELIANCE' })).toBeInTheDocument();
@@ -133,7 +134,7 @@ describe('FR-ORD-003 Holdings view', () => {
   it('shows no Buy/Sell order buttons', async () => {
     renderApp({ route: '/holdings' });
     await screen.findByRole('row', { name: 'RELIANCE' });
-    expect(screen.queryByRole('button', { name: /^(buy|sell|b|s)\b/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^(buy|sell|cancel|modify|exit|convert|b|s)\b/i })).toBeNull();
   });
   it('Ruling 103: a failed background re-read keeps the rows and shows an inline notice with Retry', async () => {
     const { backend, user } = renderApp({ route: '/holdings' });
@@ -145,5 +146,17 @@ describe('FR-ORD-003 Holdings view', () => {
     expect(notice).not.toBeNull();
     await user.click(within(notice).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByText(/The latest read failed/)).toBeNull());
+  });
+  it('Ruling 105: a background failure then a foreground failure keeps the rows, one notice and no alert', async () => {
+    const { backend } = renderApp({ route: '/holdings' });
+    await screen.findByRole('row', { name: 'RELIANCE' });
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await act(async () => { await loadPortfolio('holdings', backend, { background: true }); });
+    backend.failNext('portfolio.holdings', 'Gateway timeout');
+    await act(async () => { await loadPortfolio('holdings', backend); });
+    expect(screen.getByRole('row', { name: 'RELIANCE' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getAllByText(/The latest read failed/)).toHaveLength(1);
+    expect(screen.getByText('Showing the last loaded data. The latest read failed: Gateway timeout')).toBeInTheDocument();
   });
 });

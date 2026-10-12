@@ -53,7 +53,7 @@ export function HoldingsView() {
       refreshing={resource.loading}
       search={{ value: query, onChange: setQuery, matches: visible.length }}
     >
-      <BackgroundErrorNotice error={resource.backgroundError} message={portfolioCopy.staleNotice} onRetry={() => void retryInBackground()} />
+      <BackgroundErrorNotice error={resource.backgroundError} seq={resource.backgroundErrorSeq} message={portfolioCopy.staleNotice} onRetry={retryInBackground} />
       <ListBody
         status={listStatusOf(resource, rows.length === 0)}
         error={resource.error}
