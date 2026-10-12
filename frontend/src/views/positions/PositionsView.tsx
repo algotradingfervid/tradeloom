@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
+import { BackgroundErrorNotice } from '../../components/BackgroundErrorNotice';
 import { DataTable, type Column } from '../../components/DataTable';
 import { filterRows } from '../../components/filterRows';
 import { ListBody } from '../../components/ListBody';
 import { ListPage } from '../../components/ListPage';
-import { Tabs } from '../../components/Tabs';
+import { tabIds, Tabs } from '../../components/Tabs';
 import { InstrumentName, Signed } from '../../components/Values';
-import { positionsCopy as copy } from '../../i18n/copy';
+import { portfolioCopy, positionsCopy as copy } from '../../i18n/copy';
 import { formatNumber, formatPrice } from '../../i18n/format';
 import { livePosition, liveLtp, positionNetChangePct, positionsTotalPnl, rupees, type LivePosition } from '../../portfolio/calc';
 import { listStatusOf, usePortfolioResource } from '../../store/portfolio';
@@ -37,10 +38,12 @@ const columns: Column<PositionView>[] = [
 ];
 
 export function PositionsView() {
-  const { resource, reload, refresh } = usePortfolioResource('positions');
+  const { resource, reload, refresh, retryInBackground } = usePortfolioResource('positions');
   const latest = useTicksStore((s) => s.latest);
   const [tab, setTab] = useState<PositionTab>('net');
   const [query, setQuery] = useState('');
+  const tabsId = useId();
+  const ids = tabIds(tabsId, tab);
 
   const rows = useMemo<PositionView[]>(
     () =>
@@ -63,16 +66,17 @@ export function PositionsView() {
       onRefresh={() => void refresh()}
       refreshing={resource.loading}
       search={{ value: query, onChange: setQuery, matches: visible.length }}
-      tabs={<Tabs label={copy.tabs} tabs={[{ id: 'net', label: copy.net }, { id: 'day', label: copy.day }]} value={tab} onChange={(id) => setTab(id as PositionTab)} />}
+      tabs={<Tabs label={copy.tabs} tabs={[{ id: 'net', label: copy.net }, { id: 'day', label: copy.day }]} value={tab} onChange={(id) => setTab(id as PositionTab)} idPrefix={tabsId} />}
     >
-      <div role="tabpanel" aria-labelledby={`tab-${tab}`}>
+      <BackgroundErrorNotice error={resource.backgroundError} message={portfolioCopy.staleNotice} onRetry={() => void retryInBackground()} />
+      <div role="tabpanel" id={ids.panel} aria-labelledby={ids.tab}>
         <ListBody status={listStatusOf(resource, rows.length === 0)} error={resource.error} onRetry={() => void reload()} empty={{ message: copy.empty }} loadingLabel={copy.loading}>
           <DataTable
             caption={`${copy.title} — ${tab === 'net' ? copy.net : copy.day}`}
             columns={columns}
             rows={visible}
             rowKey={(r) => r.row.key}
-            rowLabel={(r) => r.row.symbol}
+            rowLabel={(r) => `${r.row.symbol} ${r.row.product}`}
             rowClassName={(r) => (r.open ? undefined : 'row--muted')}
             footer={
               <tr>

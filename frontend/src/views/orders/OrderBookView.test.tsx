@@ -56,20 +56,55 @@ describe('FR-ORD-001 Order book (read-only in P0)', () => {
   });
 
   // Carry-forwards (p04-carry-forwards.md, Task 11 / Ruling 101).
-  it('Task 10 M8: a failed background re-read keeps the shown orders and shows a non-blocking notice', async () => {
+  it('Ruling 103: a failed background poll keeps the orders and shows a lasting inline notice with Retry, not a toast', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const seed = demoSeed();
     seed.status.feed = { ...seed.status.feed, state: 'offline' };
     const backend = createMockBackend(seed);
-    renderApp({ route: '/orders', backend });
+    const { user } = renderApp({ route: '/orders', backend });
     await screen.findByRole('heading', { name: 'Open (1)' });
     backend.failNext('portfolio.orderBook', 'Network unavailable');
     await act(async () => {
       vi.advanceTimersByTime(30_000);
     });
     expect(screen.getByRole('row', { name: 'RELIANCE 261012000000001' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
-    expect(screen.getByText(/Couldn’t update the order book; showing the last data loaded\. Network unavailable/)).toBeInTheDocument();
+    const notice = screen.getByText('Showing the last loaded data. The latest read failed: Network unavailable').closest('[role="status"]') as HTMLElement;
+    expect(notice).not.toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(document.querySelector('[data-toast-region]')).toBeEmptyDOMElement();
+    // A second failing poll adds nothing new.
+    backend.failNext('portfolio.orderBook', 'Network unavailable');
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(screen.getAllByText(/The latest read failed/)).toHaveLength(1);
+    await user.click(within(notice).getByRole('button', { name: 'Retry' }));
+    await vi.waitFor(() => expect(screen.queryByText(/The latest read failed/)).toBeNull());
+    expect(screen.getByRole('row', { name: 'RELIANCE 261012000000001' })).toBeInTheDocument();
+  });
+  it('Ruling 103: a background poll leaves the busy state of Refresh alone', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const seed = demoSeed();
+    seed.status.feed = { ...seed.status.feed, state: 'offline' };
+    const backend = createMockBackend(seed);
+    renderApp({ route: '/orders', backend });
+    await screen.findByRole('heading', { name: 'Open (1)' });
+    let release!: () => void;
+    const real = backend.portfolio.orderBook.bind(backend.portfolio);
+    backend.portfolio.orderBook = () => new Promise((r) => { release = () => r(real()); });
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    const refreshBtn = screen.getByRole('button', { name: 'Refresh order book' });
+    expect(refreshBtn).not.toHaveAttribute('aria-busy', 'true');
+    await act(async () => release());
+    expect(refreshBtn).not.toHaveAttribute('aria-busy', 'true');
+  });
+  it('an order with no timestamp (Go timeMs 0) shows a dash, not 05:30:00', async () => {
+    const undated = { ...ordersFixture[0], orderId: '261012000000013', symbol: 'ITC', timeMs: 0 };
+    renderApp({ route: '/orders', backend: createMockBackend({ ...demoSeed(), book: bookOf([undated]) }) });
+    const row = await screen.findByRole('row', { name: 'ITC 261012000000013' });
+    expect(within(row).getAllByRole('cell')[0]).toHaveTextContent(/^—$/);
   });
   it('P0-3 Ruling 38: an out-of-scope order is shown read-only, flagged "View only" (never clipped) and counted', async () => {
     const goldm = {
@@ -96,7 +131,7 @@ describe('FR-ORD-001 Order book (read-only in P0)', () => {
     const open = await screen.findByRole('row', { name: 'RELIANCE 261012000000001' });
     expect(within(open).getAllByRole('cell')[1]).toHaveTextContent('Buy');
     expect(within(open).queryAllByRole('button')).toHaveLength(0);
-    expect(screen.queryByRole('button', { name: /^(buy|sell|cancel|modify|b|s)\b/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^(buy|sell|cancel|modify|exit|convert|b|s)\b/i })).toBeNull();
   });
   it('empty state', async () => {
     renderApp({ route: '/orders', backend: createMockBackend({ ...demoSeed(), book: bookOf([]) }) });

@@ -1,9 +1,10 @@
-import { act, screen, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { HoldingRow } from '../../api/backend';
 import { demoSeed, emptySeed, FIXED_NOW, holdingA, holdingB, holdingsOf, kiteOrder, tickFixture } from '../../api/mock/fixtures';
 import { createMockBackend } from '../../api/mock/index';
 import { setRunStartedMs } from '../../market/quotes';
+import { loadPortfolio } from '../../store/portfolio';
 import { renderApp } from '../../test/render';
 
 const cells = (row: HTMLElement) => within(row).getAllByRole('cell').slice(1).map((c) => c.textContent);
@@ -133,5 +134,16 @@ describe('FR-ORD-003 Holdings view', () => {
     renderApp({ route: '/holdings' });
     await screen.findByRole('row', { name: 'RELIANCE' });
     expect(screen.queryByRole('button', { name: /^(buy|sell|b|s)\b/i })).toBeNull();
+  });
+  it('Ruling 103: a failed background re-read keeps the rows and shows an inline notice with Retry', async () => {
+    const { backend, user } = renderApp({ route: '/holdings' });
+    await screen.findByRole('row', { name: 'RELIANCE' });
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await act(async () => { await loadPortfolio('holdings', backend, { background: true }); });
+    expect(screen.getByRole('row', { name: 'RELIANCE' })).toBeInTheDocument();
+    const notice = screen.getByText('Showing the last loaded data. The latest read failed: Network unavailable').closest('[role="status"]') as HTMLElement;
+    expect(notice).not.toBeNull();
+    await user.click(within(notice).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/The latest read failed/)).toBeNull());
   });
 });

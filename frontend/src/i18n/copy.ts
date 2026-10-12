@@ -110,10 +110,9 @@ export const ordersCopy = {
   updated: (symbol: string, status: string) => `Order ${symbol}: ${status}`,
 } as const;
 
-/** A background re-read (polling) failed: the view keeps what it shows (Task 10 M8). */
+/** A background re-read (polling) failed: the view keeps what it shows (Task 10 M8, Ruling 103). */
 export const portfolioCopy = {
-  names: { holdings: 'holdings', positions: 'positions', orders: 'order book' },
-  backgroundReadFailed: (what: string, reason: string) => `Couldn’t update the ${what}; showing the last data loaded. ${reason}`,
+  staleNotice: (reason: string) => `Showing the last loaded data. The latest read failed: ${reason}`,
 } as const;
 
 export const statusCopy = {

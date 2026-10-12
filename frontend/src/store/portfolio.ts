@@ -4,7 +4,7 @@ import type { Backend, BookSnapshot, HoldingsSnapshot, KiteOrder, PositionsSnaps
 import { useBackend } from '../api/BackendContext';
 import { parseBackendError } from '../api/errors';
 import type { ListStatus } from '../components/ListBody';
-import { ordersCopy, portfolioCopy } from '../i18n/copy';
+import { ordersCopy } from '../i18n/copy';
 import { isTerminalStatus, orderStatusLabel } from '../portfolio/calc';
 import { registerReset } from './reset';
 import { useSessionStore } from './session';
@@ -13,7 +13,11 @@ import { pushToast } from './toasts';
 interface PortfolioData { holdings: HoldingsSnapshot; positions: PositionsSnapshot; orders: BookSnapshot }
 export type PortfolioKind = keyof PortfolioData;
 
-export interface Resource<T> { status: 'idle' | 'ready' | 'error'; data: T; error: string | null; loading: boolean }
+/**
+ * `backgroundError`: the reason the latest background re-read (polling) failed while data was shown; the data stays,
+ * `status` stays 'ready', and views show an inline notice with Retry (Ruling 103). Cleared by any fresh snapshot.
+ */
+export interface Resource<T> { status: 'idle' | 'ready' | 'error'; data: T; error: string | null; loading: boolean; backgroundError: string | null }
 
 interface PortfolioStore {
   holdings: Resource<HoldingsSnapshot>;
@@ -27,7 +31,7 @@ interface PortfolioStore {
   applyOrderUpdate(o: KiteOrder): void;
 }
 
-const idle = <T,>(data: T): Resource<T> => ({ status: 'idle', data, error: null, loading: false });
+const idle = <T,>(data: T): Resource<T> => ({ status: 'idle', data, error: null, loading: false, backgroundError: null });
 const initial = () => ({
   holdings: idle<HoldingsSnapshot>({
     rows: [],
@@ -47,7 +51,7 @@ export const usePortfolioStore = create<PortfolioStore>()((set) => ({
     set((s) => {
       const cur = s[kind];
       if (cur.status === 'ready' && cur.data.asOfMs > data.asOfMs) return s;
-      return { [kind]: { status: 'ready', data, error: null, loading: false } } as Partial<PortfolioStore>;
+      return { [kind]: { status: 'ready', data, error: null, loading: false, backgroundError: null } } as Partial<PortfolioStore>;
     }),
   // P0-3 Ruling 71 / Task 10 carry-forward: "order.update" is a notification only. Go publishes the new book,
   // positions and holdings on "*.changed"; those events are the truth, so nothing is re-read or patched here.
@@ -78,7 +82,6 @@ const stillCurrent = (g: ReadGuard): boolean => g.epoch === epoch && g.userId ==
 registerReset(() => {
   epoch += 1;
   announced.clear();
-  for (const k of Object.keys(backgroundFailing) as PortfolioKind[]) backgroundFailing[k] = false;
   usePortfolioStore.setState(initial());
 });
 
@@ -89,45 +92,47 @@ const FETCH: { [K in PortfolioKind]: (b: Backend) => Promise<PortfolioData[K]> }
 };
 const SCOPE: Record<PortfolioKind, RefreshScope> = { holdings: 'holdings', positions: 'positions', orders: 'orders' };
 const latestRequest: Record<PortfolioKind, number> = { holdings: 0, positions: 0, orders: 0 };
-/** A background re-read is failing for this kind: one notice per failure streak, not one per poll. */
-const backgroundFailing: Record<PortfolioKind, boolean> = { holdings: false, positions: false, orders: false };
 
 /**
- * Reads the Go cache (no Kite call); a slower, older response never overwrites a newer one. `background` (polling):
- * no busy indicator, and a failure while data is shown keeps that data and raises a non-blocking notice instead of
- * the error state (Task 10 M8).
+ * Reads the Go cache (no Kite call); a slower, older response never overwrites a newer one. `background` (polling and
+ * the notice's Retry): never touches `loading` (no busy indicator), is skipped while a foreground read is in flight
+ * (that read is fresher and owns the spinner), and a failure while data is shown records `backgroundError` instead of
+ * the error state (Task 10 M8, Ruling 103).
  */
 export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: Backend, opts: { background?: boolean } = {}): Promise<void> {
-  const mine = ++latestRequest[kind];
   const g = guard();
   const store = usePortfolioStore.getState;
   const shownAsOf = store()[kind].data.asOfMs;
+  if (opts.background && store()[kind].loading) return;
+  const mine = ++latestRequest[kind];
   if (!opts.background) store().patch(kind, { loading: true });
   // Dropped results: after a reset the store is already initial; after a user switch only the spinner is cleared.
   const dropped = () => {
-    if (g.epoch === epoch) store().patch(kind, { loading: false });
+    if (g.epoch === epoch && !opts.background) store().patch(kind, { loading: false });
   };
   try {
     const data = await FETCH[kind](backend);
     if (mine !== latestRequest[kind]) return;
     if (!stillCurrent(g)) return dropped();
+    const wasLoading = store()[kind].loading;
     store().applySnapshot(kind, data);
-    store().patch(kind, { loading: false });
-    backgroundFailing[kind] = false;
+    // A successful read clears the notice even when a newer snapshot was already shown; a background read leaves
+    // the busy state (e.g. a Refresh waiting on Kite) as it was.
+    store().patch(kind, { loading: opts.background ? wasLoading : false, backgroundError: null });
   } catch (e) {
     if (mine !== latestRequest[kind]) return;
     if (!stillCurrent(g)) return dropped();
     const cur = store()[kind];
     // A "*.changed" snapshot that arrived while this read was in flight is newer than anything the read could
     // return: keep showing it rather than replacing it with the read's error.
-    if (cur.status === 'ready' && cur.data.asOfMs > shownAsOf) store().patch(kind, { loading: false });
+    if (cur.status === 'ready' && cur.data.asOfMs > shownAsOf) {
+      if (!opts.background) store().patch(kind, { loading: false });
+    }
     else if (opts.background && cur.status === 'ready') {
-      store().patch(kind, { loading: false });
-      if (!backgroundFailing[kind]) {
-        backgroundFailing[kind] = true;
-        pushToast({ level: 'warning', message: portfolioCopy.backgroundReadFailed(portfolioCopy.names[kind], parseBackendError(e).reason) });
-      }
-    } else store().patch(kind, { status: 'error', error: parseBackendError(e).reason, loading: false });
+      const reason = parseBackendError(e).reason;
+      if (cur.backgroundError !== reason) store().patch(kind, { backgroundError: reason });
+    } else if (opts.background) store().patch(kind, { status: 'error', error: parseBackendError(e).reason });
+    else store().patch(kind, { status: 'error', error: parseBackendError(e).reason, loading: false });
   }
 }
 
@@ -159,6 +164,8 @@ export function usePortfolioResource<K extends PortfolioKind>(kind: K, opts: { p
   const version = usePortfolioStore((s) => s.versions[kind]);
   const reload = useCallback(() => loadPortfolio(kind, backend), [kind, backend]);
   const refresh = useCallback(() => refreshPortfolio(kind, backend), [kind, backend]);
+  /** The background-error notice's Retry: a failure keeps the shown data and updates the notice (Ruling 103). */
+  const retryInBackground = useCallback(() => loadPortfolio(kind, backend, { background: true }), [kind, backend]);
   useEffect(() => {
     void reload();
   }, [reload, version]);
@@ -167,7 +174,7 @@ export function usePortfolioResource<K extends PortfolioKind>(kind: K, opts: { p
     const id = window.setInterval(() => void loadPortfolio(kind, backend, { background: true }), opts.pollMs);
     return () => window.clearInterval(id);
   }, [kind, backend, opts.pollMs]);
-  return { resource, reload, refresh };
+  return { resource, reload, refresh, retryInBackground };
 }
 
 export function listStatusOf(r: Resource<unknown>, isEmpty: boolean): ListStatus {

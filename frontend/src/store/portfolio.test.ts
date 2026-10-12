@@ -97,3 +97,62 @@ describe('portfolio store', () => {
     stop();
   });
 });
+
+describe('background re-reads (Ruling 103)', () => {
+  function rejectingHoldings(backend: MockBackend) {
+    let reject!: (e: unknown) => void;
+    backend.portfolio.holdings = () => new Promise<HoldingsSnapshot>((_, r) => { reject = r; });
+    return (reason: string) => reject({ code: 'error', reason });
+  }
+
+  it('a failed poll while data is shown records backgroundError; status stays ready; no toast; a second failure adds nothing; success clears it', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    const toasts = useToastStore.getState().visible.length;
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await loadPortfolio('holdings', backend, { background: true });
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', loading: false, error: null, backgroundError: 'Network unavailable' });
+    const first = usePortfolioStore.getState().holdings;
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await loadPortfolio('holdings', backend, { background: true });
+    expect(usePortfolioStore.getState().holdings).toBe(first);
+    expect(useToastStore.getState().visible).toHaveLength(toasts);
+    await loadPortfolio('holdings', backend, { background: true });
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', backgroundError: null });
+    stop();
+  });
+
+  it('a background poll leaves loading alone (no busy indicator)', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    const fail = rejectingHoldings(backend);
+    const read = loadPortfolio('holdings', backend, { background: true });
+    expect(usePortfolioStore.getState().holdings.loading).toBe(false);
+    fail('Network unavailable');
+    await read;
+    expect(usePortfolioStore.getState().holdings.loading).toBe(false);
+    stop();
+  });
+
+  it('a poll that fails after logout is dropped: no notice, store idle', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    const fail = rejectingHoldings(backend);
+    const read = loadPortfolio('holdings', backend, { background: true });
+    backend.emit('session.state', readySession({ state: 'logged_out' }));
+    fail('Network unavailable');
+    await read;
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'idle', backgroundError: null, data: { rows: [] } });
+    stop();
+  });
+
+  it('reset clears backgroundError', async () => {
+    const { backend, stop } = bridged();
+    await loadPortfolio('holdings', backend);
+    backend.failNext('portfolio.holdings', 'Network unavailable');
+    await loadPortfolio('holdings', backend, { background: true });
+    backend.emit('session.state', readySession({ state: 'logged_out' }));
+    expect(usePortfolioStore.getState().holdings.backgroundError).toBeNull();
+    stop();
+  });
+});

@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
+import { BackgroundErrorNotice } from '../../components/BackgroundErrorNotice';
 import { DataTable, type Column } from '../../components/DataTable';
 import { filterRows } from '../../components/filterRows';
 import { ListBody } from '../../components/ListBody';
 import { ListPage } from '../../components/ListPage';
 import { InstrumentName, Signed } from '../../components/Values';
-import { holdingsCopy as copy } from '../../i18n/copy';
+import { holdingsCopy as copy, portfolioCopy } from '../../i18n/copy';
 import { formatMoney, formatNumber, formatPrice } from '../../i18n/format';
 import { holdingRow, liveLtp, rupees, summarizeHoldings, type LiveHolding } from '../../portfolio/calc';
 import { listStatusOf, usePortfolioResource } from '../../store/portfolio';
@@ -34,7 +35,7 @@ const columns: Column<LiveHolding>[] = [
 ];
 
 export function HoldingsView() {
-  const { resource, reload, refresh } = usePortfolioResource('holdings');
+  const { resource, reload, refresh, retryInBackground } = usePortfolioResource('holdings');
   const latest = useTicksStore((s) => s.latest);
   const [query, setQuery] = useState('');
   const rows = useMemo(
@@ -52,6 +53,7 @@ export function HoldingsView() {
       refreshing={resource.loading}
       search={{ value: query, onChange: setQuery, matches: visible.length }}
     >
+      <BackgroundErrorNotice error={resource.backgroundError} message={portfolioCopy.staleNotice} onRetry={() => void retryInBackground()} />
       <ListBody
         status={listStatusOf(resource, rows.length === 0)}
         error={resource.error}
