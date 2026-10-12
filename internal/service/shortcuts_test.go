@@ -359,3 +359,19 @@ func TestSaveWindowGeometry(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Ruling 82 (M2): SaveWindowGeometry accepts only the geometry JSON shape.
+func TestSaveWindowGeometry_Shape(t *testing.T) {
+	e := newSvcEnv(t)
+	withUiStore(t, e)
+	ctx := context.Background()
+	for _, bad := range []string{"", "x", "[]", "null", `{"foo":1}`, `{"w":0,"h":10,"x":0,"y":0,"maximised":false}`,
+		`{"w":10,"h":-1,"x":0,"y":0,"maximised":false}`, `{"w":"10","h":10}`, `{"w":10,"h":10} {}`} {
+		if err := e.svc.SaveWindowGeometry(ctx, bad); refusedCode(t, err) != "invalid_value" {
+			t.Errorf("%q: %v", bad, err)
+		}
+	}
+	if err := e.svc.SaveWindowGeometry(ctx, `{"w":1280,"h":720,"x":-5,"y":0,"maximised":true}`); err != nil {
+		t.Fatal(err)
+	}
+}

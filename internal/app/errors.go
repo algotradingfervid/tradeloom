@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"tradeloom/internal/logging"
 	"tradeloom/internal/service"
 )
 
@@ -15,6 +16,7 @@ func ErrorFormatter(err error) any {
 	if errors.As(err, &r) {
 		m = map[string]string{"code": r.Code, "stage": r.Stage, "reason": r.Reason}
 	}
+	m["reason"] = logging.Default.RedactString(m["reason"]) // every reason, not only the façade's (Ruling 82 M4)
 	b, _ := json.Marshal(m)
 	return string(b)
 }
