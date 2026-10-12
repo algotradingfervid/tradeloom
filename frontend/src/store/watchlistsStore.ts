@@ -50,26 +50,31 @@ const resolveActive = (st: WatchlistsState): string | null =>
   st.lists.some((l) => l.id === st.activeId) ? st.activeId : (st.lists[0]?.id ?? null);
 
 /**
- * Late-response guard (P0-4 Rulings 90/96): the logout reset bumps `epoch`; every call captures the epoch and the
- * ready user before its await and drops its result when either changed. `eventSeq` counts applied
+ * Late-response guard (P0-4 Rulings 90/96, 102 I1): the logout reset bumps `epoch`; every call captures the epoch and
+ * the last-known user before its await and drops its result when either changed. Watchlists are install-wide and Go
+ * does not gate them on the session, so a session that merely expires (ready(A) → expired(A)) cancels nothing; only a
+ * reset (logout) or a different user does. A dropped call resolves quietly (no rethrow, no error text; Ruling 102 I2). `eventSeq` counts applied
  * `watchlists.changed` events: a response is not applied over an event that arrived while it was in flight, because
  * Go published that event after (or for) the same mutation and it is at least as new.
  */
 let epoch = 0;
 let eventSeq = 0;
-const readyUser = (): string | null => {
-  const s = useSessionStore.getState().session;
-  return s?.state === 'ready' ? s.userId : null;
+/** The last non-empty session userId, whatever the session state (cleared by the reset). */
+let lastUserId: string | null = null;
+const noteUser = (userId: string | undefined) => {
+  if (userId) lastUserId = userId;
 };
+noteUser(useSessionStore.getState().session?.userId);
+useSessionStore.subscribe((s) => noteUser(s.session?.userId));
 
 const initial = { lists: [] as Watchlist[], activeId: null, selectedToken: null, status: 'idle' as Status, error: null };
 
 export const useWatchlists = create<WatchlistsStore>()((set, get) => {
   const ticket = () => {
     const e = epoch;
-    const user = readyUser();
+    const user = lastUserId;
     const seq = eventSeq;
-    const live = () => e === epoch && user === readyUser();
+    const live = () => e === epoch && user === lastUserId;
     return {
       live,
       superseded: () => seq !== eventSeq,
@@ -85,11 +90,15 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
     t.apply(await watchlistsApi.list());
   };
 
-  const reorderTo = async (token: number, index: number, retried: boolean): Promise<void> => {
+  /**
+   * `target(list)` gives the row's wanted index in `list`; it is asked again against Go's reloaded list on the
+   * stale_order retry (Ruling 102 m1), so the move keeps its meaning when rows changed elsewhere.
+   */
+  const reorderTo = async (token: number, target: (l: Watchlist) => number, retried: boolean): Promise<void> => {
     const list = activeList(get());
     if (!list) return;
     const from = list.items.findIndex((i) => i.token === token);
-    const to = Math.max(0, Math.min(index, list.items.length - 1));
+    const to = Math.max(0, Math.min(target(list), list.items.length - 1));
     if (from < 0 || from === to) return;
     const items = [...list.items];
     const [moved] = items.splice(from, 1);
@@ -100,9 +109,11 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
       t.apply(await watchlistsApi.reorder(list.id, items.map((i) => i.token)));
     } catch (e) {
       if (!t.live()) return;
-      await refetch();
+      // A failed reload must not hide the original error (Ruling 102 m2).
+      await refetch().catch(() => undefined);
+      if (!t.live()) return;
       // Ruling 87: stale_order means Go's list changed under us — reload and retry once against it.
-      if (isCode(e, 'stale_order') && !retried) return reorderTo(token, index, true);
+      if (isCode(e, 'stale_order') && !retried) return reorderTo(token, target, true);
       throw e;
     }
   };
@@ -131,7 +142,8 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
       try {
         t.apply(await watchlistsApi.setActive(id));
       } catch (e) {
-        if (t.live() && get().activeId === id) set({ activeId: previous });
+        if (!t.live()) return;
+        if (get().activeId === id) set({ activeId: previous });
         throw e;
       }
     },
@@ -162,12 +174,19 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
         }
         // "Save as watchlist" without activation puts the previous list back (Ruling 87).
         if (!activate && previous && previous !== created.id && st.lists.some((l) => l.id === previous)) {
-          st = await watchlistsApi.setActive(previous);
+          try {
+            st = await watchlistsApi.setActive(previous);
+          } catch {
+            // The list exists with its items; only the switch back failed. Show Go's state, report success (m3).
+            if (t.live()) await refetch().catch(() => undefined);
+            return null;
+          }
         }
         t.apply(st);
         return null;
       } catch (e) {
-        if (createdId !== null && t.live()) {
+        if (!t.live()) return null;
+        if (createdId !== null) {
           if (!activate && previous) await watchlistsApi.setActive(previous).catch(() => undefined);
           await refetch().catch(() => undefined);
         }
@@ -183,6 +202,7 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
         t.apply(await watchlistsApi.rename(id, name.trim()));
         return null;
       } catch (e) {
+        if (!t.live()) return null;
         return nameError(e, name);
       }
     },
@@ -190,7 +210,11 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
     // Go picks the next active list (the one at the same index; a fresh "Watchlist 1" when none is left).
     deleteList: async (id) => {
       const t = ticket();
-      t.apply(await watchlistsApi.delete(id));
+      try {
+        t.apply(await watchlistsApi.delete(id));
+      } catch (e) {
+        if (t.live()) throw e;
+      }
     },
 
     addItem: async (token) => {
@@ -202,7 +226,8 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
         t.apply(await watchlistsApi.add(list.id, token, -1));
         return 'added';
       } catch (e) {
-        if (isCode(e, 'already_in_list')) return 'duplicate';
+        // After a reset nothing was added as far as this (cleared) store is concerned.
+        if (!t.live() || isCode(e, 'already_in_list')) return 'duplicate';
         throw e;
       }
     },
@@ -226,16 +251,15 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
       try {
         return await watchlistsApi.remove(list.id, token);
       } catch (e) {
-        if (t.live()) {
-          set((s) => ({
-            lists: patch(s.lists, list.id, (l) => {
-              if (l.items.some((i) => i.token === token)) return l;
-              const items = [...l.items];
-              items.splice(Math.min(position, items.length), 0, item);
-              return { ...l, items };
-            }),
-          }));
-        }
+        if (!t.live()) return null;
+        set((s) => ({
+          lists: patch(s.lists, list.id, (l) => {
+            if (l.items.some((i) => i.token === token)) return l;
+            const items = [...l.items];
+            items.splice(Math.min(position, items.length), 0, item);
+            return { ...l, items };
+          }),
+        }));
         throw e;
       }
     },
@@ -244,16 +268,36 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
       const list = get().lists.find((l) => l.id === r.listId);
       if (!list || list.items.some((i) => i.token === r.token)) return;
       const t = ticket();
-      t.apply(await watchlistsApi.add(r.listId, r.token, r.position));
+      try {
+        t.apply(await watchlistsApi.add(r.listId, r.token, r.position));
+      } catch (e) {
+        if (t.live()) throw e;
+      }
     },
 
-    move: async (token, delta) => {
+    // One step from wherever the row is now, also in Go's reloaded list on a retry.
+    move: (token, delta) => reorderTo(token, (l) => l.items.findIndex((i) => i.token === token) + delta, false),
+
+    // A drop: on a retry the row goes next to the neighbour it was dropped beside, else to the clamped index.
+    moveTo: (token, index) => {
       const list = activeList(get());
-      if (!list) return;
-      await reorderTo(token, tokensOf(list).indexOf(token) + delta, false);
+      if (!list) return Promise.resolve();
+      const order = tokensOf(list).filter((t) => t !== token);
+      const at = Math.max(0, Math.min(index, order.length));
+      const above = at > 0 ? order[at - 1] : null;
+      const below = at < order.length ? order[at] : null;
+      let first = true;
+      return reorderTo(token, (l) => {
+        if (first) {
+          first = false;
+          return index;
+        }
+        const rest = tokensOf(l).filter((t) => t !== token);
+        if (above !== null && rest.includes(above)) return rest.indexOf(above) + 1;
+        if (below !== null && rest.includes(below)) return rest.indexOf(below);
+        return index;
+      }, false);
     },
-
-    moveTo: (token, index) => reorderTo(token, index, false),
 
     applyChanged: (st) => {
       // Before the first load (or after the logout reset) there is nothing to update: load() reads Go's state.
@@ -267,5 +311,6 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
 // Watchlists are account data: cleared on sign-out (default onLogout, Ruling 83-F M5), and in-flight calls dropped.
 registerReset(() => {
   epoch++;
+  lastUserId = null;
   useWatchlists.setState(initial);
 });

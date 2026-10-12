@@ -1,14 +1,14 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Watchlist, WatchlistsState } from '../api/backend';
 import { setBackend } from '../api/current';
-import { startEventBridge } from '../api/events';
+import { bootstrap, startEventBridge } from '../api/events';
 import { demoSeed, readySession } from '../api/mock/fixtures';
 import { createMockBackend, type MockBackend } from '../api/mock/index';
 import { watchlistItemOf } from '../api/mock/market';
 import { activeList, tokensOf, useWatchlists } from './watchlistsStore';
 import { resetOnLogout } from './reset';
 import { useSessionStore } from './session';
-import { RELIANCE, SBIN, TCS } from '../instruments/fixtures';
+import { INFY, RELIANCE, SBIN, TCS } from '../instruments/fixtures';
 import type { Instrument } from '../instruments/types';
 
 let backend: MockBackend;
@@ -269,5 +269,149 @@ describe('late responses after logout or a user change (Rulings 90/96)', () => {
     d.resolve({ lists: [wl('a', 'A', [TCS, SBIN])], activeId: 'a' });
     await p;
     expect(state().lists).toEqual([]);
+  });
+});
+
+describe('fix round 1 (Ruling 102)', () => {
+  const goItems = (insts: Instrument[]) => { backend.state.watchlists.lists[0].items = insts.map(watchlistItemOf); };
+
+  it('I1: a session that merely expires mid-create does not cancel it: every Add runs and the previous list is restored', async () => {
+    useSessionStore.getState().setSession(readySession({ userId: 'AB1234' }));
+    seed([wl('a', 'A')]);
+    const realCreate = backend.watchlists.create;
+    const d = deferred<void>();
+    backend.watchlists.create = async (name) => { await d.promise; return realCreate(name); };
+    const p = state().create('Banks', [SBIN.token, TCS.token], false);
+    useSessionStore.getState().setSession(readySession({ state: 'expired', userId: 'AB1234' }));
+    d.resolve();
+    expect(await p).toBeNull();
+    const banks = state().lists.find((l) => l.name === 'Banks')!;
+    expect(backend.callsTo('watchlists.add').map((c) => c.args)).toEqual([[banks.id, SBIN.token, -1], [banks.id, TCS.token, -1]]);
+    expect(backend.callsTo('watchlists.setActive').map((c) => c.args)).toEqual([['a']]);
+    expect(state().activeId).toBe('a');
+  });
+
+  it('I1: an expired session does not stop the stale_order reload-and-retry', async () => {
+    useSessionStore.getState().setSession(readySession({ userId: 'AB1234' }));
+    seed([wl('a', 'A', [SBIN, TCS])]);
+    goItems([SBIN, TCS, RELIANCE]);
+    const realReorder = backend.watchlists.reorder;
+    backend.watchlists.reorder = async (id, tokens) => {
+      useSessionStore.getState().setSession(readySession({ state: 'expired', userId: 'AB1234' }));
+      return realReorder(id, tokens);
+    };
+    await state().move(TCS.token, -1);
+    expect(backend.callsTo('watchlists.reorder')).toHaveLength(2);
+    expect(tokensOf(state().lists[0])).toEqual([TCS.token, SBIN.token, RELIANCE.token]);
+  });
+
+  it('I2: calls that fail after a reset resolve quietly in every method', async () => {
+    const rejectAfterReset = () => {
+      const d = deferred<void>();
+      return { d, fn: async () => { await d.promise; throw refusal('internal'); } };
+    };
+    const cases: [string, keyof MockBackend['watchlists'], () => Promise<unknown>, unknown][] = [
+      ['addItem', 'add', () => state().addItem(TCS.token), 'duplicate'],
+      ['restoreItem', 'add', () => state().restoreItem({ listId: 'a', token: TCS.token, position: 0 }), undefined],
+      ['removeItem', 'remove', () => state().removeItem(SBIN.token), null],
+      ['setActive', 'setActive', () => state().setActive('b'), undefined],
+      ['deleteList', 'delete', () => state().deleteList('b'), undefined],
+      ['create', 'create', () => state().create('Banks'), null],
+      ['rename', 'rename', () => state().rename('b', 'Banks'), null],
+      ['move', 'reorder', () => state().move(SBIN.token, 1), undefined],
+    ];
+    for (const [name, method, run, quietValue] of cases) {
+      seed([wl('a', 'A', [SBIN, RELIANCE]), wl('b', 'B')]);
+      const { d, fn } = rejectAfterReset();
+      (backend.watchlists as unknown as Record<string, unknown>)[method] = fn;
+      const p = run();
+      resetOnLogout();
+      d.resolve();
+      await expect(p, name).resolves.toEqual(quietValue);
+      expect(state().lists, name).toEqual([]);
+      backend = createMockBackend(demoSeed());
+      setBackend(backend);
+    }
+  });
+
+  it('m1: move() retried after stale_order recomputes from the token\'s index in the reloaded list', async () => {
+    seed([wl('a', 'A', [SBIN, TCS])]);
+    goItems([INFY, SBIN, TCS]);
+    await state().move(TCS.token, -1);
+    expect(backend.callsTo('watchlists.reorder').at(-1)!.args).toEqual(['a', [INFY.token, TCS.token, SBIN.token]]);
+    expect(tokensOf(state().lists[0])).toEqual([INFY.token, TCS.token, SBIN.token]);
+  });
+
+  it('m1: move() down that lands past the end of the reloaded list is a no-op and shows Go\'s order', async () => {
+    seed([wl('a', 'A', [SBIN, TCS])]);
+    goItems([INFY, TCS, SBIN]);
+    await state().move(SBIN.token, 1);
+    expect(backend.callsTo('watchlists.reorder')).toHaveLength(1);
+    expect(tokensOf(state().lists[0])).toEqual([INFY.token, TCS.token, SBIN.token]);
+  });
+
+  it('m1: moveTo() retried after stale_order keeps the row next to its drop neighbour', async () => {
+    seed([wl('a', 'A', [SBIN, TCS, RELIANCE])]);
+    goItems([INFY, SBIN, TCS, RELIANCE]);
+    await state().moveTo(RELIANCE.token, 0); // dropped above SBIN
+    expect(tokensOf(state().lists[0])).toEqual([INFY.token, RELIANCE.token, SBIN.token, TCS.token]);
+
+    seed([wl('a', 'A', [SBIN, TCS, RELIANCE])]);
+    goItems([SBIN, INFY, TCS, RELIANCE]);
+    await state().moveTo(SBIN.token, 2); // dropped below RELIANCE
+    expect(tokensOf(state().lists[0])).toEqual([INFY.token, TCS.token, RELIANCE.token, SBIN.token]);
+  });
+
+  it('m2: a failed reload during the retry path does not hide the original error', async () => {
+    seed([wl('a', 'A', [SBIN, TCS])]);
+    backend.failNext('watchlists.reorder', 'disk full', 'internal');
+    backend.failNext('watchlists.list', 'offline', 'offline');
+    await expect(state().move(TCS.token, -1)).rejects.toMatchObject({ code: 'internal' });
+  });
+
+  it('m3: a seeded create whose only failure is setActive(previous) reports success and shows Go\'s state', async () => {
+    seed([wl('a', 'A')]);
+    backend.failNext('watchlists.setActive', 'busy', 'internal');
+    expect(await state().create('Banks', [SBIN.token], false)).toBeNull();
+    const banks = state().lists.find((l) => l.name === 'Banks')!;
+    expect(banks.items.map((i) => i.token)).toEqual([SBIN.token]);
+    expect(state().activeId).toBe(backend.state.watchlists.activeId);
+  });
+});
+
+describe('the event bridge owns load() (Ruling 102 I3)', () => {
+  it('session.state → ready while idle loads the watchlists once', async () => {
+    backend.state.watchlists = { lists: [wl('a', 'Mine', [SBIN])], activeId: 'a' };
+    const stop = startEventBridge(backend, { navigate: () => {} });
+    backend.emit('session.state', readySession());
+    await vi.waitFor(() => expect(state().status).toBe('ready'));
+    expect(state().lists.map((l) => l.name)).toEqual(['Mine']);
+    backend.emit('session.state', readySession());
+    await Promise.resolve();
+    expect(backend.callsTo('watchlists.list')).toHaveLength(1);
+    stop();
+  });
+
+  it('a non-ready session.state does not load', async () => {
+    const stop = startEventBridge(backend, { navigate: () => {} });
+    backend.emit('session.state', readySession({ state: 'logged_out', userId: '' }));
+    await Promise.resolve();
+    expect(backend.callsTo('watchlists.list')).toHaveLength(0);
+    expect(state().status).toBe('idle');
+    stop();
+  });
+
+  it('bootstrap loads them when the session is already ready', async () => {
+    backend.state.watchlists = { lists: [wl('a', 'Mine')], activeId: 'a' };
+    await bootstrap(backend);
+    await vi.waitFor(() => expect(state().status).toBe('ready'));
+    expect(backend.callsTo('watchlists.list')).toHaveLength(1);
+  });
+
+  it('bootstrap does not load them for a signed-out session', async () => {
+    backend.state.session = readySession({ state: 'no_credentials', userId: '' });
+    await bootstrap(backend);
+    await Promise.resolve();
+    expect(backend.callsTo('watchlists.list')).toHaveLength(0);
   });
 });

@@ -3,6 +3,11 @@ export const WATCHLIST_NAME_MAX = 40;
 
 /** Go counts runes (utf8.RuneCountInString); spreading a string counts code points, which is the same thing. */
 const runeCount = (s: string): number => [...s].length;
+/**
+ * Case-insensitive comparison. toLowerCase is close to, but not the same as, Go's strings.EqualFold (simple Unicode
+ * case folding; e.g. 'K' KELVIN SIGN or 'ſ' fold differently). This check is a UI convenience; Go's duplicate_name
+ * refusal is the backstop and the store maps it to the same text.
+ */
 const fold = (s: string): string => s.trim().toLowerCase();
 
 export function nextWatchlistName(existing: readonly string[]): string {
