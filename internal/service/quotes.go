@@ -13,7 +13,6 @@ import (
 	"tradeloom/internal/kite/feed"
 	"tradeloom/internal/kite/ratelimit"
 	"tradeloom/internal/kite/ticker"
-	"tradeloom/internal/logging"
 )
 
 const (
@@ -152,7 +151,7 @@ func (s *Service) WatchQuotes(_ context.Context, consumer string, tokens []uint3
 	if len(removed) > 0 {
 		quit := s.quotesQuit()
 		linger := s.d.Clock.At(deadline)
-		logging.Go("service.quotes.linger", func() {
+		s.goTracked("service.quotes.linger", func() {
 			select {
 			case <-linger.C():
 				s.expireLinger(c, consumer, removed, deadline)

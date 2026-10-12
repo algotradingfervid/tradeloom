@@ -190,7 +190,7 @@ func (s *Service) BackupNow(ctx context.Context, folder string, includeCandles b
 		return "", s.refuse(dataStage, err)
 	}
 	jctx := context.WithoutCancel(ctx)
-	logging.Go("service.backup", func() {
+	s.goTracked("service.backup", func() {
 		defer release()
 		step := func(stage string, n int) {
 			s.progress(JobProgress{JobID: id, Kind: JobBackup, Stage: stage, Done: n, Total: 4})
@@ -200,6 +200,7 @@ func (s *Service) BackupNow(ctx context.Context, folder string, includeCandles b
 			s.progress(JobProgress{JobID: id, Kind: JobBackup, Stage: stage, Done: n, Total: 4, Finished: true, Error: err.Error()})
 		}
 		step("preparing", 1)
+		s.sweepBackupTemps(folder)
 		step("writing", 2)
 		path, err := s.d.DB.Backup(jctx, s.backupOptions(folder, includeCandles))
 		if err != nil {
@@ -285,7 +286,7 @@ func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) 
 		return "", s.refuse(dataStage, err)
 	}
 	jctx := context.WithoutCancel(ctx)
-	logging.Go("service.restore", func() {
+	s.goTracked("service.restore", func() {
 		step := func(stage string, n int) {
 			s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: stage, Done: n, Total: 4})
 		}
@@ -347,7 +348,27 @@ func (s *Service) scheduledBackupDue(ctx context.Context) (string, bool) {
 
 // runScheduledBackup writes the day's backup. A failure is published on job.progress (kind backup, redacted
 // Error, Ruling 74) and leaves the day's marker unset, so the next 16:00 or quit retries.
-func (s *Service) runScheduledBackup(ctx context.Context, today string) {
+// sweepBackupTemps removes temp archives (.backup-*.tar.zst.tmp, store.Backup's CreateTemp pattern) that a
+// backup interrupted by a crash or power loss left in dir (Ruling 89 M4). It runs only while this process
+// holds the job slot, so no backup of this process is writing one; failures are logged and ignored.
+func (s *Service) sweepBackupTemps(dir string) {
+	stale, err := filepath.Glob(filepath.Join(dir, ".backup-*.tar.zst.tmp"))
+	if err != nil {
+		return
+	}
+	for _, p := range stale {
+		if err := os.Remove(p); err != nil {
+			s.d.Log.Warn("stale backup temp not removed", "file", filepath.Base(p), "err", err)
+			continue
+		}
+		s.d.Log.Info("stale backup temp removed", "file", filepath.Base(p))
+	}
+}
+
+// runScheduledBackup writes the day's scheduled backup. A failure always publishes a terminal job.progress;
+// a success does so only on quit (BackupOnQuit), where the UI shows that the app is finishing a backup — the
+// daily run in the background stays silent.
+func (s *Service) runScheduledBackup(ctx context.Context, today string, onQuit bool) {
 	id, release, err := s.beginJob(JobBackup)
 	if err != nil {
 		s.d.Log.Info("scheduled backup skipped", "reason", err.Error())
@@ -367,6 +388,7 @@ func (s *Service) runScheduledBackup(ctx context.Context, today string) {
 		fail("preparing", 1, fmt.Errorf("the folder %s does not exist or is not a folder", dir))
 		return
 	}
+	s.sweepBackupTemps(dir)
 	keep := settings.Get(s.d.Settings, settings.BackupScheduleKeep)
 	path, pruned, err := s.d.DB.ScheduledBackup(ctx, s.backupOptions(dir, settings.Get(s.d.Settings, settings.BackupIncludeCandles)), keep)
 	if err != nil && path == "" {
@@ -381,12 +403,15 @@ func (s *Service) runScheduledBackup(ctx context.Context, today string) {
 		s.d.Log.Warn("scheduled backup marker not saved", "err", err)
 	}
 	s.d.Log.Info("scheduled backup written", "path", path, "pruned", len(pruned))
+	if onQuit {
+		s.progress(JobProgress{JobID: id, Kind: JobBackup, Stage: "done", Done: 4, Total: 4, Finished: true, ResultPath: path})
+	}
 }
 
 // BackupOnQuit runs a missed scheduled backup synchronously (App.BeforeClose).
 func (s *Service) BackupOnQuit(ctx context.Context) {
 	if today, due := s.scheduledBackupDue(ctx); due {
-		s.runScheduledBackup(ctx, today)
+		s.runScheduledBackup(ctx, today, true)
 	}
 }
 
@@ -394,7 +419,7 @@ func (s *Service) BackupOnQuit(ctx context.Context) {
 func (s *Service) RunBackups(ctx context.Context) {
 	for {
 		if today, due := s.scheduledBackupDue(ctx); due {
-			s.runScheduledBackup(ctx, today)
+			s.runScheduledBackup(ctx, today, false)
 		}
 		now := s.d.Clock.Now().In(clock.IST)
 		next := time.Date(now.Year(), now.Month(), now.Day(), ScheduledBackupHour, 0, 0, 0, clock.IST)

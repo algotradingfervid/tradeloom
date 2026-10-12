@@ -250,6 +250,25 @@ func (s *Session) CompleteLogin(ctx context.Context, pasted string) (SessionStat
 	return s.exchange(ctx, red.RequestToken, "")
 }
 
+// CompleteForwardedLogin completes a login from a Kite redirect URL that a second launch handed over
+// (argv, internal/app.SecondInstance). Unlike CompleteLogin it is not an explicit paste, so it follows the
+// loopback callback rule (Rulings 36, 57): the URL must carry the state nonce of the current login attempt;
+// once that attempt succeeded only the request token it exchanged is accepted (a repeat is a no-op).
+func (s *Session) CompleteForwardedLogin(ctx context.Context, raw string) (SessionState, error) {
+	red, err := ParseRedirect(raw)
+	if err != nil {
+		return s.State(), safeRedirectError(err)
+	}
+	s.mu.Lock()
+	known := s.nonceAcceptsLocked(red.State, red.RequestToken)
+	s.mu.Unlock()
+	if !known {
+		s.d.Log.Warn("forwarded redirect refused", "reason", "unknown, missing or retired state")
+		return s.State(), &LoginError{Code: CodeStateMismatch, Message: "This login link belongs to an earlier login attempt. Click \"Log in with Kite\" again."}
+	}
+	return s.exchange(ctx, red.RequestToken, red.State)
+}
+
 // exchange trades a request_token for an access token. nonce is the callback's state ("" for a paste):
 // when set, it must still belong to the current attempt (Ruling 57), and a success binds it to
 // requestToken. Lock order: exMu, then feedMu (around the commit only, never across a Kite call), then mu.
