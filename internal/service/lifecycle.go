@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"sync"
+	"time"
 
 	"tradeloom/internal/logging"
 )
@@ -32,6 +33,12 @@ func (g *goGroup) done() {
 	g.mu.Unlock()
 }
 
+func (g *goGroup) count() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.n
+}
+
 func (g *goGroup) wait() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -53,11 +60,34 @@ func (s *Service) goTracked(name string, fn func()) {
 	})
 }
 
-// Wait blocks until every tracked service goroutine has returned: a running backup or support-bundle job
-// finishes; event sources, the market clock and linger timers end once the context passed to their Start
-// (the App context) is cancelled and RunQuotes has returned. cmd/tradeloom calls it from App.Deps.StopPlatform,
-// i.e. after App.Shutdown cancelled the App context and before boot.Shutdown closes app.db.
-func (s *Service) Wait() { s.bg.wait() }
+// ShutdownJobWait bounds Wait: a running backup or support-bundle job gets this long to finish at shutdown.
+const ShutdownJobWait = 30 * time.Second
+
+// Wait blocks until every tracked service goroutine has returned (a running backup or support-bundle job
+// finishes; event sources, the market clock and linger timers end once the App context is cancelled and
+// RunQuotes has returned), but never longer than ShutdownJobWait: after that it logs a Warn and returns,
+// so a wedged goroutine cannot hang the exit. cmd/tradeloom calls it from App.Deps.StopPlatform, after
+// App.Shutdown cancelled the App context and before boot.Shutdown closes app.db.
+func (s *Service) Wait() { s.waitFor(ShutdownJobWait) }
+
+// waitFor is Wait with an explicit bound; it reports whether every tracked goroutine ended in time.
+func (s *Service) waitFor(d time.Duration) bool {
+	done := make(chan struct{})
+	logging.Go("service.wait", func() {
+		s.bg.wait()
+		close(done)
+	})
+	// A context deadline on the wait (not app time; Ruling 10), like App.Shutdown's bounded wait.
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		s.d.Log.Warn("shutdown: service goroutines still running; continuing", "waited", d.String(), "running", s.bg.count())
+		return false
+	}
+}
 
 // CloseAllLive closes every open live-chart subscription (Ruling 66): on a frontend reload (the page that
 // opened them is gone) and at shutdown. It returns how many were closed.

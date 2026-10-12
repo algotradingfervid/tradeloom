@@ -64,3 +64,21 @@ func TestCompleteForwardedLogin_UsesCallbackRule(t *testing.T) {
 		t.Fatalf("forwarded %v completed %v", e.session.forwarded, e.session.completed)
 	}
 }
+
+// Task 23 merge (coordinator): Wait is bounded; a goroutine that never ends cannot hang the shutdown.
+func TestWait_IsBounded(t *testing.T) {
+	e := newSvcEnv(t)
+	hold := make(chan struct{})
+	defer close(hold)
+	e.svc.goTracked("test.wedged", func() { <-hold })
+	start := time.Now()
+	if e.svc.waitFor(50 * time.Millisecond) {
+		t.Fatal("waitFor reported success with a goroutine still running")
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Fatalf("waited %v", el)
+	}
+	if ShutdownJobWait != 30*time.Second {
+		t.Fatalf("ShutdownJobWait = %v", ShutdownJobWait)
+	}
+}
