@@ -92,6 +92,19 @@ type CandleTracker interface {
 	Untrack(token uint32, ivs ...candles.Interval)
 }
 
+// CandleAdmin is the maintenance half of *sqlite.Store (FR-DATA-002) (Task 30).
+type CandleAdmin interface {
+	Stats(ctx context.Context) (candles.Stats, error)
+	Clear(ctx context.Context, confirmRuns []string) error
+	OpenJobs(ctx context.Context) ([]candles.Job, error)
+}
+
+// InstrumentRefresher is *instruments.Refresher (Task 30). Its Trigger method is used through an optional
+// interface after each new login (P0-2 Ruling 49).
+type InstrumentRefresher interface {
+	Refresh(ctx context.Context) error
+}
+
 // liveChart is one open chart subscription (OpenLive).
 type liveChart struct {
 	token uint32
@@ -127,6 +140,15 @@ type Deps struct {
 	Detection    secrets.Detection    // Boot.Secrets
 	KeyringProbe func() error         // secrets.ProbeKeyringWithin(secrets.ProbeTimeout); nil = available
 	NewKeyring   func() secrets.Store // secrets.NewKeyring; tests inject a memory store
+	// Task 30 (data façade)
+	DB              *store.DB           // app.db (backups, calendar overrides, support files)
+	Layout          store.Layout        // data directory layout
+	AppVersion      string              // app.Version
+	CandleAdmin     CandleAdmin         // candle stats / clear
+	Refresher       InstrumentRefresher // manual instrument refresh; Trigger after login
+	ImportedAt      func() time.Time    // Master.ImportedAt
+	CloseForRestore func() error        // stops the platform and closes app.db before store.Restore
+	supportedSchema func() int          // store.SupportedSchema; tests override it
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
@@ -151,6 +173,15 @@ type Service struct {
 
 	feedMu   sync.Mutex
 	lastFeed ticker.FeedState // last feed.state (System.Status); zero State reads as "stopped"
+
+	// Task 30: the single job slot (backup, restore, support bundle).
+	jobMu      sync.Mutex
+	jobRunning string // kind of the running job, "" when idle
+	jobSeq     int
+
+	// Task 31 (calendar façade): serialises override writes so app.db, the coverage setting and the
+	// running calendar.Service change in the same order.
+	calMu sync.Mutex
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
