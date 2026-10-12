@@ -107,7 +107,7 @@ deps:
   feed:
     mayDependOn: [ticker]
   orders:
-    mayDependOn: [bus, kite, store, ticker]   # P0-3 Task 19 Sync: bus topics, orders cache, ticker ticks; §2.3 also allows orderwrite (P4)
+    mayDependOn: [bus, kite, ratelimit, store, ticker]   # P0-3 Task 19 Sync: bus topics, poll priority, orders cache, ticker ticks; §2.3 also allows orderwrite (P4)
   storetest:
     mayDependOn: [store]
   ratelimit:
