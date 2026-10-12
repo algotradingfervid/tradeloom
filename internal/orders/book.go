@@ -66,6 +66,7 @@ type OrderRow struct {
 	Section       string `json:"section"`
 	Tag           string `json:"tag"`
 	Source        string `json:"source"`
+	OutOfScope    bool   `json:"outOfScope"`
 }
 
 type SectionCounts struct {
@@ -78,8 +79,10 @@ type SectionCounts struct {
 type BookSnapshot struct {
 	Orders []OrderRow    `json:"orders"`
 	Counts SectionCounts `json:"counts"`
-	AsOfMs int64         `json:"asOfMs"`
-	Stale  bool          `json:"stale"`
+	// OutOfScopeCount is how many rows are flagged OutOfScope (kept, read-only in the UI).
+	OutOfScopeCount int   `json:"outOfScopeCount"`
+	AsOfMs          int64 `json:"asOfMs"`
+	Stale           bool  `json:"stale"`
 }
 
 func sourceOf(tag string) string {
@@ -108,16 +111,17 @@ func orderRowFrom(o kite.Order) OrderRow {
 		Qty: int64(math.Round(o.Quantity)), FilledQty: int64(math.Round(o.FilledQuantity)),
 		PricePaise: Paise(o.Price), TriggerPaise: Paise(o.TriggerPrice), AvgPricePaise: Paise(o.AveragePrice),
 		Status: o.Status, StatusMessage: o.StatusMessage, Section: SectionOf(o.Status), Tag: o.Tag, Source: sourceOf(o.Tag),
+		OutOfScope: outOfScope(o.Exchange, o.TradingSymbol),
 	}
 }
 
 func BuildBook(os []kite.Order, asOfMs int64, stale bool) BookSnapshot {
 	b := BookSnapshot{Orders: make([]OrderRow, 0, len(os)), AsOfMs: asOfMs, Stale: stale}
 	for _, o := range os {
-		if !inEquityScope(o.Exchange, o.TradingSymbol) {
-			continue
-		}
 		r := orderRowFrom(o)
+		if r.OutOfScope {
+			b.OutOfScopeCount++
+		}
 		switch r.Section {
 		case SectionOpen:
 			b.Counts.Open++

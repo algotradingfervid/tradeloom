@@ -119,24 +119,67 @@ func TestParseScope(t *testing.T) {
 	}
 }
 
-// Equity scope only: options, MCX and CDS rows are dropped defensively; futures and cash stay.
-func TestBuilders_EquityScopeFilter(t *testing.T) {
+// Ruling 38: no silent scope filter. Out-of-scope rows are kept, flagged and counted in every total.
+func TestBuilders_OutOfScopeFlaggedNotDropped(t *testing.T) {
 	p := mustJSON[kite.Positions](t, `{"net":[
 	 {"tradingsymbol":"NIFTY26OCTFUT","exchange":"NFO","product":"NRML","quantity":25,"multiplier":25,"average_price":100,"last_price":100,"pnl":10},
 	 {"tradingsymbol":"NIFTY2610822500CE","exchange":"NFO","product":"NRML","quantity":25,"multiplier":25,"average_price":100,"last_price":100,"pnl":500},
 	 {"tradingsymbol":"GOLDM26OCTFUT","exchange":"MCX","product":"NRML","quantity":1,"multiplier":1,"average_price":1,"last_price":1,"pnl":900},
+	 {"tradingsymbol":"NIFTY26OCTXYZ","exchange":"NFO","product":"NRML","quantity":1,"multiplier":1,"average_price":1,"last_price":1,"pnl":1},
 	 {"tradingsymbol":"USDINR26OCTFUT","exchange":"CDS","product":"NRML","quantity":1,"multiplier":1,"average_price":1,"last_price":1,"pnl":900}],"day":[]}`)
 	s := BuildPositions(p, nil, 1, false)
-	if len(s.Net) != 1 || s.Net[0].Symbol != "NIFTY26OCTFUT" || s.NetTotalPnLPaise != 1000 {
+	if len(s.Net) != 5 || s.NetTotalPnLPaise != 231100 || s.OutOfScopeCount != 3 {
 		t.Fatalf("%+v", s)
 	}
-	b := BuildBook(mustJSON[kite.Orders](t, `[{"order_id":"1","status":"OPEN","exchange":"MCX","tradingsymbol":"GOLDM26OCTFUT"},{"order_id":"2","status":"OPEN","exchange":"NFO","tradingsymbol":"NIFTY2610822500PE"},{"order_id":"3","status":"OPEN","exchange":"NSE","tradingsymbol":"INFY"}]`), 1, false)
-	if len(b.Orders) != 1 || b.Counts.Open != 1 {
+	want := []bool{false, true, true, false, true}
+	for i, w := range want {
+		if s.Net[i].OutOfScope != w {
+			t.Fatalf("row %d (%s) outOfScope=%v want %v", i, s.Net[i].Symbol, s.Net[i].OutOfScope, w)
+		}
+	}
+	b := BuildBook(mustJSON[kite.Orders](t, `[{"order_id":"1","status":"OPEN","exchange":"MCX","tradingsymbol":"GOLDM26OCTFUT"},{"order_id":"2","status":"OPEN","exchange":"NFO","tradingsymbol":"NIFTY2610822500PE"},{"order_id":"3","status":"OPEN","exchange":"NSE","tradingsymbol":"INFY"},{"order_id":"4","status":"COMPLETE","exchange":"NFO","tradingsymbol":"NIFTY26OCTFUT"},{"order_id":"5","status":"OPEN","tradingsymbol":"X"},{"order_id":"6","status":"OPEN","exchange":"BCD","tradingsymbol":"Y"}]`), 1, false)
+	if len(b.Orders) != 6 || b.Counts.Open != 5 || b.Counts.Executed != 1 || b.OutOfScopeCount != 3 {
 		t.Fatalf("%+v", b)
 	}
-	h := BuildHoldings(mustJSON[kite.Holdings](t, `[{"tradingsymbol":"GOLD","exchange":"MCX","quantity":1,"average_price":1,"last_price":1}]`), nil, 1, false)
-	if !h.Summary.Empty {
+	flag := map[string]bool{}
+	for _, r := range b.Orders {
+		flag[r.OrderID] = r.OutOfScope
+	}
+	if !flag["1"] || !flag["2"] || flag["3"] || flag["4"] || flag["5"] || !flag["6"] {
+		t.Fatalf("flags %v", flag)
+	}
+	h := BuildHoldings(mustJSON[kite.Holdings](t, `[{"tradingsymbol":"GOLD","exchange":"MCX","quantity":1,"average_price":1,"last_price":2},{"tradingsymbol":"INFY","exchange":"NSE","quantity":1,"average_price":10,"last_price":11}]`), nil, 1, false)
+	if h.Summary.Empty || len(h.Rows) != 2 || h.Summary.OutOfScopeCount != 1 || h.Summary.InvestmentPaise != 1100 || h.Summary.CurrentValuePaise != 1300 {
 		t.Fatalf("%+v", h)
+	}
+}
+
+func TestOutOfScope_FailsOpen(t *testing.T) {
+	for _, c := range []struct {
+		ex, sym string
+		want    bool
+	}{
+		{"", "", false}, {"", "XCE", false}, {"NSE", "ABCCE", false}, {"BSE", "ABCPE", false},
+		{"MCX", "GOLD", true}, {"mcx", "GOLD", true}, {"CDS", "USDINR", true}, {"BCD", "USDINR", true},
+		{"NFO", "NIFTY26OCTFUT", false}, {"NFO", "NIFTY26OCTXYZ", false}, {"NFO", "NIFTY2610822500CE", true},
+		{"BFO", "SENSEX2610822500PE", true}, {"BFO", "SENSEX26OCTFUT", false}, {"NFO", "", false},
+	} {
+		if got := outOfScope(c.ex, c.sym); got != c.want {
+			t.Errorf("%q %q: got %v want %v", c.ex, c.sym, got, c.want)
+		}
+	}
+}
+
+// Minor fixes: a zero live LTP is ignored; zero close price gives zero day change.
+func TestBuilders_ZeroLTPAndZeroClose(t *testing.T) {
+	h := BuildHoldings(mustJSON[kite.Holdings](t, `[{"tradingsymbol":"A","exchange":"NSE","instrument_token":1,"quantity":10,"average_price":100,"last_price":110,"close_price":0}]`), map[uint32]float64{1: 0}, 1, false)
+	if h.Rows[0].LTPPaise != 11000 || h.Rows[0].DayChangePaise != 0 || h.Summary.DayChangePaise != 0 {
+		t.Fatalf("%+v", h.Rows[0])
+	}
+	p := mustJSON[kite.Positions](t, `{"net":[{"tradingsymbol":"P","exchange":"NSE","instrument_token":11,"product":"MIS","quantity":10,"multiplier":1,"average_price":50,"last_price":50,"pnl":120}],"day":[]}`)
+	s := BuildPositions(p, map[uint32]float64{11: 0}, 1, false)
+	if s.Net[0].LTPPaise != 5000 || s.Net[0].PnLPaise != 12000 {
+		t.Fatalf("%+v", s.Net[0])
 	}
 }
 

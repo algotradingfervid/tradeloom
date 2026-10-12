@@ -21,6 +21,7 @@ type HoldingRow struct {
 	NetChangeBp    int64  `json:"netChangeBp"`
 	DayChangePaise int64  `json:"dayChangePaise"`
 	DayChangeBp    int64  `json:"dayChangeBp"`
+	OutOfScope     bool   `json:"outOfScope"`
 }
 
 type HoldingsSummary struct {
@@ -30,6 +31,7 @@ type HoldingsSummary struct {
 	PnLPaise          int64 `json:"pnlPaise"`
 	PnLBp             int64 `json:"pnlBp"`
 	DayChangePaise    int64 `json:"dayChangePaise"`
+	OutOfScopeCount   int   `json:"outOfScopeCount"`
 }
 
 type HoldingsSnapshot struct {
@@ -42,14 +44,19 @@ type HoldingsSnapshot struct {
 func holdingRow(h kite.Holding, ltp map[uint32]float64) HoldingRow {
 	q := int64(h.Quantity + h.T1Quantity)
 	last := h.LastPrice
-	if v, ok := ltp[h.InstrumentToken]; ok {
+	if v, ok := ltp[h.InstrumentToken]; ok && v > 0 {
 		last = v
 	}
 	avg, l, pc := Paise(h.AveragePrice), Paise(last), Paise(h.ClosePrice)
 	inv, cur := q*avg, q*l
+	var dayChange int64
+	if pc != 0 {
+		dayChange = q * (l - pc)
+	}
 	return HoldingRow{Exchange: h.Exchange, Symbol: h.Tradingsymbol, Token: h.InstrumentToken, Qty: q, AvgPaise: avg, LTPPaise: l,
 		PrevClosePaise: pc, InvestedPaise: inv, CurrentPaise: cur, PnLPaise: cur - inv, NetChangeBp: RatioBp(l-avg, avg),
-		DayChangePaise: q * (l - pc), DayChangeBp: RatioBp(l-pc, pc)}
+		DayChangePaise: dayChange, DayChangeBp: RatioBp(l-pc, pc),
+		OutOfScope: outOfScope(h.Exchange, h.Tradingsymbol)}
 }
 
 // Summarize implements the FR-HOME-002 card definitions.
@@ -62,6 +69,9 @@ func Summarize(rows []HoldingRow) HoldingsSummary {
 		s.CurrentValuePaise += r.CurrentPaise
 		s.InvestmentPaise += r.InvestedPaise
 		s.DayChangePaise += r.DayChangePaise
+		if r.OutOfScope {
+			s.OutOfScopeCount++
+		}
 	}
 	s.PnLPaise = s.CurrentValuePaise - s.InvestmentPaise
 	s.PnLBp = RatioBp(s.PnLPaise, s.InvestmentPaise)
@@ -71,7 +81,7 @@ func Summarize(rows []HoldingRow) HoldingsSummary {
 func BuildHoldings(hs kite.Holdings, ltp map[uint32]float64, asOfMs int64, stale bool) HoldingsSnapshot {
 	rows := make([]HoldingRow, 0, len(hs))
 	for _, h := range hs {
-		if h.Quantity+h.T1Quantity == 0 || !inEquityScope(h.Exchange, h.Tradingsymbol) {
+		if h.Quantity+h.T1Quantity == 0 {
 			continue
 		}
 		rows = append(rows, holdingRow(h, ltp))
