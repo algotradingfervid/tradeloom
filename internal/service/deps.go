@@ -106,6 +106,12 @@ type InstrumentRefresher interface {
 	Trigger()
 }
 
+// QuoteReader is *kite.Client's quote half (REST fallback for tokens the feed cannot carry; Task 29).
+type QuoteReader interface {
+	LTP(ctx context.Context, ids ...string) (kite.QuoteLTP, error)
+	OHLC(ctx context.Context, ids ...string) (kite.QuoteOHLC, error)
+}
+
 // liveChart is one open chart subscription (OpenLive).
 type liveChart struct {
 	token uint32
@@ -144,6 +150,9 @@ type Deps struct {
 	CloseForRestore func() error        // stops the platform and closes app.db before store.Restore
 	supportedSchema func() int          // store.SupportedSchema; tests override it
 
+	// Task 29 (quotes)
+	Quotes QuoteReader // *kite.Client
+
 	// Secret storage (Task 27, FR-ACCT-013).
 	Secrets      *SecretSwitch        // the Session's secrets.Store; swapped by setup, unlock and migration
 	SecretsFile  string               // Layout.SecretsFile
@@ -179,6 +188,19 @@ type Service struct {
 	jobMu      sync.Mutex
 	jobRunning string // kind of the running job, "" when idle
 	jobSeq     int
+
+	// Task 29 (quotes): the maps are initialised lazily in quotes.go so New is untouched.
+	quotesOnce   sync.Once                                // loads the persisted quote cache
+	watchMu      sync.Mutex                               // serialises set changes with their feed calls (WatchQuotes, linger)
+	pollMu       sync.Mutex                               // guards polled, deferred, pending, pollOff, closeSession, closes, quitQuotes
+	polled       map[ticker.Consumer]map[uint32]bool      // tokens on the REST path, per consumer
+	deferred     map[ticker.Consumer]map[uint32]bool      // subscribed while the feed was stopped; polled until feed.state is live
+	pending      map[ticker.Consumer]map[uint32]time.Time // removed tokens awaiting UnsubscribeLinger (their deadline)
+	pollOff      string                                   // session id whose quote polling Kite refused (no data permission)
+	closeSession string                                   // session id the closes belong to
+	closes       map[uint32]float64                       // previous close per token, fetched once per session (OHLC)
+	quitQuotes   chan struct{}                            // closed when RunQuotes exits; ends pending linger goroutines
+	quitOnce     sync.Once
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
