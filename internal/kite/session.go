@@ -34,52 +34,94 @@ const (
 // A variable only so tests can shorten it.
 var secretsTimeout = secrets.ProbeTimeout
 
-// boundedSecrets runs each call of the wrapped store on its own goroutine and gives up after
-// secretsTimeout with an error wrapping secrets.ErrUnavailable. A call that answers late still
-// completes in the background; its result is discarded.
-type boundedSecrets struct{ next secrets.Store }
+// msgSecretStore is the fixed, user-facing text for any secret-store failure (the cause is only logged).
+const msgSecretStore = "secret store not answering — unlock it and retry"
 
-func within[T any](name string, fn func() (T, error)) (T, error) {
+// boundedSecrets runs each call of the wrapped store on its own goroutine and gives up after
+// secretsTimeout with an error wrapping secrets.ErrUnavailable. It is single-flight per key: while a
+// call for a key is in flight (e.g. hung on a locked keyring), later calls for that key wait for it
+// and never start a second goroutine, so goroutines cannot pile up and a timed-out Set can never land
+// after a later Delete of the same key. A call that answers late still completes; its result is discarded.
+type boundedSecrets struct {
+	next secrets.Store
+
+	mu   sync.Mutex
+	busy map[secrets.Key]chan struct{} // closed when the in-flight call for the key returns
+}
+
+func newBoundedSecrets(next secrets.Store) *boundedSecrets {
+	if b, ok := next.(*boundedSecrets); ok {
+		return b
+	}
+	return &boundedSecrets{next: next, busy: map[secrets.Key]chan struct{}{}}
+}
+
+func errSecretsTimeout() error {
+	return fmt.Errorf("%w: the secret store did not answer within %v", secrets.ErrUnavailable, secretsTimeout)
+}
+
+// do runs fn for key k under the per-key single-flight slot, bounded by secretsTimeout overall.
+func (b *boundedSecrets) do(k secrets.Key, name string, fn func() (string, error)) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), secretsTimeout)
 	defer cancel()
+	var slot chan struct{}
+	for slot == nil {
+		b.mu.Lock()
+		inflight, busy := b.busy[k]
+		if !busy {
+			slot = make(chan struct{})
+			b.busy[k] = slot
+		}
+		b.mu.Unlock()
+		if busy {
+			select {
+			case <-inflight:
+			case <-ctx.Done():
+				return "", errSecretsTimeout()
+			}
+		}
+	}
 	type result struct {
-		v   T
+		v   string
 		err error
 	}
 	ch := make(chan result, 1)
 	logging.Go(name, func() {
 		v, err := fn()
+		b.mu.Lock()
+		delete(b.busy, k)
+		close(slot)
+		b.mu.Unlock()
 		ch <- result{v, err}
 	})
 	select {
 	case r := <-ch:
 		return r.v, r.err
 	case <-ctx.Done():
-		var zero T
-		return zero, fmt.Errorf("%w: the secret store did not answer within %v", secrets.ErrUnavailable, secretsTimeout)
+		return "", errSecretsTimeout()
 	}
 }
 
-func (b boundedSecrets) Get(k secrets.Key) (string, error) {
-	v, err := within("kite.secrets.get", func() (string, error) { return b.next.Get(k) })
+func (b *boundedSecrets) Get(k secrets.Key) (string, error) {
+	v, err := b.do(k, "kite.secrets.get", func() (string, error) { return b.next.Get(k) })
 	if err == nil {
 		logging.RegisterSecret(v)
 	}
 	return v, err
 }
 
-func (b boundedSecrets) Set(k secrets.Key, v string) error {
+func (b *boundedSecrets) Set(k secrets.Key, v string) error {
 	logging.RegisterSecret(v)
-	_, err := within("kite.secrets.set", func() (struct{}, error) { return struct{}{}, b.next.Set(k, v) })
+	_, err := b.do(k, "kite.secrets.set", func() (string, error) { return "", b.next.Set(k, v) })
 	return err
 }
 
-func (b boundedSecrets) Delete(k secrets.Key) error {
-	_, err := within("kite.secrets.delete", func() (struct{}, error) { return struct{}{}, b.next.Delete(k) })
+func (b *boundedSecrets) Delete(k secrets.Key) error {
+	_, err := b.do(k, "kite.secrets.delete", func() (string, error) { return "", b.next.Delete(k) })
 	return err
 }
 
-func (b boundedSecrets) Backend() string { return b.next.Backend() }
+func (b *boundedSecrets) Backend() string { return b.next.Backend() }
 
 type FeedControl interface {
 	Start(ctx context.Context, apiKey, accessToken string) error
@@ -136,6 +178,10 @@ type Session struct {
 	runCtx context.Context
 
 	exMu sync.Mutex // serialises token exchange and logout
+	// feedMu makes "is this session still current? then start the feed" (afterReady) and
+	// "end the session, stop the feed, delete the token" (endSession) mutually exclusive, so the
+	// feed can never start with a token that was just deleted (Ruling 52). Lock order: feedMu, then mu.
+	feedMu sync.Mutex
 }
 
 func NewSession(d SessionDeps) *Session {
@@ -149,9 +195,7 @@ func NewSession(d SessionDeps) *Session {
 		d.Log = slog.Default()
 	}
 	if d.Secrets != nil {
-		if _, ok := d.Secrets.(boundedSecrets); !ok {
-			d.Secrets = boundedSecrets{next: d.Secrets}
-		}
+		d.Secrets = newBoundedSecrets(d.Secrets)
 	}
 	return &Session{
 		d:      d,
@@ -185,20 +229,43 @@ func (s *Session) ctx() context.Context {
 
 func (s *Session) apiKey() string { return settings.Get(s.d.Settings, SettingAPIKey) }
 
-func (s *Session) secret() (string, bool) {
+// secret reads the API secret. secrets.ErrNotFound means "not configured"; any other error means the
+// store could not be read (locked, timed out, damaged) and is returned so it never reads as "no credentials".
+func (s *Session) secret() (string, error) {
 	v, err := s.d.Secrets.Get(secrets.KeyAPISecret)
-	return v, err == nil && v != ""
+	if errors.Is(err, secrets.ErrNotFound) {
+		return "", nil
+	}
+	return v, err
 }
 
-func (s *Session) configured() bool {
-	_, ok := s.secret()
-	return ok && s.apiKey() != ""
+// configured reports whether both credentials are present. It reads the secret store at most once and
+// not at all when the API key is unset (the key is saved after the secret, so no key means no credentials).
+func (s *Session) configured() (bool, error) {
+	if s.apiKey() == "" {
+		return false, nil
+	}
+	v, err := s.secret()
+	if err != nil {
+		return false, err
+	}
+	return v != "", nil
 }
 
-// idle is the resting state when no valid token exists.
-func (s *Session) idle(code, msg string) SessionState {
+// storeFailed logs the cause of a secret-store failure; callers show only msgSecretStore.
+func (s *Session) storeFailed(what string, err error) {
+	s.d.Log.Warn("secret store failure", "op", what, "err", err)
+}
+
+// idle is the resting state when no valid token exists. It never reads the secret store itself: the
+// caller passes the result of its one configured() call. A store error gives logged_out with
+// CodeSecretStore, never no_credentials.
+func idle(configured bool, storeErr error, code, msg string) SessionState {
 	st := SessionState{State: StateLoggedOut, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msg}
-	if !s.configured() {
+	switch {
+	case storeErr != nil:
+		st.ErrorCode, st.ErrorMessage = CodeSecretStore, msgSecretStore
+	case !configured:
 		st.State = StateNoCredentials
 	}
 	return st
@@ -209,9 +276,17 @@ func readyState(rec TokenRecord, plan DataPlan, ackRequired, offline bool) Sessi
 		ExpiresAtMs: rec.ExpiresAtMs, DataPlan: plan, RiskAckRequired: ackRequired, Offline: offline}
 }
 
+// CredentialsInfo describes the saved credentials. When the secret store cannot be read, Configured
+// follows the saved API key (SaveCredentials stores the secret first), so an unreadable store does
+// not show as "no credentials"; the session state carries CodeSecretStore.
 func (s *Session) CredentialsInfo() CredentialsInfo {
 	port := settings.Get(s.d.Settings, SettingRedirectPort)
-	return CredentialsInfo{Configured: s.configured(), APIKeyMasked: MaskKey(s.apiKey()), Port: port,
+	configured, err := s.configured()
+	if err != nil {
+		s.storeFailed("credentials info", err)
+		configured = s.apiKey() != ""
+	}
+	return CredentialsInfo{Configured: configured, APIKeyMasked: MaskKey(s.apiKey()), Port: port,
 		RedirectURL: RedirectURL(port), SecretBackend: s.d.Secrets.Backend()}
 }
 
@@ -235,37 +310,45 @@ func (s *Session) SaveCredentials(ctx context.Context, apiKey, apiSecret string)
 	}
 	logging.RegisterSecret(sec)
 	if err := s.d.Secrets.Set(secrets.KeyAPISecret, sec); err != nil {
-		return s.State(), &LoginError{Code: CodeSecretStore, Message: "The API secret could not be saved to the secret store: " + err.Error()}
+		s.storeFailed("save api secret", err)
+		return s.State(), &LoginError{Code: CodeSecretStore, Message: msgSecretStore}
 	}
 	if err := settings.Set(ctx, s.d.Settings, SettingAPIKey, k); err != nil {
 		return s.State(), err
 	}
 	s.d.Tokens.SetAPIKey(k)
 	s.d.Log.Info("kite credentials saved", "api_key", MaskKey(k), "secret_backend", s.d.Secrets.Backend())
-	return s.set(s.idle("", "")), nil
+	return s.set(idle(true, nil, "", "")), nil
 }
 
 // Restore resumes a still-valid session at startup without asking for a login (FR-ACCT-006 AC4).
 func (s *Session) Restore(ctx context.Context) SessionState {
-	if !s.configured() {
+	configured, err := s.configured()
+	if err != nil || !configured {
+		if err != nil {
+			s.storeFailed("read api secret", err)
+		}
 		s.d.Limiter.PauseAll("no credentials")
-		return s.set(s.idle("", ""))
+		return s.set(idle(configured, err, "", ""))
 	}
 	apiKey := s.apiKey()
 	s.d.Tokens.SetAPIKey(apiKey)
 	raw, err := s.d.Secrets.Get(secrets.KeyAccessToken)
 	if err != nil {
-		if !errors.Is(err, secrets.ErrNotFound) {
-			s.d.Log.Warn("reading the access token failed", "err", err)
-		}
 		s.d.Limiter.PauseAll("logged out")
-		return s.set(s.idle("", ""))
+		if errors.Is(err, secrets.ErrNotFound) {
+			return s.set(idle(true, nil, "", ""))
+		}
+		s.storeFailed("read access token", err)
+		return s.set(idle(true, err, "", ""))
 	}
 	var rec TokenRecord
 	if err := json.Unmarshal([]byte(raw), &rec); err != nil || rec.AccessToken == "" || rec.SessionID == "" {
-		_ = s.d.Secrets.Delete(secrets.KeyAccessToken)
+		if derr := s.d.Secrets.Delete(secrets.KeyAccessToken); derr != nil {
+			s.storeFailed("delete unreadable access token", derr)
+		}
 		s.d.Limiter.PauseAll("logged out")
-		return s.set(s.idle("", ""))
+		return s.set(idle(true, nil, "", ""))
 	}
 	logging.RegisterSecret(rec.AccessToken)
 	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
@@ -291,8 +374,9 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	case errors.Is(err, store.ErrNoRow):
 		// The token outlived its row (e.g. app.db restored from a backup): recreate it so the risk
 		// acknowledgement and the data plan of this session can be persisted.
+		s.d.Log.Warn("restore: session row missing; recreating it", "session_id", rec.SessionID)
 		if ierr := s.insertRow(ctx, rec, plan); ierr != nil {
-			s.d.Log.Warn("recreating the session row failed", "err", ierr)
+			s.d.Log.Warn("recreating the session row failed", "session_id", rec.SessionID, "err", ierr)
 		}
 	default:
 		s.d.Log.Warn("reading the session row failed", "err", err)
@@ -315,6 +399,11 @@ func (s *Session) AckRisk(ctx context.Context) (SessionState, error) {
 	err := s.d.Repo.AckRisk(ctx, st.SessionID, at)
 	if errors.Is(err, store.ErrNoRow) {
 		// No row to record against (Ruling 37): recreate it from the current session, then record.
+		// Re-check first: a session that ended meanwhile must not get its row back.
+		if !s.isCurrent(st.SessionID) {
+			return s.State(), &LoginError{Code: CodeNotLoggedIn, Message: "Log in to Kite first."}
+		}
+		s.d.Log.Warn("risk acknowledgement: session row missing; recreating it", "session_id", st.SessionID)
 		rec := TokenRecord{SessionID: st.SessionID, UserID: st.UserID, LoggedInAtMs: st.LoggedInAtMs, ExpiresAtMs: st.ExpiresAtMs}
 		if err = s.insertRow(ctx, rec, st.DataPlan); err == nil {
 			err = s.d.Repo.AckRisk(ctx, st.SessionID, at)
@@ -354,6 +443,8 @@ func (s *Session) afterReady(apiKey string, rec TokenRecord) {
 			}
 			plan = s.d.Probe.Probe(ctx, apiKey, rec.AccessToken)
 		}
+		s.feedMu.Lock()
+		defer s.feedMu.Unlock()
 		if !s.applyPlan(rec.SessionID, plan) {
 			return
 		}
@@ -361,6 +452,7 @@ func (s *Session) afterReady(apiKey string, rec TokenRecord) {
 			s.d.Log.Info("API key has no market-data permission; running in orders-and-portfolio-only mode")
 			return
 		}
+		// Still under feedMu: endSession cannot run between the isCurrent check in applyPlan and here.
 		if err := s.d.Feed.Start(ctx, apiKey, rec.AccessToken); err != nil {
 			s.d.Log.Warn("ticker start failed", "err", err)
 		}
@@ -401,21 +493,27 @@ func (s *Session) applyPlan(sessionID string, plan DataPlan) bool {
 	return true
 }
 
-// endSession performs the side effects of a session ending through expiry or rejection.
-// Callers guarantee exclusivity (the state is no longer ready).
+// endSession performs the side effects of a session ending through expiry or rejection. Under feedMu
+// it first leaves the ready state (so a probe still in flight finds the session no longer current),
+// then stops the feed and deletes the token; a Feed.Start already running finishes first and is stopped.
 func (s *Session) endSession(rec TokenRecord, code string) SessionState {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
+	s.mu.Lock()
+	s.st = st
+	s.rec = nil
+	s.mu.Unlock()
 	s.d.Limiter.PauseAll("session expired")
 	s.d.Feed.Stop()
 	s.d.Tokens.SetAccessToken("")
 	if err := s.d.Secrets.Delete(secrets.KeyAccessToken); err != nil && !errors.Is(err, secrets.ErrNotFound) {
-		s.d.Log.Warn("deleting the access token failed", "err", err)
+		s.storeFailed("delete access token", err)
 	}
 	s.endRow(rec.SessionID, code)
-	s.mu.Lock()
-	s.rec = nil
-	s.mu.Unlock()
 	s.d.Log.Info("kite session ended", "reason", code)
-	return s.set(SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired})
+	bus.Publish(s.d.Bus, TopicSessionState, st)
+	return st
 }
 
 func (s *Session) endRow(sessionID, reason string) {

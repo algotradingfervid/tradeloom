@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"time"
 
 	kiteconnect "github.com/zerodha/gokiteconnect/v4"
 )
@@ -23,17 +24,25 @@ type AuthAPI interface {
 }
 
 // NewAuth returns a factory of AuthAPI bound to an API key. baseURI "" keeps https://api.kite.trade (tests pass a fake).
+// hc nil gets authHTTPClient(nil): the NFR-04 allow-list transport, never gokiteconnect's default client.
 func NewAuth(hc *http.Client, baseURI string) func(apiKey string) AuthAPI {
+	hc = authHTTPClient(hc)
 	return func(apiKey string) AuthAPI {
 		c := kiteconnect.New(apiKey)
-		if hc != nil {
-			c.SetHTTPClient(hc)
-		}
+		c.SetHTTPClient(hc)
 		if baseURI != "" {
 			c.SetBaseURI(baseURI)
 		}
 		return &kcAuth{c: c}
 	}
+}
+
+// authHTTPClient returns hc, or for nil a 10 s client on NewAllowListTransport(http.DefaultTransport, AllowedHosts).
+func authHTTPClient(hc *http.Client) *http.Client {
+	if hc != nil {
+		return hc
+	}
+	return &http.Client{Timeout: 10 * time.Second, Transport: NewAllowListTransport(http.DefaultTransport, AllowedHosts)}
 }
 
 type kcAuth struct{ c *kiteconnect.Client }

@@ -102,16 +102,38 @@ type fakeFeed struct {
 	mu            sync.Mutex
 	starts, stops int
 	token         string
+	events        []string      // "start" / "stop", in completion order
+	startGate     chan struct{} // when set, Start blocks until it is closed
+	entered       int           // Start calls that have begun
 }
 
 func (f *fakeFeed) Start(_ context.Context, _, tok string) error {
 	f.mu.Lock()
+	f.entered++
+	gate := f.startGate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.starts++
 	f.token = tok
+	f.events = append(f.events, "start")
 	return nil
 }
-func (f *fakeFeed) Stop()           { f.mu.Lock(); defer f.mu.Unlock(); f.stops++ }
+func (f *fakeFeed) Stop() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stops++
+	f.events = append(f.events, "stop")
+}
+func (f *fakeFeed) enteredCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.entered }
+func (f *fakeFeed) eventLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.events...)
+}
 func (f *fakeFeed) startCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.starts }
 func (f *fakeFeed) stopCount() int  { f.mu.Lock(); defer f.mu.Unlock(); return f.stops }
 
@@ -156,15 +178,25 @@ func (f *fakeProfiles) setErr(err error) { f.mu.Lock(); defer f.mu.Unlock(); f.e
 func (f *fakeProfiles) callCount() int   { f.mu.Lock(); defer f.mu.Unlock(); return f.calls }
 
 type fakeProbe struct {
-	mu   sync.Mutex
-	plan DataPlan
+	mu    sync.Mutex
+	plan  DataPlan
+	gate  chan struct{} // when set, Probe blocks until it is closed
+	calls int
 }
 
 func (f *fakeProbe) Probe(context.Context, string, string) DataPlan {
 	f.mu.Lock()
+	f.calls++
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.plan
 }
+func (f *fakeProbe) callCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.calls }
 func (f *fakeProbe) set(p DataPlan) { f.mu.Lock(); defer f.mu.Unlock(); f.plan = p }
 
 type syncBuffer struct {
