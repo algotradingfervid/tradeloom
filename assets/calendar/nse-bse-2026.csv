@@ -1,0 +1,39 @@
+# Tradeloom shipped market calendar
+# version: 2026.2
+# covers: 2026-01-01..2026-12-31
+# Weekday NSE/BSE equity trading holidays for 2026. Transcribed 2026-10-12 from published
+# NSE circular NSE/CMTR/71775 (12-12-2025), checked 2026-10-12 against the circular itself
+# (P0-2 Task 3 Step 5). Derivatives (NFO/BFO) follow their cash exchange.
+# Muhurat trading 2026 (Sunday 08-11-2026, Diwali Laxmi Pujan) is not listed: the exchanges had
+# not announced its timings. Add it in Settings -> Market calendar or import an updated file.
+date,exchange,type,phase,start,end
+2026-01-26,NSE,holiday,,,
+2026-01-26,BSE,holiday,,,
+2026-03-03,NSE,holiday,,,
+2026-03-03,BSE,holiday,,,
+2026-03-26,NSE,holiday,,,
+2026-03-26,BSE,holiday,,,
+2026-03-31,NSE,holiday,,,
+2026-03-31,BSE,holiday,,,
+2026-04-03,NSE,holiday,,,
+2026-04-03,BSE,holiday,,,
+2026-04-14,NSE,holiday,,,
+2026-04-14,BSE,holiday,,,
+2026-05-01,NSE,holiday,,,
+2026-05-01,BSE,holiday,,,
+2026-05-28,NSE,holiday,,,
+2026-05-28,BSE,holiday,,,
+2026-06-26,NSE,holiday,,,
+2026-06-26,BSE,holiday,,,
+2026-09-14,NSE,holiday,,,
+2026-09-14,BSE,holiday,,,
+2026-10-02,NSE,holiday,,,
+2026-10-02,BSE,holiday,,,
+2026-10-20,NSE,holiday,,,
+2026-10-20,BSE,holiday,,,
+2026-11-10,NSE,holiday,,,
+2026-11-10,BSE,holiday,,,
+2026-11-24,NSE,holiday,,,
+2026-11-24,BSE,holiday,,,
+2026-12-25,NSE,holiday,,,
+2026-12-25,BSE,holiday,,,
