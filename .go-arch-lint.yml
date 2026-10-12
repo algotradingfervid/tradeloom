@@ -31,6 +31,7 @@ components:
   cmd:        { in: cmd/tradeloom }
   frontend:   { in: frontend }
   app:        { in: internal/app }
+  eventsgen:  { in: internal/app/eventsgen }           # P0-3 Task 21: go:generate tool for frontend/src/api/events.gen.ts
   bus:        { in: internal/bus }
   clock:      { in: internal/clock }
   logging:    { in: internal/logging }
@@ -69,6 +70,8 @@ deps:
   app:
     mayDependOn: [bus, settings, store, secrets]
     canUse: [wails]
+  eventsgen:  # reads service.EventCatalogue() only (rule 7: app reaches the engine through service)
+    mayDependOn: [service]
   clock:
     mayDependOn: [bus]
   settings:
