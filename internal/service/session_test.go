@@ -51,12 +51,15 @@ func TestRun_StopsSyncWhenSessionExpires(t *testing.T) {
 	defer cancel()
 	go e.svc.Run(ctx)
 	eventually(t, "sync running", func() bool { r, _, p := e.sync.snapshot(); return r == 1 && p == kite.PlanConnect })
-	bus.Publish(e.bus, kite.TopicSessionState, kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanNone, SessionID: "s1"})
+	// kite.Session updates its state before publishing; Run reads State() (Ruling 61).
+	e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanNone, SessionID: "s1"})
+	bus.Publish(e.bus, kite.TopicSessionState, e.session.State())
 	eventually(t, "plan update", func() bool { _, _, p := e.sync.snapshot(); return p == kite.PlanNone })
 	if _, runs, _ := e.sync.snapshot(); runs != 1 {
 		t.Fatalf("sync restarted %d times for the same session", runs)
 	}
-	bus.Publish(e.bus, kite.TopicSessionState, kite.SessionState{State: kite.StateExpired, ErrorCode: kite.CodeSessionExpired})
+	e.session.setState(kite.SessionState{State: kite.StateExpired, ErrorCode: kite.CodeSessionExpired})
+	bus.Publish(e.bus, kite.TopicSessionState, e.session.State())
 	eventually(t, "sync stopped", func() bool { r, _, _ := e.sync.snapshot(); return r == 0 })
 }
 

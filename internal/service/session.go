@@ -54,27 +54,27 @@ func (s *Service) CredentialsInfo(_ context.Context) CredentialsInfo {
 
 func (s *Service) SaveCredentials(ctx context.Context, in CredentialsInput) (SessionStatus, error) {
 	st, err := s.d.Session.SaveCredentials(ctx, in.APIKey, in.APISecret)
-	return s.statusFrom(st), asRefused("credentials", err)
+	return s.statusFrom(st), s.refuse("credentials", err)
 }
 
 func (s *Service) RemoveCredentials(ctx context.Context) (SessionStatus, error) {
 	st, err := s.d.Session.RemoveCredentials(ctx)
-	return s.statusFrom(st), asRefused("credentials", err)
+	return s.statusFrom(st), s.refuse("credentials", err)
 }
 
 func (s *Service) SetRedirectPort(_ context.Context, port int) (CredentialsInfo, error) {
 	info, err := s.d.Session.SetRedirectPort(port)
-	return info, asRefused("credentials", err)
+	return info, s.refuse("credentials", err)
 }
 
 func (s *Service) BeginLogin(ctx context.Context) (LoginStart, error) {
 	ls, err := s.d.Session.BeginLogin(ctx)
-	return ls, asRefused("login", err)
+	return ls, s.refuse("login", err)
 }
 
 func (s *Service) CompleteLogin(ctx context.Context, pasted string) (SessionStatus, error) {
 	st, err := s.d.Session.CompleteLogin(ctx, pasted)
-	return s.statusFrom(st), asRefused("login", err)
+	return s.statusFrom(st), s.refuse("login", err)
 }
 
 func (s *Service) CancelLogin(_ context.Context) SessionStatus {
@@ -83,17 +83,17 @@ func (s *Service) CancelLogin(_ context.Context) SessionStatus {
 
 func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 	r, err := s.d.Session.Logout(ctx)
-	return r, asRefused("logout", err)
+	return r, s.refuse("logout", err)
 }
 
 func (s *Service) AckRiskDisclosure(ctx context.Context) (SessionStatus, error) {
 	st, err := s.d.Session.AckRisk(ctx)
-	return s.statusFrom(st), asRefused("risk", err)
+	return s.statusFrom(st), s.refuse("risk", err)
 }
 
 func (s *Service) Profile(ctx context.Context) (Profile, error) {
 	p, err := s.d.Session.Profile(ctx)
-	return p, asRefused("profile", err)
+	return p, s.refuse("profile", err)
 }
 
 func (s *Service) Restore(ctx context.Context) SessionStatus {
@@ -105,21 +105,27 @@ func (s *Service) Restore(ctx context.Context) SessionStatus {
 func (s *Service) RunSession(ctx context.Context) { s.d.Session.Run(ctx) }
 
 // Run supervises session-scoped services: orders.Sync runs only while the session is ready.
+// A bus event is only a wake-up: Run always applies Session.State(), because publishes from kite.Session
+// can be delivered out of order and a stale "ready" must not restart Sync after a logout (Ruling 61).
+// stop() waits for the previous Orders.Run to return, so two runs never overlap.
 func (s *Service) Run(ctx context.Context) {
 	sub := bus.Subscribe(s.d.Bus, kite.TopicSessionState, bus.SubOpts[kite.SessionState]{Name: "service.supervisor", Buffer: 16})
 	defer bus.Unsubscribe(s.d.Bus, sub)
 	var (
 		cancel  context.CancelFunc
+		done    chan struct{}
 		session string
 	)
 	stop := func() {
-		if cancel != nil {
-			cancel()
-			cancel = nil
-			session = ""
+		if cancel == nil {
+			return
 		}
+		cancel()
+		<-done
+		cancel, done, session = nil, nil, ""
 	}
-	apply := func(st kite.SessionState) {
+	apply := func() {
+		st := s.d.Session.State()
 		if st.State != kite.StateReady {
 			stop()
 			return
@@ -130,17 +136,24 @@ func (s *Service) Run(ctx context.Context) {
 		}
 		stop()
 		c, cn := context.WithCancel(ctx)
-		cancel, session = cn, st.SessionID
-		logging.Go("orders.sync", func() { s.d.Orders.Run(c) })
+		d := make(chan struct{})
+		cancel, done, session = cn, d, st.SessionID
+		logging.Go("orders.sync", func() {
+			defer close(d)
+			s.d.Orders.Run(c)
+		})
 	}
-	apply(s.d.Session.State())
+	defer stop()
+	apply()
 	for {
 		select {
 		case <-ctx.Done():
-			stop()
 			return
-		case st := <-sub.C():
-			apply(st)
+		case _, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			apply()
 		}
 	}
 }

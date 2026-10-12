@@ -97,7 +97,18 @@ type Service struct {
 	live   map[ticker.Consumer]map[uint32]bool
 }
 
+// New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
 func New(d Deps) *Service {
+	switch {
+	case d.Session == nil:
+		panic("service.New: Deps.Session is nil")
+	case d.Orders == nil:
+		panic("service.New: Deps.Orders is nil")
+	case d.Bus == nil:
+		panic("service.New: Deps.Bus is nil")
+	case d.Clock == nil:
+		panic("service.New: Deps.Clock is nil")
+	}
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
@@ -120,19 +131,32 @@ func refused(stage, code, reason string) error {
 }
 
 // asRefused maps any error to *ErrRefused. A *kite.LoginError keeps its code unchanged (e.g. secret_store
-// is never folded into no_credentials, Ruling 52). Any other error becomes "internal"; its text passes
-// through the redactor so a registered secret can never reach the UI.
+// is never folded into no_credentials, Ruling 52). Any other error becomes "internal". Every Reason passes
+// through the redactor so a registered secret can never reach the UI (Ruling 61).
 func asRefused(stage string, err error) error {
 	if err == nil {
 		return nil
 	}
 	var r *ErrRefused
 	if errors.As(err, &r) {
-		return r
+		return &ErrRefused{Code: r.Code, Stage: r.Stage, Reason: logging.Default.RedactString(r.Reason)}
 	}
 	var le *kite.LoginError
 	if errors.As(err, &le) {
-		return &ErrRefused{Code: le.Code, Stage: stage, Reason: le.Message}
+		return &ErrRefused{Code: le.Code, Stage: stage, Reason: logging.Default.RedactString(le.Message)}
 	}
 	return &ErrRefused{Code: "internal", Stage: stage, Reason: logging.Default.RedactString(err.Error())}
+}
+
+// refuse is asRefused for façade methods. On the internal path it logs the original error at Warn
+// through the injected (redacting) logger.
+func (s *Service) refuse(stage string, err error) error {
+	out := asRefused(stage, err)
+	if r, ok := out.(*ErrRefused); ok && r.Code == "internal" {
+		var known *ErrRefused
+		if !errors.As(err, &known) {
+			s.d.Log.Warn("service.internal_error", "stage", stage, "err", err)
+		}
+	}
+	return out
 }

@@ -65,6 +65,8 @@ func (f *fakeSession) Run(ctx context.Context)                            { <-ct
 type fakeSync struct {
 	mu         sync.Mutex
 	running    int
+	maxRunning int           // highest number of concurrent Run calls seen
+	exitDelay  time.Duration // slow exit after ctx is cancelled
 	runs       int
 	plan       kite.DataPlan
 	refreshed  []orders.Scope
@@ -75,8 +77,13 @@ func (f *fakeSync) Run(ctx context.Context) {
 	f.mu.Lock()
 	f.running++
 	f.runs++
+	if f.running > f.maxRunning {
+		f.maxRunning = f.running
+	}
+	delay := f.exitDelay
 	f.mu.Unlock()
 	<-ctx.Done()
+	time.Sleep(delay)
 	f.mu.Lock()
 	f.running--
 	f.mu.Unlock()
