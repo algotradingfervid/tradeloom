@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { TickMarkType } from 'lightweight-charts';
 import { LightweightChartsAdapter } from './LightweightChartsAdapter';
 import { makeFakeLwc, type FakeChart } from './testing/fakeLwc';
 import type { Bar, ChartTheme } from './types';
@@ -86,5 +87,44 @@ describe('LightweightChartsAdapter (S0-5 core)', () => {
     expect(adapter.visibleTimeRange()).toEqual({ from: T0, to: T0 + STEP });
     adapter.destroy();
     expect(chart.removed).toBe(true);
+  });
+});
+
+describe('LightweightChartsAdapter (S0-5 fix round 1, Ruling 110)', () => {
+  const line = (id: string) => ({ id, kind: 'line' as const, pane: 'separate' as const, color: id, points: [{ time: T0, value: 1 }] });
+
+  it('removing a middle study pane keeps the panes on either side', () => {
+    const a = adapter.addStudy(line('a'));
+    adapter.addStudy(line('b'));
+    expect(chart.paneTypes()).toEqual([['Candlestick'], ['Histogram'], ['Line'], ['Line']]);
+    adapter.removeStudy(a);
+    expect(chart.paneTypes()).toEqual([['Candlestick'], ['Histogram'], ['Line']]);
+    expect(chart.panesList[2].series[0].options.color).toBe('b');
+  });
+
+  it('removes a separate study pane that the library kept (preserved, empty)', () => {
+    const h = adapter.addStudy(line('a'));
+    chart.panesList[2].preserve = true; // as if the library had not auto-removed it
+    adapter.removeStudy(h);
+    expect(chart.paneTypes()).toEqual([['Candlestick'], ['Histogram']]);
+  });
+
+  it('addStudy sorts and de-duplicates points (last wins) before setData', () => {
+    adapter.addStudy({
+      id: 's', kind: 'line', pane: 'overlay', color: 'c',
+      points: [{ time: T0 + STEP, value: 2 }, { time: T0, value: 1 }, { time: T0 + STEP, value: 3 }],
+    });
+    expect(chart.seriesOfType('Line').data).toEqual([
+      { time: T0 / 1000 + 19800, value: 1 }, { time: (T0 + STEP) / 1000 + 19800, value: 3 },
+    ]);
+  });
+
+  it('wires the IST time, tick-mark and Indian price formatters into the chart options', () => {
+    const t = T0 / 1000 + 19800; // 01 Oct 2026 09:15 IST
+    expect(chart.options.localization.timeFormatter(t)).toBe("01 Oct '26 09:15");
+    expect(chart.options.timeScale.tickMarkFormatter(t, TickMarkType.Time)).toBe('09:15');
+    expect(chart.options.timeScale.tickMarkFormatter(t, TickMarkType.DayOfMonth)).toBe('01');
+    expect(chart.options.localization.priceFormatter(2252045.5)).toBe('22,52,045.50');
+    expect(chart.options.localization.locale).toBe('en-IN');
   });
 });

@@ -16,7 +16,12 @@ printf '\n## modernc.org/mathutil %s — BSD-3-Clause\n\n```\n' "$ver"
 cat "$dir/LICENSE"
 printf '```\n\n# npm production dependencies (frontend/)\n'
 # Full licence text of every npm production dependency, sorted by package name then version (deterministic,
-# no absolute paths).
+# no absolute paths). Texts an npm package does not ship are kept by hand in build/notices/, keyed by exact
+# version so a version bump drops them visibly (like modernc.org/mathutil above):
+#   <name>@<version>.LICENSE — used when the package ships no licence file
+#     (fancy-canvas 2.1.0: MIT, from github.com/tradingview/fancy-canvas tag 2.1.0, LICENSE)
+#   <name>@<version>.NOTICE  — Apache-2.0 NOTICE appended after the licence
+#     (lightweight-charts 5.2.1: from github.com/tradingview/lightweight-charts tag v5.2.1, NOTICE, verbatim)
 (cd frontend && npx --yes license-checker@25.0.1 --production --excludePrivatePackages --json) | node -e '
 const fs = require("fs");
 const deps = JSON.parse(fs.readFileSync(0, "utf8"));
@@ -31,11 +36,14 @@ for (const k of keys) {
   const [name, version] = split(k);
   const d = deps[k];
   const lic = Array.isArray(d.licenses) ? d.licenses.join(" OR ") : d.licenses;
+  const read = (f) => fs.readFileSync(f, "utf8").replace(/\r\n/g, "\n").replace(/\s+$/, "");
+  const extra = (ext) => { const f = `build/notices/${name}@${version}.${ext}`; return fs.existsSync(f) ? read(f) : null; };
   let text = "(the package ships no licence file)";
-  if (d.licenseFile) {
-    text = fs.readFileSync(d.licenseFile, "utf8").replace(/\r\n/g, "\n").replace(/\s+$/, "");
-  }
+  if (d.licenseFile) text = read(d.licenseFile);
+  else if (extra("LICENSE") !== null) text = extra("LICENSE");
   out += `\n## ${name} ${version} — ${lic}\n\n\`\`\`\n${text}\n\`\`\`\n`;
+  const notice = extra("NOTICE");
+  if (notice !== null) out += `\nNOTICE (${name} ${version}):\n\n\`\`\`\n${notice}\n\`\`\`\n`;
 }
 process.stdout.write(out);
 '

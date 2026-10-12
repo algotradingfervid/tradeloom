@@ -72,8 +72,11 @@ export class LightweightChartsAdapter implements ChartAdapter {
 
   addStudy(spec: StudySpec): Handle {
     const pane = spec.pane === 'separate' ? this.chart.addPane() : this.chart.panes()[0];
-    const points: (LineData<Time> | WhitespaceData<Time>)[] = spec.points.map((p) =>
-      Number.isFinite(p.value) ? { time: toChartTime(p.time), value: p.value } : { time: toChartTime(p.time) });
+    // setData needs strictly ascending times: sort and de-duplicate (last point wins, as dedupeSorted does for bars).
+    const byTime = new Map<number, number>();
+    for (const p of spec.points) byTime.set(p.time, p.value);
+    const points: (LineData<Time> | WhitespaceData<Time>)[] = [...byTime.entries()].sort((a, b) => a[0] - b[0]).map(([t, v]) =>
+      Number.isFinite(v) ? { time: toChartTime(t), value: v } : { time: toChartTime(t) });
     let series: StudySeries;
     if (spec.kind === 'line') {
       const s = pane.addSeries(this.lib.LineSeries, { color: spec.color, priceLineVisible: false });
@@ -164,11 +167,17 @@ export class LightweightChartsAdapter implements ChartAdapter {
     }
   }
 
+  /**
+   * 5.2.1 removes a pane emptied by removeSeries itself (unless it was added with preserveEmptyPane). Remove the
+   * pane here only when the pane count shows the library kept it, so a neighbouring pane is never removed.
+   */
   protected removeSeriesWithPane(series: StudySeries): void {
     const paneIndex = series.getPane().paneIndex();
+    const before = this.chart.panes().length;
     this.chart.removeSeries(series);
+    if (paneIndex === 0 || this.chart.panes().length !== before) return;
     const pane = this.chart.panes()[paneIndex];
-    if (paneIndex > 0 && pane && pane.getSeries().length === 0) this.chart.removePane(paneIndex);
+    if (pane && pane.getSeries().length === 0) this.chart.removePane(paneIndex);
   }
 
   protected reindex(): void {

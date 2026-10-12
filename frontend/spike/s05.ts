@@ -5,6 +5,7 @@ import { colourTokens, type ThemeName } from '../src/design/tokens';
 import { LightweightChartsAdapter } from '../src/chart/LightweightChartsAdapter';
 import { realLwc, type LwcLib } from '../src/chart/lwc';
 import { readChartTheme } from '../src/chart/theme';
+import { toChartTime } from '../src/chart/time';
 import type { Bar, StudyPoint } from '../src/chart/types';
 
 const FIVE_MIN = 300_000;
@@ -42,7 +43,10 @@ const adapter = new LightweightChartsAdapter(document.getElementById('chart')!, 
 applyTheme('light');
 adapter.setTheme(readChartTheme(colourTokens.light));
 
-const metrics = { setCandles20kMs: 0, update1000Ms: 0, themeSwitchMs: 0, prepends: 0, lastPrependKeptView: false };
+const metrics = {
+  setCandles20kMs: 0, update1000Ms: 0, themeSwitchMs: 0, prepends: 0,
+  lastPrependKeptView: false, lastPrependShiftPx: Number.NaN, lastPrependToKept: false,
+};
 
 let t0 = performance.now();
 adapter.setCandles(synth(END, 20_000, 1));
@@ -55,7 +59,8 @@ const lo = Math.min(...bars.slice(-100).map((b) => b.low));
 const hi = Math.max(...bars.slice(-100).map((b) => b.high));
 const bandFrom = lo + (hi - lo) * 0.4;
 const bandTo = lo + (hi - lo) * 0.6;
-adapter.addPriceBand({ id: 'band', from: bandFrom, to: bandTo, color: token('--chart-band') });
+const band = { id: 'band', from: bandFrom, to: bandTo, color: token('--chart-band') };
+adapter.addPriceBand(band);
 
 // raw library update cost for the forming bar (Task 4 wraps this in updateLastBar)
 const candleSeries = () => chartRef!.panes()[0].getSeries()[0];
@@ -71,17 +76,35 @@ let loading = false;
 adapter.onVisibleRangeChange(({ barsBefore }) => {
   if (barsBefore > 10 || loading || metrics.prepends >= 5) return;
   loading = true;
-  const before = adapter.visibleTimeRange();
   const older = synth(oldest, 500, 1);
   setTimeout(() => {
+    // getVisibleRange() is clamped to the loaded data, so its `from` moves when older bars arrive even though the
+    // view did not. Measure an anchor bar's x coordinate instead (Ruling 110 I2), and record `to` as a second check.
+    const ts = chartRef!.timeScale();
+    const anchor = anchorBarTime();
+    const xBefore = anchor === null ? null : ts.timeToCoordinate(toChartTime(anchor));
+    const toBefore = adapter.visibleTimeRange()?.to;
     adapter.prependHistory(older);
     oldest = older[0].time;
-    const after = adapter.visibleTimeRange();
-    metrics.lastPrependKeptView = !!before && !!after && before.from === after.from && before.to === after.to;
-    metrics.prepends++;
-    loading = false;
+    requestAnimationFrame(() => {
+      const xAfter = anchor === null ? null : ts.timeToCoordinate(toChartTime(anchor));
+      metrics.lastPrependShiftPx = xBefore === null || xAfter === null ? Number.NaN : xAfter - xBefore;
+      metrics.lastPrependKeptView = Math.abs(metrics.lastPrependShiftPx) <= 0.5;
+      metrics.lastPrependToKept = toBefore !== undefined && adapter.visibleTimeRange()?.to === toBefore;
+      metrics.prepends++;
+      loading = false;
+    });
   }, 50);
 });
+
+/** Time (ms) of the loaded bar in the middle of the visible logical range, or null when nothing is visible. */
+function anchorBarTime(): number | null {
+  const r = chartRef!.timeScale().getVisibleLogicalRange();
+  const loaded = adapter.bars();
+  if (!r || loaded.length === 0) return null;
+  const i = Math.min(loaded.length - 1, Math.max(0, Math.round((r.from + r.to) / 2)));
+  return loaded[i].time;
+}
 
 function switchTheme(): Promise<number> {
   return new Promise((resolve) => {
@@ -97,15 +120,28 @@ function switchTheme(): Promise<number> {
   });
 }
 
-/** Samples the screenshot inside the band vs above it: different pixels = primitive drawn. */
-function bandVisible(): boolean {
+/** One full pixel row of a fresh screenshot (takeScreenshot repaints pending changes first). */
+function screenshotRow(y: number): string {
   const canvas = chartRef!.takeScreenshot();
   const ctx = canvas.getContext('2d')!;
   const ratio = canvas.height / chartRef!.chartElement().clientHeight;
-  const yIn = candleSeries().priceToCoordinate((bandFrom + bandTo) / 2)!;
-  const yOut = candleSeries().priceToCoordinate(hi + (hi - lo))!;
-  const px = (y: number) => Array.from(ctx.getImageData(2, Math.round(y * ratio), 1, 1).data).join(',');
-  return px(yIn) !== px(yOut);
+  return Array.from(ctx.getImageData(0, Math.round(y * ratio), canvas.width, 1).data).join(',');
+}
+
+/**
+ * A/B check (Ruling 110 I3): the same in-band pixel row with the band attached and after removePriceBand must differ.
+ * A whole row is compared, so candles covering part of it cannot hide the band. The band is re-attached afterwards.
+ */
+function bandVisible(): boolean {
+  const y = candleSeries().priceToCoordinate((bandFrom + bandTo) / 2);
+  if (y === null) return false;
+  const withBand = screenshotRow(y);
+  adapter.removePriceBand({ id: band.id });
+  try {
+    return screenshotRow(y) !== withBand;
+  } finally {
+    adapter.addPriceBand(band);
+  }
 }
 
 Object.assign(window, { __s05: { adapter, chart: () => chartRef, metrics, switchTheme, bandVisible, ready: true } });
