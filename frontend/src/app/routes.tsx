@@ -6,6 +6,8 @@ import { LoginView } from '../views/onboarding/LoginView';
 import { RiskDisclosureView } from '../views/onboarding/RiskDisclosureView';
 import { SetupView } from '../views/onboarding/SetupView';
 import { RestoreLastRoute } from './RestoreLastRoute';
+import { OrderBookView } from '../views/orders/OrderBookView';
+import { PositionsView } from '../views/positions/PositionsView';
 import { SettingsView } from '../views/settings/SettingsView';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
@@ -14,6 +16,8 @@ import { ShellLayout } from './ShellLayout';
 export const shellChildren: RouteObject[] = [
   { path: 'home', element: <HomeView /> },
   { path: 'holdings', element: <HoldingsView /> },
+  { path: 'positions', element: <PositionsView /> },
+  { path: 'orders', element: <OrderBookView /> },
   { path: 'settings', element: <Navigate to="/settings/kite" replace /> },
   { path: 'settings/:group', element: <SettingsView /> },
 ];

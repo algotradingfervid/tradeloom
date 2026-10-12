@@ -236,7 +236,7 @@ describe('FR-SHELL-019 AC3 (frontend part): reopen on the last view', () => {
   });
   it('falls back to Home for an allow-listed view whose route is not in this build (Ruling 94 M4)', async () => {
     const seed = demoSeed();
-    seed.settings = { 'ui.last_route': '"/orders"' };
+    seed.settings = { 'ui.last_route': '"/profile"' };
     const { router } = start(seed);
     await waitFor(() => expect(router.state.location.pathname).toBe('/home'));
   });

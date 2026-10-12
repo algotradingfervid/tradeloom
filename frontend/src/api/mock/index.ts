@@ -330,6 +330,9 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
     data: wrap('data', {
       stats: () => copy(state.stats),
       clearCandles: () => {
+        // As Go ClearCandles: refused while candle downloads are open.
+        const open = state.stats.backfillOpenJobs;
+        if (open > 0) throw refusal('backfill_running', 'data', `${open} candle downloads are still running. Clear the cache when they have finished.`);
         state.stats.candleBytes = 0;
       },
       refreshInstruments: () => {
@@ -344,7 +347,9 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
       inspectBackup: (path: string) => ({ ...copy(state.backup), path }),
       restore: (_path: string, confirmation: string) => {
-        if (confirmation !== 'RESTORE') throw refusal('not_confirmed', 'restore', 'Type RESTORE to confirm');
+        // As Go RestoreBackup: stage "data"; the archive is re-validated before the job starts.
+        if (confirmation !== 'RESTORE') throw refusal('not_confirmed', 'data', 'Type RESTORE to confirm.');
+        if (!state.backup.ok) throw refusal('schema_too_new', 'data', state.backup.reason);
         const id = `job-${++jobSeq}`;
         finishJob(id, 'restore', 'restart', '');
         return id;

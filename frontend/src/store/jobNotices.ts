@@ -28,14 +28,33 @@ export function claimJob(jobId: string): void {
 }
 
 /**
- * Task 16 / Task 15 usage around a call that starts a job (Go runs one job at a time):
+ * Task 16 / Task 15 usage around a call that starts a job (Go runs one job at a time) — the done-flag pattern
+ * (Ruling 86), so the window is closed exactly once whatever the call does:
+ *   let done = false;
  *   beginJobClaim();
- *   try { const id = await backend.data.backupNow(folder, candles); endJobClaim(id); }
- *   catch (e) { endJobClaim(); … }
+ *   try { const id = await backend.data.backupNow(folder, candles); done = true; endJobClaim(id); }
+ *   finally { if (!done) endJobClaim(); }
  * A job that finishes before the id comes back is then still treated as the caller's.
  */
 export function beginJobClaim(): void {
   pending += 1;
+}
+
+/**
+ * Runs `start` (a call that returns a job id) inside a claim window with the done-flag pattern (Ruling 86): the
+ * window is closed exactly once, whether the call resolves, is refused or its caller has gone away.
+ */
+export async function startClaimedJob(start: () => Promise<string>): Promise<string> {
+  let done = false;
+  beginJobClaim();
+  try {
+    const id = await start();
+    done = true;
+    endJobClaim(id);
+    return id;
+  } finally {
+    if (!done) endJobClaim();
+  }
 }
 
 /** Ends a beginJobClaim window; `jobId` is the started job (omit it when the call was refused). */
@@ -55,6 +74,10 @@ export function endJobClaim(jobId?: string): void {
  */
 export function notifyUnclaimedJob(p: JobProgress): void {
   if (!p.finished) return;
+  // Diagnostics.CreateSupportBundle returns the path or the refusal to the UI call that started it (Go returns no
+  // job id), and Go publishes job.progress on its own goroutine, so the event can land after the call returned.
+  // The caller already reports the outcome (Task 15); toasting the event too would report a failure twice.
+  if (p.kind === 'support_bundle') return;
   if (claimed.delete(p.jobId)) return;
   if (pending > 0) held.push(p);
   else if (p.error) show(p);

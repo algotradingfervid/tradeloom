@@ -15,14 +15,16 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// fixtureEnv loads the fixture module offline, with its fake gokiteconnect.
+// fixtureEnv loads the fixture module offline, with its fake gokiteconnect, and with CGO_ENABLED=0 so no
+// fixture load needs a C compiler (fixture/internal/cgouser has an untagged cgo file; loadFixtureCgo
+// overrides this, the last CGO_ENABLED entry wins).
 func fixtureEnv(t *testing.T) (string, []string) {
 	t.Helper()
 	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return dir, append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOPROXY=off")
+	return dir, append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOPROXY=off", "CGO_ENABLED=0")
 }
 
 // runFixture loads the fixture with tags and returns "rule dir/file.go:line" for every violation the

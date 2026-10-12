@@ -1,0 +1,3 @@
+package hidden
+
+import "C"

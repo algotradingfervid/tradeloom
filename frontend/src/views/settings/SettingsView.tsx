@@ -7,8 +7,11 @@ import { AboutGroup } from './AboutGroup';
 import { AppearanceGroup } from './AppearanceGroup';
 import { CalendarGroup } from './CalendarGroup';
 import { ChartGroup } from './ChartGroup';
+import { DataGroup } from './DataGroup';
+import { DiagnosticsGroup } from './DiagnosticsGroup';
 import { SETTINGS_GROUPS, type SettingsGroupDef, type SettingsGroupId } from './groups';
 import { KiteGroup } from './KiteGroup';
+import { ShortcutsGroup } from './ShortcutsGroup';
 import './settings.css';
 
 /** Later tasks add `calendar`, `data`, `shortcuts`, `diagnostics`; later phases add theirs. */
@@ -17,6 +20,9 @@ export const GROUP_COMPONENTS: Partial<Record<SettingsGroupId, ComponentType>> =
   appearance: AppearanceGroup,
   chart: ChartGroup,
   calendar: CalendarGroup,
+  data: DataGroup,
+  shortcuts: ShortcutsGroup,
+  diagnostics: DiagnosticsGroup,
   about: AboutGroup,
 };
 

@@ -79,8 +79,40 @@ export const holdingsCopy = {
   cols: { symbol: 'Symbol', qty: 'Qty', avg: 'Avg', ltp: 'LTP', invested: 'Invested', current: 'Current value', pnl: 'P&L', net: 'Net change', day: 'Day change' },
 } as const;
 
+export const positionsCopy = {
+  title: 'Positions',
+  description: 'Open and closed positions for today, with live P&L.',
+  tabs: 'Position type',
+  net: 'Net',
+  day: 'Day',
+  empty: 'No positions',
+  loading: 'Loading positions',
+  totalPnl: 'Total P&L',
+  // P0-3 Ruling 38: same flag and hint as Holdings.
+  outOfScope: holdingsCopy.outOfScope,
+  outOfScopeHint: holdingsCopy.outOfScopeHint,
+  cols: { product: 'Product', symbol: 'Symbol', qty: 'Qty', avg: 'Avg', ltp: 'LTP', pnl: 'P&L', net: 'Net change' },
+} as const;
+
 export const ordersCopy = {
+  title: 'Order Book',
+  description: 'Every order in your Kite account today: open, executed, rejected and cancelled.',
+  searchPlaceholder: 'Search by instrument, order ID or source',
+  empty: 'No orders today',
+  loading: 'Loading orders',
+  sections: { open: 'Open', executed: 'Executed', rejected: 'Rejected', cancelled: 'Cancelled' },
+  sectionEmpty: { open: 'No open orders', executed: 'No executed orders', rejected: 'No rejected orders', cancelled: 'No cancelled orders' },
+  // Go `orders.OrderRow.source`: "tradeloom" for orders tagged TL…, "external" for orders placed in Kite itself.
+  sources: { tradeloom: 'Tradeloom', external: 'Kite' },
+  outOfScope: holdingsCopy.outOfScope,
+  outOfScopeHint: holdingsCopy.outOfScopeHint,
+  cols: { time: 'Time', type: 'Type', instrument: 'Instrument', product: 'Product', qty: 'Qty', avg: 'Avg price', status: 'Status', source: 'Source' },
   updated: (symbol: string, status: string) => `Order ${symbol}: ${status}`,
+} as const;
+
+/** A background re-read (polling) failed: the view keeps what it shows (Task 10 M8, Ruling 103). */
+export const portfolioCopy = {
+  staleNotice: (reason: string) => `Showing the last loaded data. The latest read failed: ${reason}`,
 } as const;
 
 export const statusCopy = {
@@ -340,4 +372,107 @@ export const aboutCopy = {
   component: 'Component',
   licenceVersion: 'Version',
   licence: 'Licence',
+} as const;
+
+export const dataCopy = {
+  storage: 'Storage',
+  dataDir: 'Data folder',
+  appDb: 'App database',
+  candles: 'Candle store',
+  candleUsage: (used: string, budget: string) => `${used} of ${budget}`,
+  instruments: 'Instrument list updated',
+  refreshInstruments: 'Refresh instrument list now',
+  instrumentsRefreshed: 'Instrument list refreshed',
+  backfill: 'History downloads waiting',
+  backfillOpen: (n: number) => (n === 0 ? 'None' : n === 1 ? '1 job' : `${n} jobs`),
+  clearCandles: 'Clear cached candles',
+  clearTitle: 'Clear cached candles?',
+  clearMessage: 'All downloaded candles are deleted. Charts download their data again the next time they open. Watchlists, settings and other data are not affected.',
+  cleared: 'Cached candles cleared',
+  backup: 'Backup',
+  includeCandles: (size: string) => `Include the candle store (${size})`,
+  backupNow: 'Back up now',
+  backingUp: 'Backing up…',
+  backupStage: (done: number, total: number) => `Backing up… (${done} of ${total})`,
+  backupSaved: (path: string) => `Backup saved to ${path}`,
+  backupFailed: (reason: string) => `Backup failed: ${reason}`,
+  scheduled: 'Scheduled daily backup',
+  scheduledHint: 'Runs once a day after 16:00 IST, or when you quit after 16:00 if it has not run yet.',
+  folder: 'Backup folder',
+  noFolder: 'Not chosen — the backups folder inside the data folder',
+  chooseFolder: 'Choose folder…',
+  keep: 'Backups to keep',
+  keepRange: 'Keep between 1 and 365 backups',
+  restore: 'Restore',
+  restoreIntro: 'Replace all Tradeloom data with the contents of a backup archive. Kite credentials are never part of a backup.',
+  restoreButton: 'Restore from a backup…',
+  restoreTitle: 'Restore this backup?',
+  restoreConfirm: 'Restore',
+  restoreFrom: (when: string, version: string) => `Backup made on ${when} by Tradeloom v${version}. It replaces:`,
+  count: (label: string, n: number) => `${label}: ${n}`,
+  // Keys of the P0-1 backup manifest `counts`.
+  counts: { strategies: 'Strategies', scanners: 'Scanners', backtest_runs: 'Backtest runs', deployments: 'Deployments', watchlists: 'Watchlists', order_journal: 'Order journal entries' },
+  withCandles: 'The archive includes the candle store.',
+  withoutCandles: 'The archive does not include candles; charts will download history again.',
+  restoreWarning: 'Your current data folder is not deleted: it is renamed to end in “.replaced-” and the date and time, and the restored data takes its place. Earlier backups in the default backups folder inside the data folder move there with it. Tradeloom restarts when the restore finishes; settings you are still editing are discarded.',
+  restoreSecrets: 'If your Kite credentials are kept in the encrypted secrets file (secrets.enc), that file stays in the “.replaced-” folder and you will be asked for your Kite API key and secret again. On a different computer you will be asked for them too.',
+  cannotRestore: 'This backup cannot be restored',
+  restoring: 'Restoring backup',
+  restoreStage: (done: number, total: number) => `Restoring… (${done} of ${total})`,
+  restarting: 'Restore complete. Tradeloom is restarting…',
+  restartingAfterFailure: 'Tradeloom is restarting…',
+  restoreFailed: (reason: string) => `Restore failed: ${reason}`,
+  restoreEnded: 'The restore stopped without restarting Tradeloom.',
+} as const;
+
+export const shortcutsCopy = {
+  title: 'Keyboard shortcuts',
+  intro: 'Every shortcut can be changed. A key combination can be used only once within overlapping areas of the app.',
+  action: 'Action',
+  scope: 'Where',
+  binding: 'Shortcut',
+  scopes: { global: 'Everywhere', view: 'Current view', chart: 'Chart', builder: 'Builder' },
+  unbound: 'Not set',
+  change: 'Change',
+  changeFor: (label: string) => `Change shortcut for ${label}`,
+  dialogTitle: (label: string) => `Change shortcut: ${label}`,
+  capture: 'New shortcut',
+  pressKeys: 'Press the new key combination',
+  // Keys Go's ParseBinding accepts (internal/settings/shortcuts.go normaliseKey); Task 6 carry-forward.
+  unsupportedKey: 'This key cannot be used in a shortcut. Use a letter, a digit, F1–F24, an arrow or navigation key, Space, or one of ` - = [ ] \\ ; \' , . /',
+  save: 'Save',
+  saved: 'Shortcut saved',
+  conflict: (label: string) => `Already used by ${label}`,
+  reset: 'Reset to defaults',
+  resetTitle: 'Reset to defaults',
+  resetMessage: 'All shortcuts return to their original keys.',
+  resetDone: 'Shortcuts reset to defaults',
+} as const;
+
+export const diagnosticsCopy = {
+  title: 'Logs and support',
+  level: 'Log detail',
+  // Values are the Go `log.level` setting (P0-1): lower-case "info" | "debug".
+  levels: [{ value: 'info', label: 'Normal (info)' }, { value: 'debug', label: 'Detailed (debug)' }],
+  levelHint: 'Changes apply immediately. Secrets are always removed from logs.',
+  openLogs: 'Open logs folder',
+  bundle: 'Create support bundle',
+  bundleHint: 'The bundle contains logs, settings without secrets, version information, the market calendar version, the last 200 order-journal rows and recent deployment log excerpts.',
+  bundleSaved: (path: string) => `Support bundle saved to ${path}`,
+} as const;
+
+export const crashCopy = {
+  message: (when: string) => `The app crashed last time (${when}).`,
+  view: 'View report',
+  dismiss: 'Dismiss crash notice',
+} as const;
+
+export const instrumentCopy = {
+  future: 'Future',
+  alsoOnNse: 'Also on NSE',
+  alsoOnNseHint: 'This company is also listed on NSE',
+  staleQuote: 'Last known price, not live yet',
+  // P0-3 Ruling 38: the same "View only" flag and hint as the portfolio views.
+  outOfScope: holdingsCopy.outOfScope,
+  outOfScopeHint: holdingsCopy.outOfScopeHint,
 } as const;
