@@ -7,6 +7,7 @@ import { bootCopy } from '../i18n/copy';
 import { useAppStore } from '../store/app';
 import './shell.css';
 import { useTrackHistoryDepth } from '../store/nav';
+import { ToastRegion } from '../components/ToastRegion';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -35,6 +36,7 @@ export function RootLayout() {
         </div>
       )}
       <Outlet />
+      <ToastRegion />
     </>
   );
 }

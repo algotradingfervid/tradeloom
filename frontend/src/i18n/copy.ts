@@ -61,3 +61,8 @@ export const notFoundCopy = {
   explanation: 'The view you asked for is not part of this version of Tradeloom, or the item was removed.',
   goHome: 'Go to Home',
 } as const;
+
+export const toastCopy = {
+  region: 'Notifications',
+  dismiss: 'Dismiss notification',
+} as const;
