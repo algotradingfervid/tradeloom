@@ -146,9 +146,12 @@ func ParseFile(r io.Reader, source string) (File, error) {
 	}
 	for _, e := range byKey {
 		sort.Slice(e.Phases, func(i, j int) bool { return e.Phases[i].Start < e.Phases[j].Start })
-		if e.Type == DaySpecial {
-			if _, ok := specContinuous(e.Phases); !ok {
+		if _, ok := specContinuous(e.Phases); !ok {
+			switch {
+			case e.Type == DaySpecial:
 				return File{}, &RowError{firstRow[k{e.Exchange, e.Date}], "special session needs a continuous phase"}
+			case e.Type == DayTrading && len(e.Phases) > 0: // phases replace the regular ones, so they need a session (Ruling 77)
+				return File{}, &RowError{firstRow[k{e.Exchange, e.Date}], "trading day with phases needs a continuous phase"}
 			}
 		}
 		f.Entries = append(f.Entries, *e)

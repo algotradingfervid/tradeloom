@@ -79,13 +79,14 @@ func TestImportRefusesInvalidTimeAndNamesRow(t *testing.T) { // FR-DATA-001 AC4
 
 func TestParseRejections(t *testing.T) {
 	cases := map[string]string{
-		"2026-13-01,NSE,holiday,,,":                     "Row 1: invalid date",
-		"2026-11-20,MCX,holiday,,,":                     "Row 1: invalid exchange",
-		"2026-11-20,NSE,closed,,,":                      "Row 1: invalid type",
-		"2026-11-20,NSE,holiday,continuous,09:15,15:30": "Row 1: holiday rows take no phase or times",
-		"2026-11-08,NSE,special,lunch,18:15,19:15":      "Row 1: invalid phase",
-		"2026-11-08,NSE,special,continuous,19:15,18:15": "Row 1: start must be before end",
-		"2026-11-08,NSE,special,pre-open,18:00,18:15":   "Row 1: special session needs a continuous phase",
+		"2026-13-01,NSE,holiday,,,":                                                                 "Row 1: invalid date",
+		"2026-11-20,MCX,holiday,,,":                                                                 "Row 1: invalid exchange",
+		"2026-11-20,NSE,closed,,,":                                                                  "Row 1: invalid type",
+		"2026-11-20,NSE,holiday,continuous,09:15,15:30":                                             "Row 1: holiday rows take no phase or times",
+		"2026-11-08,NSE,special,lunch,18:15,19:15":                                                  "Row 1: invalid phase",
+		"2026-11-08,NSE,special,continuous,19:15,18:15":                                             "Row 1: start must be before end",
+		"2026-11-08,NSE,special,pre-open,18:00,18:15":                                               "Row 1: special session needs a continuous phase",
+		"2026-11-09,NSE,trading,pre-open,09:00,09:08":                                               "Row 1: trading day with phases needs a continuous phase", // Ruling 77 (5)
 		"2026-11-08,NSE,special,continuous,18:15,19:15\n2026-11-08,NSE,special,closing,19:00,19:30": "Row 2: overlaps another phase",
 		"2026-11-08,NSE,special,continuous,18:15,19:15\n2026-11-08,NSE,holiday,,,":                  "Row 2: conflicts with row 1",
 	}
