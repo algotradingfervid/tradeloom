@@ -11,7 +11,8 @@ export interface ListPageProps {
   description: string;
   onRefresh?: () => void;
   refreshing?: boolean;
-  search?: { value: string; onChange: (v: string) => void; placeholder?: string };
+  /** `matches`: rows left after filtering; 0 with a non-empty query announces "no matches" (Ruling 84 M5). */
+  search?: { value: string; onChange: (v: string) => void; placeholder?: string; matches?: number };
   tabs?: ReactNode;
   children: ReactNode;
 }
@@ -37,6 +38,7 @@ export function ListPage({ title, description, onRefresh, refreshing, search, ta
               label={listCopy.refresh(title)}
               icon="refresh"
               aria-disabled={refreshing || undefined}
+              aria-busy={refreshing || undefined}
               onClick={() => { if (!refreshing) onRefresh(); }}
             />
           )}
@@ -55,6 +57,11 @@ export function ListPage({ title, description, onRefresh, refreshing, search, ta
         </div>
       </header>
       {tabs}
+      {search && (
+        <p className="list-page__matches muted" role="status" aria-live="polite">
+          {search.matches === 0 && search.value.trim() !== '' ? listCopy.noMatches(search.value.trim()) : null}
+        </p>
+      )}
       <div className="list-page__body">{children}</div>
     </div>
   );

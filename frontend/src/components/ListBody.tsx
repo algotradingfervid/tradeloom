@@ -29,7 +29,7 @@ export function ListBody({ status, error, onRetry, empty, loadingLabel, children
   if (status === 'error') {
     return (
       <div className="list-state" role="alert">
-        <p>{error}</p>
+        <p>{error || listCopy.genericError}</p>
         {onRetry && <Button onClick={onRetry}>{listCopy.retry}</Button>}
       </div>
     );

@@ -97,7 +97,38 @@ describe('ListPage refresh (Ruling 22: no stranded focus on a disabled control)'
     await user.click(btn);
     expect(btn).toHaveFocus();
     expect(btn).toHaveAttribute('aria-disabled', 'true');
+    expect(btn).toHaveAttribute('aria-busy', 'true');
     await user.click(btn);
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    expect(btn).toHaveFocus();
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ListPage / ListBody — Ruling 84 fix round 1', () => {
+  it('(M4) an error without a message falls back to generic copy', () => {
+    render(<ListBody status="error" error={null} onRetry={vi.fn()} empty={{ message: 'No holdings' }} loadingLabel="Loading holdings" />);
+    expect(screen.getByRole('alert')).toHaveTextContent('Something went wrong while loading. Try again.');
+  });
+  it('(M5) a search that hides every row shows "no matches" in a polite live region', async () => {
+    const user = userEvent.setup();
+    function Host() {
+      const [q, setQ] = useState('');
+      const visible = filterRows(items, q, (r) => [r.symbol, r.name]);
+      return (
+        <ListPage title="Holdings" description="d" search={{ value: q, onChange: setQ, matches: visible.length }}>
+          <DataTable caption="Holdings" columns={[{ id: 's', header: 'Symbol', cell: (r) => r.symbol }]} rows={visible} rowKey={(r) => r.id} rowLabel={(r) => r.symbol} />
+        </ListPage>
+      );
+    }
+    render(<RouterProvider router={createMemoryRouter([{ path: '/', element: <Host /> }])} />);
+    const region = screen.getByRole('status');
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    expect(region).toBeEmptyDOMElement();
+    await user.type(screen.getByRole('searchbox', { name: 'Search holdings' }), 'zzz');
+    expect(region).toHaveTextContent('No matches for “zzz”');
+    await user.clear(screen.getByRole('searchbox', { name: 'Search holdings' }));
+    expect(region).toBeEmptyDOMElement();
   });
 });

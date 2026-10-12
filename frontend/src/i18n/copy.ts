@@ -41,6 +41,8 @@ export const listCopy = {
   search: (title: string) => `Search ${title.toLowerCase()}`,
   searchPlaceholder: 'Search by symbol or name',
   retry: 'Retry',
+  genericError: 'Something went wrong while loading. Try again.',
+  noMatches: (query: string) => `No matches for “${query}”`,
   actions: 'Actions',
   rowActions: (row: string) => `Actions for ${row}`,
   rowAction: (action: string, row: string) => `${action} ${row}`,

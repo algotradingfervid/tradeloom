@@ -22,6 +22,9 @@ export function useTrackHistoryDepth(): void {
       return;
     }
     if (type === 'PUSH') st.setDepth(st.depth + 1);
+    // POP is treated as one step back (ListPage's Back calls navigate(-1)). A memory router has no forward button,
+    // so a POP that goes forward is not expected; depth never drops below 1 (the entry we started on).
+    // REPLACE leaves the depth unchanged.
     else if (type === 'POP') st.setDepth(Math.max(1, st.depth - 1));
   }, [location.key, type]);
 }

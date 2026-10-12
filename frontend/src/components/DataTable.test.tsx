@@ -107,3 +107,92 @@ describe('DataTable — long names and empty data (review focus 1)', () => {
     expect(screen.getByRole('row', { name: 'RELIANCE' })).toHaveAttribute('tabindex', '0');
   });
 });
+
+describe('DataTable — Ruling 84 fix round 1', () => {
+  function Live({ list, actions }: { list: Row[]; actions: RowAction<Row>[] }) {
+    return <DataTable caption="Live" columns={columns} rows={list} rowKey={(r) => r.id} rowLabel={(r) => r.name} rowActions={actions} />;
+  }
+  function actionsWith(onChart = vi.fn()): RowAction<Row>[] {
+    return [
+      { id: 'chart', label: 'Open chart', icon: 'positions', onSelect: onChart },
+      { id: 'remove', label: 'Remove', icon: 'trash', onSelect: vi.fn() },
+    ];
+  }
+
+  it('(I1) a live update removing a row above the open menu keeps the menu on the same instrument', async () => {
+    const user = userEvent.setup();
+    const onChart = vi.fn();
+    const actions = actionsWith(onChart);
+    const { rerender } = render(<Live list={rows} actions={actions} />);
+    screen.getByRole('row', { name: 'TCS' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    rerender(<Live list={[rows[1], rows[2]]} actions={actions} />);
+    expect(screen.getByRole('menu', { name: 'Actions for TCS' })).toBeInTheDocument();
+    expect(screen.queryByRole('menu', { name: 'Actions for INFY' })).toBeNull();
+    expect(screen.getByRole('row', { name: 'TCS' })).toHaveAttribute('tabindex', '0');
+    screen.getByRole('menuitem', { name: 'Open chart' }).focus();
+    await user.keyboard('{Enter}');
+    expect(onChart).toHaveBeenCalledWith(rows[1]);
+  });
+
+  it('(I1) the menu closes when its own row disappears, and focus returns to a row', async () => {
+    const user = userEvent.setup();
+    const actions = actionsWith();
+    const { rerender } = render(<Live list={rows} actions={actions} />);
+    screen.getByRole('row', { name: 'TCS' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    rerender(<Live list={[rows[0], rows[2]]} actions={actions} />);
+    expect(screen.queryByRole('menu')).toBeNull();
+    rerender(<Live list={rows} actions={actions} />);
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(document.activeElement?.getAttribute('role') ?? document.activeElement?.tagName).toBe('TR');
+  });
+
+  it('(I1) the active row follows its key when rows above it are removed', async () => {
+    const user = userEvent.setup();
+    const actions = actionsWith();
+    const { rerender } = render(<Live list={rows} actions={actions} />);
+    screen.getByRole('row', { name: 'RELIANCE' }).focus();
+    await user.keyboard('{ArrowDown}');
+    rerender(<Live list={[rows[1], rows[2]]} actions={actions} />);
+    expect(screen.getByRole('row', { name: 'TCS' })).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('row', { name: 'INFY' })).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('(M2) Tab in the portalled menu closes it and returns focus to its row', async () => {
+    const user = userEvent.setup();
+    render(<Live list={rows} actions={actionsWith()} />);
+    screen.getByRole('row', { name: 'TCS' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    await user.tab();
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByRole('row', { name: 'TCS' })).toHaveFocus();
+  });
+
+  it('(M1) the actions column fits n 32 px buttons, n-1 4 px gaps and 16 px padding', () => {
+    const { container } = render(<Live list={rows} actions={actionsWith()} />);
+    const cols = container.querySelectorAll('col');
+    expect(cols[cols.length - 1]).toHaveStyle({ width: '84px' });
+  });
+
+  it('(M2) the row menu renders in a portal and opens upward near the bottom of the window', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { top: window.innerHeight - 40, bottom: window.innerHeight - 4, left: 900, right: 1000, width: 100, height: 36, x: 900, y: window.innerHeight - 40, toJSON: () => ({}) } as DOMRect,
+    );
+    const { container } = render(<Live list={rows} actions={actionsWith()} />);
+    screen.getByRole('row', { name: 'INFY' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    const menu = screen.getByRole('menu', { name: 'Actions for INFY' });
+    expect(container.contains(menu)).toBe(false);
+    expect(menu).toHaveAttribute('data-placement', 'up');
+  });
+
+  it('(M2) the row menu opens downward when there is room', async () => {
+    const user = userEvent.setup();
+    render(<Live list={rows} actions={actionsWith()} />);
+    screen.getByRole('row', { name: 'RELIANCE' }).focus();
+    await user.keyboard('{Shift>}{F10}{/Shift}');
+    expect(screen.getByRole('menu', { name: 'Actions for RELIANCE' })).toHaveAttribute('data-placement', 'down');
+  });
+});
