@@ -44,3 +44,16 @@
 .status-panel { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
 .status-panel__note { margin: var(--space-2) 0 0; color: var(--text-muted); }
 [aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+
+.toplink {
+  display: inline-flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1); color: var(--text); text-decoration: none; white-space: nowrap;
+}
+.toplink:hover { background: var(--surface-2); }
+.toplink[aria-current="page"] { color: var(--accent); background: var(--surface-2); font-weight: 600; }
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent);
+  color: var(--on-accent); font-size: var(--fs-xs); font-weight: 600; object-fit: cover;
+}
+.profile-head { display: flex; flex-direction: column; }
+.menu__version { display: block; text-align: right; font-size: var(--fs-xs); }

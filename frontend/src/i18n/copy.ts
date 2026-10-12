@@ -98,3 +98,27 @@ export const statusCopy = {
   lastTick: (t: string) => `Last tick: ${t}`,
   clockWarning: (offset: string) => `Your computer clock differs from exchange time by ${offset} s. Tradeloom uses the corrected time.`,
 } as const;
+
+export const topBarCopy = {
+  orders: 'Order Book',
+  ordersTip: 'Open the order book',
+  positions: 'Positions',
+  positionsTip: 'Open positions',
+} as const;
+
+export const profileMenuCopy = {
+  menu: 'Account menu',
+  notLoggedIn: 'Not logged in',
+  logIn: 'Log in',
+  profile: 'Profile',
+  holdings: 'Holdings',
+  settings: 'Settings',
+  help: 'Help',
+  darkTheme: 'Dark theme',
+  version: (v: string) => `v${v}`,
+  loadFailed: (reason: string) => `Your Kite profile could not be loaded: ${reason}`,
+  profilePending: 'Loading profile…',
+  profileUnavailable: 'Profile not loaded',
+  retry: 'Retry loading profile',
+  themeFailed: (reason: string) => `The theme could not be saved: ${reason}`,
+} as const;
