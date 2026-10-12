@@ -32,6 +32,35 @@ func TestCheckImports_Table(t *testing.T) {
 		{"service imports orderwrite", Pkg{"tradeloom/internal/service", []string{"tradeloom/internal/kite/orderwrite"}}, "g0-import"},
 		{"orders imports orderwrite", Pkg{"tradeloom/internal/orders", []string{"tradeloom/internal/kite/orderwrite"}}, ""},
 		{"external package ignored", Pkg{"github.com/x/y", []string{"database/sql"}}, ""},
+		// g0-http (Ruling 69): net/http and its sub-packages only under internal/kite.
+		{"kite imports net/http", Pkg{"tradeloom/internal/kite", []string{"net/http"}}, ""},
+		{"kite/mock imports httptest", Pkg{"tradeloom/internal/kite/mock", []string{"net/http/httptest"}}, ""},
+		{"app imports net/http", Pkg{"tradeloom/internal/app", []string{"net/http"}}, "g0-http"},
+		{"service imports httputil", Pkg{"tradeloom/internal/service", []string{"net/http/httputil"}}, "g0-http"},
+		{"kitex is not kite", Pkg{"tradeloom/internal/kitex", []string{"net/http"}}, "g0-http"},
+		{"cmd imports net/http", Pkg{"tradeloom/cmd/tradeloom", []string{"net/http"}}, "g0-http"},
+		{"orders imports net/url", Pkg{"tradeloom/internal/orders", []string{"net/url"}}, ""},
+		{"service imports x/net/http2", Pkg{"tradeloom/internal/service", []string{"golang.org/x/net/http2"}}, "g0-http"},
+		{"kite imports x/net/http2", Pkg{"tradeloom/internal/kite", []string{"golang.org/x/net/http2"}}, ""},
+		// g0-net (Ruling 79 I-2): net and crypto/tls only under internal/kite (exact paths: net/url and
+		// net/netip are fine), unsafe nowhere, os/exec only under internal/app.
+		{"service imports net", Pkg{"tradeloom/internal/service", []string{"net"}}, "g0-net"},
+		{"service imports net/netip", Pkg{"tradeloom/internal/service", []string{"net/netip"}}, ""},
+		{"kite imports net", Pkg{"tradeloom/internal/kite", []string{"net"}}, ""},
+		{"app imports crypto/tls", Pkg{"tradeloom/internal/app", []string{"crypto/tls"}}, "g0-net"},
+		{"kite imports crypto/tls", Pkg{"tradeloom/internal/kite", []string{"crypto/tls"}}, ""},
+		{"store imports crypto/tls/x", Pkg{"tradeloom/internal/store", []string{"crypto/tlsx"}}, ""},
+		{"kite imports unsafe", Pkg{"tradeloom/internal/kite", []string{"unsafe"}}, "g0-net"},
+		{"app imports unsafe", Pkg{"tradeloom/internal/app", []string{"unsafe"}}, "g0-net"},
+		{"app imports os/exec", Pkg{"tradeloom/internal/app", []string{"os/exec"}}, ""},
+		{"app/opener imports os/exec", Pkg{"tradeloom/internal/app/opener", []string{"os/exec"}}, ""},
+		{"service imports os/exec", Pkg{"tradeloom/internal/service", []string{"os/exec"}}, "g0-net"},
+		{"cmd imports os/exec", Pkg{"tradeloom/cmd/tradeloom", []string{"os/exec"}}, "g0-net"},
+		// g0-mock (Ruling 79 M-3): no non-test import of internal/kite/mock.
+		{"service imports kite/mock", Pkg{"tradeloom/internal/service", []string{"tradeloom/internal/kite/mock"}}, "g0-mock"},
+		{"kite imports kite/mock", Pkg{"tradeloom/internal/kite", []string{"tradeloom/internal/kite/mock"}}, "g0-mock"},
+		{"kite/mock/sub imports kite/mock", Pkg{"tradeloom/internal/kite/mock/sub", []string{"tradeloom/internal/kite/mock"}}, ""},
+		{"service imports kite/mockx", Pkg{"tradeloom/internal/service", []string{"tradeloom/internal/kite/mockx"}}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -39,11 +68,21 @@ func TestCheckImports_Table(t *testing.T) {
 			switch {
 			case tc.wantRule == "" && len(v) != 0:
 				t.Fatalf("unexpected violations %v", v)
-			case tc.wantRule != "" && (len(v) == 0 || v[0].Rule != tc.wantRule):
+			case tc.wantRule != "" && !hasRule(v, tc.wantRule):
 				t.Fatalf("want %s, got %v", tc.wantRule, v)
 			}
 		})
 	}
+}
+
+// hasRule: a package may break more than one rule (internal/clock importing net/http breaks rule1 and g0-http).
+func hasRule(vs []Violation, rule string) bool {
+	for _, v := range vs {
+		if v.Rule == rule {
+			return true
+		}
+	}
+	return false
 }
 
 func TestUnder(t *testing.T) {
