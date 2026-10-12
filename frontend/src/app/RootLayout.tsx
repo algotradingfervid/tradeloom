@@ -8,6 +8,7 @@ import { useAppStore } from '../store/app';
 import './shell.css';
 import { useTrackHistoryDepth } from '../store/nav';
 import { ToastRegion } from '../components/ToastRegion';
+import { ShortcutProvider } from '../shortcuts/ShortcutProvider';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -27,7 +28,7 @@ export function RootLayout() {
   }, [backend, attempt]);
   useTrackHistoryDepth();
   return (
-    <>
+    <ShortcutProvider>
       {bootError && (
         <div role="alert" className="boot-notice">
           <span>{bootCopy.failed}</span>
@@ -37,6 +38,6 @@ export function RootLayout() {
       )}
       <Outlet />
       <ToastRegion />
-    </>
+    </ShortcutProvider>
   );
 }

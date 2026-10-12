@@ -5,6 +5,7 @@ import { useSessionStore } from '../store/session';
 import { markSettingsBaseline, useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
 import { useTicksStore } from '../store/ticks';
+import { applyShortcutsEvent, SHORTCUTS_CHANGE_KEY } from '../shortcuts/store';
 import type { Backend, SessionStateName } from './backend';
 import { parseBackendError } from './errors';
 
@@ -45,7 +46,9 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
       useStatusStore.getState().setClock(c);
     }),
     backend.on('tick.batch', (t) => useTicksStore.getState().applyBatch(t)),
-    backend.on('settings.changed', (c) => useSettingsStore.getState().put(c.key, c.value)),
+    // Go publishes the shortcut list under settings.changed key "shortcuts"; it is not a setting.
+    backend.on('settings.changed', (c) =>
+      c.key === SHORTCUTS_CHANGE_KEY ? applyShortcutsEvent(c.value) : useSettingsStore.getState().put(c.key, c.value)),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
     backend.on('job.progress', (p) => notifyUnclaimedJob(p)),
   ];
