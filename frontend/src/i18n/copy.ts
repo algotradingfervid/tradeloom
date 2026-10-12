@@ -399,3 +399,13 @@ export const crashCopy = {
   view: 'View report',
   dismiss: 'Dismiss crash notice',
 } as const;
+
+export const instrumentCopy = {
+  future: 'Future',
+  alsoOnNse: 'Also on NSE',
+  alsoOnNseHint: 'This company is also listed on NSE',
+  staleQuote: 'Last known price, not live yet',
+  // P0-3 Ruling 38: the same "View only" flag and hint as the portfolio views.
+  outOfScope: holdingsCopy.outOfScope,
+  outOfScopeHint: holdingsCopy.outOfScopeHint,
+} as const;
