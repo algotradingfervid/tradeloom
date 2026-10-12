@@ -1,4 +1,3 @@
-// internal/kite/probe_test.go
 package kite
 
 import (
@@ -275,4 +274,39 @@ func TestAcquireDial(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2()
+}
+
+// Longest-first: the key also occurs inside the token's escaped form. Replacing the key first would
+// split that form and leave the rest of the token in the text.
+func TestRedactCredentials_LongestFirst(t *testing.T) {
+	const tok = "tok/en+s3cret"
+	const key = "2Fen" // a substring of url.QueryEscape(tok) == "tok%2Fen%2Bs3cret"
+	if !strings.Contains(url.QueryEscape(tok), key) {
+		t.Fatal("test setup: key must occur inside the escaped token")
+	}
+	in := errors.New("dial wss://ws.kite.trade?access_token=" + url.QueryEscape(tok) + "&api_key=" + key + ": refused")
+	got := RedactCredentials(in, key, tok).Error()
+	for _, s := range []string{"s3cret", key, tok, url.QueryEscape(tok)} {
+		if strings.Contains(got, s) {
+			t.Fatalf("redacted text leaks %q: %s", s, got)
+		}
+	}
+	if RedactCredentials(nil, key, tok) != nil {
+		t.Fatal("nil error must stay nil")
+	}
+	plain := errors.New("no credentials here")
+	if RedactCredentials(plain, key, tok) != plain {
+		t.Fatal("an error without credentials must be returned unchanged")
+	}
+}
+
+// A caller that already gave up gets PlanUnknown and no ticker attempt.
+func TestProbe_CtxDoneReturnsUnknownWithoutTicker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c := &probeCalls{}
+	p := newTestProbe(context.Canceled, nil, c)
+	if got := p.Probe(ctx, "k", "t"); got != PlanUnknown || c.ticker != 0 {
+		t.Fatalf("plan %s ticker calls %d", got, c.ticker)
+	}
 }

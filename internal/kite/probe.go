@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,8 @@ func (p *CapabilityProbe) Probe(ctx context.Context, apiKey, accessToken string)
 	case IsNoDataPermission(err):
 		p.Log.Info("capability probe: no historical-data permission", "kind", Classify(err).String())
 		return PlanNone
+	case ctx.Err() != nil:
+		return PlanUnknown // the caller gave up (logout, shutdown): nothing was learned, no ticker attempt
 	}
 	p.Log.Warn("capability probe: historical request inconclusive; trying the ticker", "kind", Classify(err).String())
 	terr := p.TickerConnect(ctx, apiKey, accessToken)
@@ -108,7 +111,12 @@ func AcquireDial(ctx context.Context) (release func(), err error) {
 // library's Stop is unsynchronised with ServeWithContext's cancel assignment, so it is never
 // called); the socket is closed on the serve goroutine as soon as OnConnect fires, so a caller
 // cancel racing the handshake never leaves a live socket; and every returned error has the API
-// key and access token (raw and query-escaped) redacted, since the ticker URL carries both.
+// key and access token (raw and query-escaped) redacted by RedactCredentials, since the ticker URL
+// carries both.
+//
+// The whole call is bounded by timeout+2 s (7 s for the capability probe), and that budget includes
+// waiting for the shared AcquireDial lock: if a ticker conn is mid-dial, the probe's handshake time
+// shrinks by that wait.
 func DialTicker(ctx context.Context, root *url.URL, apiKey, accessToken string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout+2*time.Second)
 	defer cancel()
@@ -122,7 +130,6 @@ func DialTicker(ctx context.Context, root *url.URL, apiKey, accessToken string, 
 	tk.SetReconnectMaxRetries(0)
 	tk.SetConnectTimeout(timeout)
 
-	secrets := []string{accessToken, apiKey, url.QueryEscape(accessToken), url.QueryEscape(apiKey)}
 	var (
 		mu          sync.Mutex
 		lastErr     error
@@ -164,7 +171,7 @@ func DialTicker(ctx context.Context, root *url.URL, apiKey, accessToken string, 
 		if err == nil {
 			err = errors.New("ticker connection failed")
 		}
-		report(fmt.Errorf("ticker connect: %w", redactSecrets(err, secrets)))
+		report(fmt.Errorf("ticker connect: %w", RedactCredentials(err, apiKey, accessToken)))
 	})
 	logging.Go("kite.probe.ticker", func() {
 		release, err := AcquireDial(ctx)
@@ -190,11 +197,20 @@ func DialTicker(ctx context.Context, root *url.URL, apiKey, accessToken string, 
 	}
 }
 
-// redactSecrets removes every non-empty secret from err's text.
-func redactSecrets(err error, secrets []string) error {
+// RedactCredentials returns err with the API key and the access token removed from its text, in
+// raw and url.QueryEscape forms (a ticker URL carries both in its query). The longest form is
+// replaced first, so a short value that also occurs inside a longer one (e.g. the key inside the
+// token's escaped form) cannot break the longer match and leave part of it behind. A nil err
+// gives nil; an err without either value is returned unchanged.
+func RedactCredentials(err error, apiKey, accessToken string) error {
+	if err == nil {
+		return nil
+	}
+	forms := []string{accessToken, apiKey, url.QueryEscape(accessToken), url.QueryEscape(apiKey)}
+	sort.SliceStable(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
 	msg := err.Error()
 	out := msg
-	for _, s := range secrets {
+	for _, s := range forms {
 		if s != "" {
 			out = strings.ReplaceAll(out, s, "[redacted]")
 		}

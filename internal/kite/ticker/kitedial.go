@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -27,7 +26,7 @@ var errNotConnected = errors.New("ticker: not connected")
 // SetAutoReconnect(false) a failed dial dereferences a nil Conn.
 //
 // The ticker URL carries api_key and access_token in its query: errors passed to ev.OnError have
-// both values (raw and query-escaped) redacted, and nothing here logs the URL. Errors raised after
+// both values (raw and query-escaped) redacted by kite.RedactCredentials, and nothing here logs the URL. Errors raised after
 // the conn was stopped or closed (e.g. "use of closed network connection") are dropped.
 //
 // Known library hazard (not guarded here): processTextMessage does fmt.Errorf(msg.Data.(string))
@@ -70,13 +69,12 @@ func KiteDialer(apiKey, accessToken string, root *url.URL) Dialer {
 			t.OnOrderUpdate(ev.OnOrderUpdate)
 		}
 		if ev.OnError != nil {
-			secrets := []string{accessToken, apiKey, url.QueryEscape(accessToken), url.QueryEscape(apiKey)}
 			t.OnError(func(err error) {
 				k.mu.Lock()
 				gone := k.closed || k.stopped
 				k.mu.Unlock()
 				if !gone {
-					ev.OnError(redact(err, secrets))
+					ev.OnError(kite.RedactCredentials(err, apiKey, accessToken))
 				}
 			})
 		}
@@ -189,22 +187,4 @@ func (k *kiteConn) write(op func() error) error {
 		cancel()
 	}
 	return err
-}
-
-// redact removes every non-empty secret from err's text.
-func redact(err error, secrets []string) error {
-	if err == nil {
-		return nil
-	}
-	msg := err.Error()
-	out := msg
-	for _, s := range secrets {
-		if s != "" {
-			out = strings.ReplaceAll(out, s, "[redacted]")
-		}
-	}
-	if out == msg {
-		return err
-	}
-	return errors.New(out)
 }
