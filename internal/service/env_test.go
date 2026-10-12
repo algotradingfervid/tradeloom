@@ -27,6 +27,7 @@ type fakeSession struct {
 	st        kite.SessionState
 	err       error
 	completed []string
+	forwarded []string
 	profile   kite.Profile
 }
 
@@ -50,6 +51,12 @@ func (f *fakeSession) BeginLogin(context.Context) (kite.LoginStart, error) {
 func (f *fakeSession) CompleteLogin(_ context.Context, p string) (kite.SessionState, error) {
 	f.mu.Lock()
 	f.completed = append(f.completed, p)
+	f.mu.Unlock()
+	return f.State(), f.err
+}
+func (f *fakeSession) CompleteForwardedRedirect(_ context.Context, u string) (kite.SessionState, error) {
+	f.mu.Lock()
+	f.forwarded = append(f.forwarded, u)
 	f.mu.Unlock()
 	return f.State(), f.err
 }

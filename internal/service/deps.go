@@ -32,6 +32,7 @@ type SessionAPI interface {
 	SetRedirectPort(port int) (kite.CredentialsInfo, error)
 	BeginLogin(ctx context.Context) (kite.LoginStart, error)
 	CompleteLogin(ctx context.Context, pasted string) (kite.SessionState, error)
+	CompleteForwardedRedirect(ctx context.Context, redirectURL string) (kite.SessionState, error) // Ruling 57 (Task 23)
 	CancelLogin() kite.SessionState
 	Logout(ctx context.Context) (kite.LogoutResult, error)
 	AckRisk(ctx context.Context) (kite.SessionState, error)
@@ -220,6 +221,9 @@ type Service struct {
 	// Task 31 (calendar façade): serialises override writes so app.db, the coverage setting and the
 	// running calendar.Service change in the same order.
 	calMu sync.Mutex
+
+	// Task 23: background goroutines the shutdown waits for (lifecycle.go).
+	bg goGroup
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).

@@ -190,7 +190,7 @@ func (s *Service) BackupNow(ctx context.Context, folder string, includeCandles b
 		return "", s.refuse(dataStage, err)
 	}
 	jctx := context.WithoutCancel(ctx)
-	logging.Go("service.backup", func() {
+	s.goTracked("service.backup", func() {
 		defer release()
 		step := func(stage string, n int) {
 			s.progress(JobProgress{JobID: id, Kind: JobBackup, Stage: stage, Done: n, Total: 4})
@@ -285,7 +285,7 @@ func (s *Service) RestoreBackup(ctx context.Context, path, confirmation string) 
 		return "", s.refuse(dataStage, err)
 	}
 	jctx := context.WithoutCancel(ctx)
-	logging.Go("service.restore", func() {
+	s.goTracked("service.restore", func() {
 		step := func(stage string, n int) {
 			s.progress(JobProgress{JobID: id, Kind: JobRestore, Stage: stage, Done: n, Total: 4})
 		}

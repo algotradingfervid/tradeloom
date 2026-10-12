@@ -18,7 +18,6 @@ import (
 	"tradeloom/internal/kite"
 	"tradeloom/internal/kite/ratelimit"
 	"tradeloom/internal/kite/ticker"
-	"tradeloom/internal/logging"
 	"tradeloom/internal/orders"
 	"tradeloom/internal/settings"
 )
@@ -249,7 +248,7 @@ func forwardWatch[T any, A any](s *Service, t bus.Topic[T], immediate bool, empt
 	name := t.Name()
 	return EventSource{Name: name, Start: func(ctx context.Context, emit Emit) {
 		sub := bus.Subscribe(s.d.Bus, t, bus.SubOpts[T]{Name: "events." + name, Buffer: 256})
-		logging.Go("events."+name, func() {
+		s.goTracked("events."+name, func() {
 			defer bus.Unsubscribe(s.d.Bus, sub)
 			acc, has := empty(), false
 			var fire clock.Timer
@@ -309,7 +308,7 @@ func forwardOrderUpdates(s *Service) EventSource {
 			if !refreshing.CompareAndSwap(false, true) {
 				return
 			}
-			logging.Go("events.order.update.refresh", func() {
+			s.goTracked("events.order.update.refresh", func() {
 				defer refreshing.Store(false)
 				if err := s.d.Orders.Refresh(ctx, orders.ScopeOrders); err != nil {
 					s.d.Log.Warn("order book refresh after dropped updates failed", "err", err)
@@ -360,7 +359,7 @@ func forwardTicks(s *Service) EventSource {
 	return EventSource{Name: EvTickBatch, Start: func(ctx context.Context, emit Emit) {
 		live := bus.Subscribe(s.d.Bus, ticker.TopicTicks, bus.SubOpts[[]ticker.Tick]{Name: "events.tick.batch", Buffer: 256})
 		polled := bus.Subscribe(s.d.Bus, TopicPolledTicks, bus.SubOpts[[]TickDTO]{Name: "events.tick.polled", Buffer: 64})
-		logging.Go("events."+EvTickBatch, func() {
+		s.goTracked("events."+EvTickBatch, func() {
 			defer bus.Unsubscribe(s.d.Bus, live)
 			defer bus.Unsubscribe(s.d.Bus, polled)
 			acc := keyed[uint32, TickDTO]{m: map[uint32]TickDTO{}}
@@ -512,7 +511,7 @@ func marketStatusSource(s *Service) EventSource {
 		if s.d.Calendar == nil {
 			return
 		}
-		logging.Go("service.market.clock", func() {
+		s.goTracked("service.market.clock", func() {
 			var last MarketStatus
 			// publish evaluates the status at one instant and returns it, so the next wake-up is armed from
 			// the same instant: a clock that moved meanwhile makes the timer fire at once instead of skipping
