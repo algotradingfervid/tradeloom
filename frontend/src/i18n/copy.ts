@@ -409,3 +409,13 @@ export const instrumentCopy = {
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
 } as const;
+
+/** Index ticker strip in the top bar (FR-SHELL-004). The direction is spoken as a word, never by colour alone. */
+export const tickerCopy = {
+  strip: 'Index ticker',
+  show: (name: string) => `Show ${name} on the Home chart`,
+  noPrice: 'no price yet',
+  up: 'up',
+  down: 'down',
+  flat: 'unchanged',
+} as const;

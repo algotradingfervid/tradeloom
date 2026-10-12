@@ -11,8 +11,12 @@ test('FR-SHELL-001 AC2: at 1280×720 no horizontal scrollbar; status, quick link
     page.getByRole('link', { name: 'Order Book' }),
     page.getByRole('link', { name: 'Positions' }),
     page.getByRole('button', { name: 'Account menu' }),
+    // P0-5 Task 12: the three index ticker pills (accessible name starts with the index name).
+    page.getByRole('button', { name: /^NIFTY 50,/ }),
+    page.getByRole('button', { name: /^NIFTY BANK,/ }),
+    page.getByRole('button', { name: /^SENSEX,/ }),
   ];
-  // The three ticker pills (P0-5) and the bell (P3) join this list when they ship.
+  // The bell (P3) joins this list when it ships.
   for (const t of targets) {
     const box = await t.boundingBox();
     expect(box).not.toBeNull();
