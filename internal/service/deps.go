@@ -90,6 +90,12 @@ type CandleTracker interface {
 	Untrack(token uint32, ivs ...candles.Interval)
 }
 
+// QuoteReader is *kite.Client's quote half (REST fallback for tokens the feed cannot carry; Task 29).
+type QuoteReader interface {
+	LTP(ctx context.Context, ids ...string) (kite.QuoteLTP, error)
+	OHLC(ctx context.Context, ids ...string) (kite.QuoteOHLC, error)
+}
+
 // liveChart is one open chart subscription (OpenLive).
 type liveChart struct {
 	token uint32
@@ -117,6 +123,8 @@ type Deps struct {
 	Historical   HistoricalFetcher // *kite.Client
 	CandleWriter CandleUpserter    // *sqlite.Store
 	Tracker      CandleTracker     // *builder.Builder
+	// Task 29 (quotes)
+	Quotes QuoteReader // *kite.Client
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
@@ -141,6 +149,15 @@ type Service struct {
 
 	feedMu   sync.Mutex
 	lastFeed ticker.FeedState // last feed.state (System.Status); zero State reads as "stopped"
+
+	// Task 29 (quotes): the maps are initialised lazily in quotes.go so New is untouched.
+	quotesOnce sync.Once                                // loads the persisted quote cache
+	watchMu    sync.Mutex                               // serialises set changes with their feed calls (WatchQuotes, linger)
+	pollMu     sync.Mutex                               // guards polled, deferred, pending, pollOff
+	polled     map[ticker.Consumer]map[uint32]bool      // tokens on the REST path, per consumer
+	deferred   map[ticker.Consumer]map[uint32]bool      // subscribed while the feed was stopped; polled until feed.state is live
+	pending    map[ticker.Consumer]map[uint32]time.Time // removed tokens awaiting UnsubscribeLinger (their deadline)
+	pollOff    string                                   // session id whose quote polling Kite refused (no data permission)
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
