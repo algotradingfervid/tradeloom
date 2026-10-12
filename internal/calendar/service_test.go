@@ -109,8 +109,9 @@ func TestStaleWhenNext30DaysNotCovered(t *testing.T) { // FR-DATA-001 AC6 (calen
 	if !s.Stale(ist(2026, 12, 5, 10, 0)) {
 		t.Fatal("05 Dec + 30 d = 04 Jan is not covered; want stale")
 	}
-	f, _ := ParseFile(strings.NewReader(Header+"\n2027-01-26,NSE,holiday,,,\n"), "import")
+	f, _ := ParseFile(strings.NewReader("# covers: 2027-01-01..2027-12-31\n"+Header+"\n2027-01-26,NSE,holiday,,,\n"), "import")
 	s.MergeOverrides(f.Entries)
+	s.ExtendCoverage(f.CoversTo)
 	if s.Stale(ist(2026, 12, 5, 10, 0)) {
 		t.Fatal("an imported 2027 list extends coverage")
 	}
@@ -155,5 +156,54 @@ func TestRecordRoundTrip(t *testing.T) {
 	back, err := FromRecord(r)
 	if err != nil || back.Phases[0] != e.Phases[0] || back.Date != e.Date {
 		t.Fatalf("round trip = %+v %v", back, err)
+	}
+}
+
+func TestUserRowDoesNotExtendCoverage(t *testing.T) {
+	s := mustDefault(t)
+	s.MergeOverrides([]Entry{{Date: Date{2027, 1, 26}, Exchange: NSE, Type: DayHoliday, Source: "user"}})
+	if got := s.CoversUntil(); got != (Date{2026, 12, 31}) {
+		t.Fatalf("CoversUntil = %v", got)
+	}
+	if !s.Stale(ist(2026, 12, 5, 10, 0)) {
+		t.Fatal("a single user row must not silence the stale warning")
+	}
+}
+
+func TestMergeOverridesCopiesPhases(t *testing.T) {
+	s := mustDefault(t)
+	ph := []PhaseSpec{{PhaseContinuous, 18*60 + 15, 19*60 + 15}}
+	s.MergeOverrides([]Entry{{Date: Date{2026, 11, 8}, Exchange: NSE, Type: DaySpecial, Phases: ph, Source: "user"}})
+	ph[0].Start = 0
+	if st, _, _ := s.Session(NSE, Date{2026, 11, 8}); st.Format("15:04") != "18:15" {
+		t.Fatalf("service state aliased caller slice: %v", st)
+	}
+}
+
+func TestShippedJan15HolidayAndFeb1Special(t *testing.T) {
+	s := mustDefault(t)
+	if s.IsTradingDay(NSE, Date{2026, 1, 15}) || s.IsTradingDay(NFO, Date{2026, 1, 15}) {
+		t.Fatal("2026-01-15 must be a holiday")
+	}
+	d := Date{2026, 2, 1} // Sunday
+	if got := s.Day(NSE, d); got.Type != DaySpecial {
+		t.Fatalf("NSE 2026-02-01 = %s", got.Type)
+	}
+	nfo := s.Day(NFO, d)
+	if nfo.Type != DaySpecial || len(nfo.Phases) != 1 || nfo.Phases[0].Kind != PhaseContinuous {
+		t.Fatalf("NFO 2026-02-01 = %+v", nfo)
+	}
+	if a, ok := s.Anchor(NFO, d); !ok || a.Format("15:04") != "09:15" {
+		t.Fatalf("NFO anchor = %v %v", a, ok)
+	}
+	if got := s.LabelAt(NSE, ist(2026, 2, 1, 10, 0)).Text; got != "Special session" {
+		t.Fatalf("label = %q", got)
+	}
+}
+
+func TestUTCEveningMapsToNextISTDay(t *testing.T) {
+	at := time.Date(2026, 10, 12, 20, 0, 0, 0, time.UTC)
+	if got := DateOf(at); got != (Date{2026, 10, 13}) {
+		t.Fatalf("DateOf = %v", got)
 	}
 }
