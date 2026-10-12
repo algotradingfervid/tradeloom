@@ -410,6 +410,17 @@ export const instrumentCopy = {
   outOfScopeHint: holdingsCopy.outOfScopeHint,
 } as const;
 
+export const chartHeaderCopy = {
+  controls: 'Chart controls',
+  back: 'Back',
+  changeSymbol: 'Change symbol',
+  searchInstruments: 'Search instruments',
+  refresh: 'Refresh chart data',
+  timeframe: 'Timeframe',
+  more: 'More chart actions',
+  openFullView: 'Open in full view',
+} as const;
+
 /** P0-5 Task 14: watchlist rows (FR-WATCH-001/005/006). */
 export const watchlistRowsCopy = {
   empty: 'Search to add instruments',
