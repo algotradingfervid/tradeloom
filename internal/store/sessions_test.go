@@ -74,3 +74,29 @@ func TestSessionsTable_HoldsNoSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionsRepo_UnknownID(t *testing.T) {
+	ctx := context.Background()
+	r := store.NewSessionsRepo(storetest.Open(t))
+	if err := r.SetDataPlan(ctx, "nope", "connect"); !errors.Is(err, store.ErrNoRow) {
+		t.Fatalf("SetDataPlan unknown = %v, want ErrNoRow", err)
+	}
+	if err := r.AckRisk(ctx, "nope", 1); !errors.Is(err, store.ErrNoRow) {
+		t.Fatalf("AckRisk unknown = %v, want ErrNoRow", err)
+	}
+	if err := r.End(ctx, "nope", 1, "logout"); !errors.Is(err, store.ErrNoRow) {
+		t.Fatalf("End unknown = %v, want ErrNoRow", err)
+	}
+}
+
+func TestSessionsRepo_InsertDuplicate(t *testing.T) {
+	ctx := context.Background()
+	r := store.NewSessionsRepo(storetest.Open(t))
+	row := store.SessionRow{ID: "s1", UserID: "AB1234", LoggedInAtMs: 1, ExpiresAtMs: 2, DataPlan: "unknown"}
+	if err := r.Insert(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Insert(ctx, row); !errors.Is(err, store.ErrDuplicate) {
+		t.Fatalf("duplicate Insert = %v, want ErrDuplicate", err)
+	}
+}

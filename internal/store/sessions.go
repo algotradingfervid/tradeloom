@@ -5,6 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+
+	"modernc.org/sqlite"
+)
+
+const (
+	sqliteConstraintPrimaryKey = 1555 // SQLITE_CONSTRAINT_PRIMARYKEY
+	sqliteConstraintUnique     = 2067 // SQLITE_CONSTRAINT_UNIQUE
 )
 
 // SessionRow mirrors the sessions table; zero values stand for NULL.
@@ -28,23 +36,42 @@ func (r *SessionsRepo) Insert(ctx context.Context, row SessionRow) error {
 		`INSERT INTO sessions(id, user_id, logged_in_at, expires_at, risk_ack_at, data_plan, ended_at, end_reason)
 		 VALUES(?, ?, ?, ?, NULL, ?, NULL, NULL)`,
 		row.ID, row.UserID, row.LoggedInAtMs, row.ExpiresAtMs, row.DataPlan)
+	var se *sqlite.Error
+	if errors.As(err, &se) && (se.Code() == sqliteConstraintPrimaryKey || se.Code() == sqliteConstraintUnique) {
+		return fmt.Errorf("%w: session %s", ErrDuplicate, row.ID)
+	}
+	return err
+}
+
+// update runs a single-row UPDATE; when no row changed it distinguishes "no such id" (ErrNoRow)
+// from "row exists but the first-wins guard skipped it" (nil).
+func (r *SessionsRepo) update(ctx context.Context, id, query string, args ...any) error {
+	res, err := r.db.W.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n > 0 {
+		return err
+	}
+	var one int
+	err = r.db.W.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNoRow
+	}
 	return err
 }
 
 func (r *SessionsRepo) SetDataPlan(ctx context.Context, id, plan string) error {
-	_, err := r.db.W.ExecContext(ctx, `UPDATE sessions SET data_plan = ? WHERE id = ?`, plan, id)
-	return err
+	return r.update(ctx, id, `UPDATE sessions SET data_plan = ? WHERE id = ?`, plan, id)
 }
 
 func (r *SessionsRepo) AckRisk(ctx context.Context, id string, atMs int64) error {
-	_, err := r.db.W.ExecContext(ctx, `UPDATE sessions SET risk_ack_at = ? WHERE id = ? AND risk_ack_at IS NULL`, atMs, id)
-	return err
+	return r.update(ctx, id, `UPDATE sessions SET risk_ack_at = ? WHERE id = ? AND risk_ack_at IS NULL`, atMs, id)
 }
 
 func (r *SessionsRepo) End(ctx context.Context, id string, atMs int64, reason string) error {
-	_, err := r.db.W.ExecContext(ctx,
+	return r.update(ctx, id,
 		`UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL`, atMs, reason, id)
-	return err
 }
 
 func (r *SessionsRepo) Get(ctx context.Context, id string) (SessionRow, error) {
