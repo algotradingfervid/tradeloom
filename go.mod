@@ -8,6 +8,7 @@ replace tradeloom/ta => ./ta
 
 require (
 	github.com/gofrs/flock v0.13.1
+	github.com/klauspost/compress v1.20.3
 	github.com/wailsapp/wails/v2 v2.16.0
 	github.com/zalando/go-keyring v0.2.8
 	github.com/zerodha/gokiteconnect/v4 v4.4.3
