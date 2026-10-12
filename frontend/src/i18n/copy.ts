@@ -409,3 +409,16 @@ export const instrumentCopy = {
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
 } as const;
+
+/** Watchlist inline search-and-add (FR-WATCH-004, P0-5 Task 15). */
+export const watchlistSearchCopy = {
+  label: 'Search instruments to add',
+  placeholder: 'Search to add, e.g. SBIN',
+  results: 'Search results',
+  alreadyIn: (list: string) => `Already in ${list}`,
+  addTo: (list: string) => `Add to ${list}`,
+  resultCount: (n: number) => (n === 1 ? '1 result' : `${n} results`),
+  noMatches: 'No instruments match',
+  searchFailed: 'Search failed. Try again.',
+  addFailed: (symbol: string, reason: string) => `Could not add ${symbol}: ${reason}`,
+} as const;
