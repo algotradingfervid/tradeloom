@@ -26,13 +26,25 @@ const SIGNED_OUT: ReadonlySet<SessionStateName> = new Set(['logged_out', 'no_cre
 export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void {
   const seen = new Set<SeenSlice>();
   seenBy.set(backend, seen);
+  /**
+   * The last non-empty session userId (Ruling 98). Go allows expired(A) → (logging_in →) ready(B) and a paste login
+   * from expired without passing through logged_out / no_credentials, so a change of user also clears account data.
+   * `null` = nothing seen by this bridge yet: fall back to the user bootstrap put in the session store. Empty after
+   * a sign-out, whose own reset already cleared everything, so the next login does not reset again.
+   */
+  let lastUserId: string | null = null;
   const offs = [
     backend.on('session.state', (s) => {
       seen.add('session');
-      const previous = useSessionStore.getState().session?.state;
+      const current = useSessionStore.getState().session;
+      const previous = current?.state;
+      const previousUser = lastUserId ?? (current && !SIGNED_OUT.has(current.state) ? current.userId : '');
+      // A different user: clear the previous user's account data before their session becomes visible.
+      if (s.userId !== '' && previousUser !== '' && s.userId !== previousUser) resetOnLogout();
       useSessionStore.getState().setSession(s);
       // Sign-out clears account data once per transition (M5); stores registered with onLogout: false keep theirs.
       if (previous !== undefined && !SIGNED_OUT.has(previous) && SIGNED_OUT.has(s.state)) resetOnLogout();
+      lastUserId = SIGNED_OUT.has(s.state) ? '' : s.userId !== '' ? s.userId : previousUser;
     }),
     backend.on('feed.state', (f) => {
       seen.add('feed');

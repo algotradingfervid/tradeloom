@@ -115,7 +115,7 @@ describe('FR-ORD-003 Holdings view', () => {
     const row = await screen.findByRole('row', { name: 'GOLDM' });
     const flag = within(row).getByText('View only');
     expect(flag.closest('.cell-truncate')).toBeNull();
-    expect(row.querySelector('[title="GOLDM · View only"]')).not.toBeNull();
+    expect(row.querySelector('[title="GOLDM · View only — Outside Tradeloom’s equity scope: shown for completeness and counted in the totals."]')).not.toBeNull();
     expect(within(row).getByText('GOLDM')).toHaveClass('instrument__name');
     expect(within(screen.getByRole('row', { name: 'RELIANCE' })).getByText('RELIANCE').closest('[title="RELIANCE"]')).not.toBeNull();
   });
