@@ -31,7 +31,8 @@
 .watchlist-menu { position: absolute; z-index: var(--z-menu); margin: 0; padding: var(--space-1) 0; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-2); box-shadow: var(--shadow); }
 .watchlist-menu button { white-space: nowrap; background: none; border: 0; color: var(--text); padding: var(--space-2) var(--space-3); cursor: pointer; }
 /* Busy controls stay focusable (aria-disabled) and lose their hover style (P0-4 Ruling 84 M6). */
-.watchlist-panel [aria-busy="true"][aria-disabled="true"], .watchlist-panel [aria-busy="true"][aria-disabled="true"]:hover { opacity: 0.55; cursor: progress; background: transparent; }
+.watchlist-panel [aria-busy="true"][aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+.watchlist-panel .icon-btn[aria-busy="true"][aria-disabled="true"]:hover { background: transparent; }
 .watchlist-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--fs-xs); color: var(--down); }
 .watchlist-empty { color: var(--text-muted); padding: var(--space-3) var(--space-1); }
 .watchlist-table { width: 100%; border-collapse: collapse; table-layout: fixed; }

@@ -42,6 +42,14 @@ export function WatchlistPanel({ onChartItem }: { onChartItem(item: WatchlistIte
   if (error && error !== lastError) setLastError(error);
   const deletingRef = useRef(false);
   const retryingRef = useRef(false);
+  /** After a successful Retry the button is gone; focus goes to the active tab once it is rendered (review m2). */
+  const focusTabAfterRetry = useRef(false);
+
+  useEffect(() => {
+    if (!focusTabAfterRetry.current || !active) return;
+    focusTabAfterRetry.current = false;
+    document.getElementById(watchlistTabId(prefix, active.id))?.focus();
+  });
 
   useEffect(() => {
     if (useWatchlists.getState().status === 'idle') void useWatchlists.getState().load();
@@ -53,6 +61,7 @@ export function WatchlistPanel({ onChartItem }: { onChartItem(item: WatchlistIte
     setRetrying(true);
     void useWatchlists.getState().load().finally(() => {
       retryingRef.current = false;
+      if (useWatchlists.getState().status === 'ready') focusTabAfterRetry.current = true;
       setRetrying(false);
     });
   };

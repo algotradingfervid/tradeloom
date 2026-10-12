@@ -16,6 +16,7 @@ import { createMockBackend, type MockBackend } from '../../api/mock/index';
 import { watchlistItemOf } from '../../api/mock/market';
 import { WatchlistPanel } from './WatchlistPanel';
 import { useWatchlists } from '../../store/watchlistsStore';
+import { resetOnLogout } from '../../store/reset';
 import { useToastStore } from '../../store/toasts';
 import { SBIN, TCS } from '../../instruments/fixtures';
 import { SEARCH_DEBOUNCE_MS } from '../../instruments/useInstrumentSearch';
@@ -25,6 +26,16 @@ const lists = (...names: string[]): Watchlist[] =>
   names.map((name, i) => ({ id: `w${i + 1}`, name, items: i === 0 ? [SBIN, TCS].map(watchlistItemOf) : [] }));
 const seed = (ls: Watchlist[]) => { backend.state.watchlists = { lists: ls, activeId: ls[0].id }; };
 const renderPanel = () => render(<WatchlistPanel onChartItem={vi.fn()} />);
+type WlMethod = 'create' | 'rename' | 'delete' | 'add' | 'list' | 'setActive';
+/** Holds the backend's next calls of `method` until `release()`; each still goes through the mock (recorded, refusals). */
+const gate = (method: WlMethod) => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => { release = r; });
+  const d = backend.watchlists as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+  const orig = d[method].bind(backend.watchlists);
+  d[method] = async (...a: unknown[]) => { await held; return orig(...a); };
+  return release;
+};
 
 beforeEach(() => {
   backend = createMockBackend(demoSeed());
@@ -198,6 +209,8 @@ describe('WatchlistPanel — loading, errors and refusals', () => {
     await act(async () => release());
     expect(await screen.findByRole('tab', { name: 'Watchlist 1' })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).toBeNull();
+    // m2: the Retry button is gone; focus lands on the active tab, not on the body.
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Watchlist 1' })).toHaveFocus());
   });
 
   it("Ruling 87: Go's invalid_name refusal on rename (local rules pass) shows Go's reason", async () => {
@@ -232,6 +245,70 @@ describe('WatchlistPanel — loading, errors and refusals', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'B' }));
     await waitFor(() => expect(useToastStore.getState().visible[0]?.message).toMatch(/^Could not switch watchlist/));
     expect(screen.getByRole('tab', { name: 'A' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('m3: a refused keyboard tab switch refocuses the restored tab', async () => {
+    seed(lists('A', 'B'));
+    renderPanel();
+    const a = await screen.findByRole('tab', { name: 'A' });
+    a.focus();
+    backend.failNext('watchlists.setActive', 'That watchlist no longer exists.', 'not_found');
+    fireEvent.keyDown(a, { key: 'ArrowRight' });
+    await waitFor(() => expect(useToastStore.getState().visible[0]?.message).toMatch(/^Could not switch watchlist/));
+    expect(screen.getByRole('tab', { name: 'A' })).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'A' })).toHaveFocus());
+  });
+
+  it('m1: Escape is ignored while a create is in flight; the new tab then takes focus', async () => {
+    seed(lists('Watchlist 1'));
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: 'New watchlist +' }));
+    const release = gate('create');
+    const field = screen.getByRole('textbox', { name: 'New watchlist name' });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    fireEvent.keyDown(field, { key: 'Escape' });
+    expect(screen.getByRole('textbox', { name: 'New watchlist name' })).toHaveAttribute('aria-busy', 'true');
+    await act(async () => release());
+    expect(await screen.findByRole('tab', { name: 'Watchlist 2' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('textbox', { name: 'New watchlist name' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Watchlist 2' })).toHaveFocus());
+  });
+
+  it('focus lands on the new tab after create', async () => {
+    seed(lists('Watchlist 1'));
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: 'New watchlist +' }));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'New watchlist name' }), { key: 'Enter' });
+    const created = await screen.findByRole('tab', { name: 'Watchlist 2' });
+    await waitFor(() => expect(created).toHaveFocus());
+  });
+
+  it('a failed delete is reported in a toast and the list stays', async () => {
+    seed(lists('Mine'));
+    renderPanel();
+    backend.failNext('watchlists.delete', 'Disk full');
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete watchlist Mine' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(useToastStore.getState().visible[0]?.message).toBe('Could not delete Mine: Disk full'));
+    expect(screen.getByRole('tab', { name: 'Mine' })).toBeInTheDocument();
+  });
+
+  it('the delete button ignores clicks while a delete is in flight (aria-disabled, keeps focus)', async () => {
+    seed(lists('Mine', 'Other'));
+    renderPanel();
+    const del = await screen.findByRole('button', { name: 'Delete watchlist Mine' });
+    const release = gate('delete');
+    del.focus();
+    fireEvent.click(del);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(del).toHaveAttribute('aria-disabled', 'true');
+    expect(del).toHaveFocus();
+    fireEvent.click(del);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await act(async () => release());
+    expect(await screen.findByRole('tab', { name: 'Other' })).toHaveAttribute('aria-selected', 'true');
+    expect(backend.callsTo('watchlists.delete')).toHaveLength(1);
   });
 
   it('a one-item list says "1 instrument" in the delete question', async () => {
@@ -278,6 +355,16 @@ describe('WatchlistPanel — "Add instruments…" (P0-5 Task 17 Step 3, Ruling 1
     backend.failNext('watchlists.add', 'Not in the instrument master', 'unknown_instrument');
     await pickSbin();
     expect(useToastStore.getState().visible[0]?.message).toBe('Could not add to Watchlist 1: Not in the instrument master');
+  });
+
+  it('a picker batch that finishes after a sign-out announces nothing and toasts nothing', async () => {
+    const release = gate('add');
+    await pickSbin();
+    expect(backend.callsTo('watchlists.add')).toHaveLength(0); // held
+    act(() => resetOnLogout());
+    await act(async () => { release(); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.queryByText(/^Added /)).toBeNull();
+    expect(useToastStore.getState().visible).toHaveLength(0);
   });
 
   it('Escape closes the picker, returns focus to "Add instruments…" and adds nothing', async () => {

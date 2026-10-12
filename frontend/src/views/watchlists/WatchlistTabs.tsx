@@ -59,9 +59,14 @@ export function WatchlistTabs({ panelId, idPrefix }: { panelId?: string; idPrefi
     return () => document.removeEventListener('mousedown', onDown);
   }, [menuList]);
 
-  const activate = (id: string) => {
+  /** `viaKeyboard`: focus already moved to the new tab, so a refusal moves it back to the tab the store restored. */
+  const activate = (id: string, viaKeyboard = false) => {
     if (id === activeId) return;
-    useWatchlists.getState().setActive(id).catch((e: unknown) => pushToast({ level: 'error', message: copy.switchFailed(reason(e)) }));
+    useWatchlists.getState().setActive(id).catch((e: unknown) => {
+      pushToast({ level: 'error', message: copy.switchFailed(reason(e)) });
+      const restored = activeList(useWatchlists.getState())?.id;
+      if (viaKeyboard && restored && document.activeElement === tabs.current.get(id)) tabs.current.get(restored)?.focus();
+    });
   };
 
   const onTabKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number, id: string) => {
@@ -78,7 +83,7 @@ export function WatchlistTabs({ panelId, idPrefix }: { panelId?: string; idPrefi
     e.preventDefault();
     const target = lists[j];
     tabs.current.get(target.id)?.focus();
-    activate(target.id);
+    activate(target.id, true);
   };
 
   const startCreate = () => {
@@ -143,7 +148,8 @@ export function WatchlistTabs({ panelId, idPrefix }: { panelId?: string; idPrefi
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      cancel();
+      // While Go answers, Escape does nothing: closing now would orphan the answer's error or focus move (review m1).
+      if (!busyRef.current) cancel();
     }
   };
   const fieldProps = {

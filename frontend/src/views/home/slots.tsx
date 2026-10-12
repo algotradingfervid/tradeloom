@@ -1,5 +1,7 @@
 import { DashboardChart } from '../../chart/ui/DashboardChart';
 import { homeCopy } from '../../i18n/copy';
+import { itemIdentifier } from '../../instruments/naming';
+import { showOnDashboard } from '../../store/chartContextsStore';
 import { WatchlistPanel } from '../watchlists/WatchlistPanel';
 import './home.css';
 
@@ -19,9 +21,7 @@ export function HomeChartArea() {
 export function HomeWatchlistArea() {
   return (
     <div className="card home-slot">
-      {/* MERGE(P0-5 Task 10): onChartItem={(item) => showOnDashboard(itemIdentifier(item))} — import showOnDashboard
-          from '../../store/chartContextsStore' and itemIdentifier from '../../instruments/naming' once Task 10 lands. */}
-      <WatchlistPanel onChartItem={() => undefined} />
+      <WatchlistPanel onChartItem={(item) => showOnDashboard(itemIdentifier(item))} />
     </div>
   );
 }
