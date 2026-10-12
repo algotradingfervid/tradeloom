@@ -4,7 +4,7 @@ import type { Backend, BookSnapshot, HoldingsSnapshot, KiteOrder, PositionsSnaps
 import { useBackend } from '../api/BackendContext';
 import { parseBackendError } from '../api/errors';
 import type { ListStatus } from '../components/ListBody';
-import { ordersCopy } from '../i18n/copy';
+import { ordersCopy, portfolioCopy } from '../i18n/copy';
 import { isTerminalStatus, orderStatusLabel } from '../portfolio/calc';
 import { registerReset } from './reset';
 import { useSessionStore } from './session';
@@ -78,6 +78,7 @@ const stillCurrent = (g: ReadGuard): boolean => g.epoch === epoch && g.userId ==
 registerReset(() => {
   epoch += 1;
   announced.clear();
+  for (const k of Object.keys(backgroundFailing) as PortfolioKind[]) backgroundFailing[k] = false;
   usePortfolioStore.setState(initial());
 });
 
@@ -88,14 +89,20 @@ const FETCH: { [K in PortfolioKind]: (b: Backend) => Promise<PortfolioData[K]> }
 };
 const SCOPE: Record<PortfolioKind, RefreshScope> = { holdings: 'holdings', positions: 'positions', orders: 'orders' };
 const latestRequest: Record<PortfolioKind, number> = { holdings: 0, positions: 0, orders: 0 };
+/** A background re-read is failing for this kind: one notice per failure streak, not one per poll. */
+const backgroundFailing: Record<PortfolioKind, boolean> = { holdings: false, positions: false, orders: false };
 
-/** Reads the Go cache (no Kite call); a slower, older response never overwrites a newer one. */
-export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: Backend): Promise<void> {
+/**
+ * Reads the Go cache (no Kite call); a slower, older response never overwrites a newer one. `background` (polling):
+ * no busy indicator, and a failure while data is shown keeps that data and raises a non-blocking notice instead of
+ * the error state (Task 10 M8).
+ */
+export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: Backend, opts: { background?: boolean } = {}): Promise<void> {
   const mine = ++latestRequest[kind];
   const g = guard();
   const store = usePortfolioStore.getState;
   const shownAsOf = store()[kind].data.asOfMs;
-  store().patch(kind, { loading: true });
+  if (!opts.background) store().patch(kind, { loading: true });
   // Dropped results: after a reset the store is already initial; after a user switch only the spinner is cleared.
   const dropped = () => {
     if (g.epoch === epoch) store().patch(kind, { loading: false });
@@ -106,6 +113,7 @@ export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: B
     if (!stillCurrent(g)) return dropped();
     store().applySnapshot(kind, data);
     store().patch(kind, { loading: false });
+    backgroundFailing[kind] = false;
   } catch (e) {
     if (mine !== latestRequest[kind]) return;
     if (!stillCurrent(g)) return dropped();
@@ -113,7 +121,13 @@ export async function loadPortfolio<K extends PortfolioKind>(kind: K, backend: B
     // A "*.changed" snapshot that arrived while this read was in flight is newer than anything the read could
     // return: keep showing it rather than replacing it with the read's error.
     if (cur.status === 'ready' && cur.data.asOfMs > shownAsOf) store().patch(kind, { loading: false });
-    else store().patch(kind, { status: 'error', error: parseBackendError(e).reason, loading: false });
+    else if (opts.background && cur.status === 'ready') {
+      store().patch(kind, { loading: false });
+      if (!backgroundFailing[kind]) {
+        backgroundFailing[kind] = true;
+        pushToast({ level: 'warning', message: portfolioCopy.backgroundReadFailed(portfolioCopy.names[kind], parseBackendError(e).reason) });
+      }
+    } else store().patch(kind, { status: 'error', error: parseBackendError(e).reason, loading: false });
   }
 }
 
@@ -150,9 +164,9 @@ export function usePortfolioResource<K extends PortfolioKind>(kind: K, opts: { p
   }, [reload, version]);
   useEffect(() => {
     if (!opts.pollMs) return;
-    const id = window.setInterval(() => void reload(), opts.pollMs);
+    const id = window.setInterval(() => void loadPortfolio(kind, backend, { background: true }), opts.pollMs);
     return () => window.clearInterval(id);
-  }, [reload, opts.pollMs]);
+  }, [kind, backend, opts.pollMs]);
   return { resource, reload, refresh };
 }
 

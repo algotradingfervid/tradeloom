@@ -79,8 +79,41 @@ export const holdingsCopy = {
   cols: { symbol: 'Symbol', qty: 'Qty', avg: 'Avg', ltp: 'LTP', invested: 'Invested', current: 'Current value', pnl: 'P&L', net: 'Net change', day: 'Day change' },
 } as const;
 
+export const positionsCopy = {
+  title: 'Positions',
+  description: 'Open and closed positions for today, with live P&L.',
+  tabs: 'Position type',
+  net: 'Net',
+  day: 'Day',
+  empty: 'No positions',
+  loading: 'Loading positions',
+  totalPnl: 'Total P&L',
+  // P0-3 Ruling 38: same flag and hint as Holdings.
+  outOfScope: holdingsCopy.outOfScope,
+  outOfScopeHint: holdingsCopy.outOfScopeHint,
+  cols: { product: 'Product', symbol: 'Symbol', qty: 'Qty', avg: 'Avg', ltp: 'LTP', pnl: 'P&L', net: 'Net change' },
+} as const;
+
 export const ordersCopy = {
+  title: 'Order Book',
+  description: 'Every order in your Kite account today: open, executed, rejected and cancelled.',
+  searchPlaceholder: 'Search by instrument, order ID or source',
+  empty: 'No orders today',
+  loading: 'Loading orders',
+  sections: { open: 'Open', executed: 'Executed', rejected: 'Rejected', cancelled: 'Cancelled' },
+  sectionEmpty: { open: 'No open orders', executed: 'No executed orders', rejected: 'No rejected orders', cancelled: 'No cancelled orders' },
+  // Go `orders.OrderRow.source`: "tradeloom" for orders tagged TL…, "external" for orders placed in Kite itself.
+  sources: { tradeloom: 'Tradeloom', external: 'Kite' },
+  outOfScope: holdingsCopy.outOfScope,
+  outOfScopeHint: holdingsCopy.outOfScopeHint,
+  cols: { time: 'Time', type: 'Type', instrument: 'Instrument', product: 'Product', qty: 'Qty', avg: 'Avg price', status: 'Status', source: 'Source' },
   updated: (symbol: string, status: string) => `Order ${symbol}: ${status}`,
+} as const;
+
+/** A background re-read (polling) failed: the view keeps what it shows (Task 10 M8). */
+export const portfolioCopy = {
+  names: { holdings: 'holdings', positions: 'positions', orders: 'order book' },
+  backgroundReadFailed: (what: string, reason: string) => `Couldn’t update the ${what}; showing the last data loaded. ${reason}`,
 } as const;
 
 export const statusCopy = {

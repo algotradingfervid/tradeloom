@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { holdingA, holdingB, holdingsOf, positionClosed, positionOpen, tickFixture } from '../api/mock/fixtures';
-import { holdingRow, isTerminalStatus, liveLtp, orderStatusLabel, positionNetChangePct, positionPnl, rupees, summarizeHoldings, toPaise } from './calc';
+import { holdingRow, isTerminalStatus, livePosition, liveLtp, orderStatusLabel, positionNetChangePct, positionPnl, positionsTotalPnl, rupees, summarizeHoldings, toPaise } from './calc';
 
 describe('portfolio arithmetic (paise from Go → rupees in the view)', () => {
   it('converts paise to rupees', () => {
@@ -60,5 +60,26 @@ describe('portfolio arithmetic (paise from Go → rupees in the view)', () => {
     expect(liveLtp(tick, tick.tsMs + 1)).toBeUndefined();
     expect(liveLtp(tick, 0)).toBeUndefined();
     expect(liveLtp(undefined, 1)).toBeUndefined();
+  });
+});
+
+describe('positions at live LTP (P0-4 Task 11)', () => {
+  it('livePosition mirrors Go orders.positionRow: P&L moves by qty × multiplier × (LTP − Go LTP), in paise', () => {
+    const r = livePosition(positionOpen, 113);
+    expect([r.ltpPaise, r.pnlPaise, r.ltp, r.pnl, r.open]).toEqual([11_300, 13_000, 113, 130, true]);
+    expect(livePosition({ ...positionOpen, multiplier: 50 }, 113).pnlPaise).toBe(12_000 + 10 * 50 * 100);
+    expect(livePosition(positionClosed).pnlPaise).toBe(-4_550);
+    expect(livePosition(positionClosed).open).toBe(false);
+    expect(livePosition(positionOpen, 0).pnlPaise).toBe(12_000);
+  });
+  it('a CDS/BCD row keeps Go’s snapshot (4-decimal prices; Ruling 96 M1)', () => {
+    const cds = { ...positionOpen, exchange: 'CDS', outOfScope: true };
+    expect(livePosition(cds, 113).pnlPaise).toBe(12_000);
+    expect(livePosition({ ...cds, exchange: 'BCD' }, 113).ltpPaise).toBe(11_200);
+  });
+  it('positionsTotalPnl starts from Go’s total and adds each row’s live difference in integer paise', () => {
+    const rows = [livePosition(positionOpen, 113), livePosition(positionClosed)];
+    expect(positionsTotalPnl(7_450, rows)).toBe(84.5);
+    expect(positionsTotalPnl(7_450, [livePosition(positionOpen), livePosition(positionClosed)])).toBe(74.5);
   });
 });
