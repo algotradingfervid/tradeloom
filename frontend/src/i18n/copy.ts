@@ -138,3 +138,69 @@ export const profileMenuCopy = {
   retry: 'Retry loading profile',
   themeFailed: (reason: string) => `The theme could not be saved: ${reason}`,
 } as const;
+
+// --- P0-4 Task 9: session gate, onboarding (setup / login / risk disclosure), shell banners, logout note.
+export const gateCopy = { starting: 'Starting Tradeloom…' } as const;
+
+export const setupCopy = {
+  brand: 'Tradeloom',
+  title: 'Connect your Kite account',
+  intro: 'Tradeloom talks to Zerodha Kite through your own Kite Connect app. Charts, live prices and backtests need the paid Connect plan; holdings, positions and orders also work on the free Personal plan.',
+  step1: 'In the Kite developer console, create an app and register this redirect URL:',
+  redirectLabel: 'Redirect URL',
+  redirectHint: 'You can change the port later in Settings → Kite connection.',
+  copy: 'Copy',
+  copied: 'Redirect URL copied',
+  copyUnavailable: 'Copy is not available here — select the URL and copy it',
+  step2: "Then enter the app's API key and API secret. The secret is kept in your system keyring, never in files or logs.",
+  // Deviation (Task 9): the encrypted-file backend (FR-ACCT-013) must not be described as the keyring.
+  step2File: "Then enter the app's API key and API secret. The secret is kept in your encrypted secrets file, never in logs.",
+  apiKey: 'API key',
+  apiSecret: 'API secret',
+  apiKeyRequired: 'Enter the API key',
+  secretRequired: 'Enter the API secret',
+  save: 'Save and continue',
+  helpLink: 'How to create a Kite Connect app',
+  storeTitle: 'Choose where to keep your Kite secret',
+  noKeyring: 'No system keyring was found on this computer. Choose one of these two options.',
+  storeLegend: 'Secret storage',
+  encrypted_file: 'Encrypted file protected by a passphrase',
+  encfileHint: 'The secret is encrypted on disk. You enter the passphrase once each time Tradeloom starts.',
+  no_storage: "Don't store credentials",
+  refuseHint: 'Tradeloom keeps no Kite credentials and therefore cannot connect to Kite.',
+  refusedNotice: 'Credentials are not stored, so Tradeloom cannot connect to Kite. Choose the encrypted file to continue, or close the app.',
+  passphrase: 'Passphrase',
+  passphraseRepeat: 'Repeat passphrase',
+  passphraseShort: 'Use at least 8 characters',
+  passphraseMismatch: 'The passphrases do not match',
+  continue: 'Continue',
+  unlockTitle: 'Unlock your Kite credentials',
+  unlockIntro: 'Enter the passphrase that protects your encrypted secrets file.',
+  unlock: 'Unlock',
+} as const;
+
+export const loginCopy = {
+  title: 'Log in to Kite',
+  intro: 'Kite sessions end every morning, so you log in once a day. Your password and TOTP are entered only on the Kite page in your browser.',
+  expired: 'Your Kite session has ended. Log in to continue.',
+  button: 'Log in with Kite',
+  waiting: 'Waiting for the Kite login to finish in your browser…',
+  cancel: 'Cancel login',
+  pasteToggle: 'Login did not come back to Tradeloom?',
+  pasteLabel: 'Redirect URL or request token',
+  pasteHint: 'After logging in, copy the full address from the browser tab (it contains request_token=) and paste it here.',
+  pasteRequired: 'Paste the redirect URL or the request token',
+  pasteSubmit: 'Complete login',
+  // Carry-forward (Ruling 101): redirect-URL guidance with Go's RedirectURL(port).
+  redirectGuidance: (url: string) =>
+    `After you log in, Kite sends the browser back to ${url}. It must match the redirect URL registered for your app in the Kite developer console.`,
+} as const;
+
+export const riskCopy = { heading: 'Before you start', terms: 'Terms of use', privacy: 'Privacy notice', accept: 'I understand' } as const;
+
+export const bannerCopy = { expired: 'Kite session expired — log in to continue', logIn: 'Log in' } as const;
+
+export const logoutCopy = {
+  // Fallback when Go reports remoteInvalidated: false without a message (Go normally sends msgNotInvalidated).
+  notInvalidated: 'Logged out. Kite could not be reached; the old Kite session ends by itself at 06:00 IST.',
+} as const;

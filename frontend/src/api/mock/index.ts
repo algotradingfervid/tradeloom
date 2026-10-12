@@ -49,6 +49,9 @@ function refusal(code: string, stage: string, reason: string): Error {
   return new Error(JSON.stringify({ code, stage, reason }));
 }
 
+/** Go kite requestTokenRe (internal/kite/redirect.go). */
+const REQUEST_TOKEN = /^[A-Za-z0-9]{8,128}$/;
+
 const TIMEFRAMES = ['minute', '3minute', '5minute', '10minute', '15minute', '30minute', '60minute', 'day'];
 
 // The Go validators of contract §E that the UI can trip.
@@ -192,10 +195,25 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
           listenerError: ok ? '' : `Port ${state.session.credentials.port} is already in use by another program`,
         };
       },
+      // As Go kite.Session.CompleteLogin → ParseRedirect (internal/kite/redirect.go): same accept rule and texts; a
+      // parse refusal publishes no session.state. The refusal never echoes the pasted text.
       completeLogin: (pasted: string) => {
-        const v = pasted.trim();
-        if (/request_token=[A-Za-z0-9]+/.test(v) || /^[A-Za-z0-9]{6,}$/.test(v)) return loginSucceeded();
-        throw refusal('bad_redirect', 'login', "That isn't a Kite redirect URL or request token");
+        const refuse = (reason: string) => refusal('bad_redirect', 'login', reason);
+        if (pasted.length > 4096) throw refuse("That text is too long to be a login address. Copy only the address from the browser's address bar.");
+        const v = pasted.trim().replace(/^["'<>]+|["'<>]+$/g, '');
+        if (!v) throw refuse('Paste the full address from the browser after logging in, or just the request_token.');
+        if (REQUEST_TOKEN.test(v)) return loginSucceeded();
+        const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(v)?.[0].toLowerCase();
+        if (scheme && scheme !== 'http://' && scheme !== 'https://') throw refuse('That address is not a web address. Copy the whole address bar after logging in.');
+        const query = new URLSearchParams(v.includes('?') ? v.slice(v.indexOf('?') + 1).split('#')[0] : v.split('#')[0]);
+        const status = query.get('status') ?? '';
+        if (status !== '' && status !== 'success') {
+          throw refusal('login_cancelled', 'login', 'Kite reports the login was not completed. Click "Log in with Kite" to try again.');
+        }
+        if (!REQUEST_TOKEN.test((query.get('request_token') ?? '').trim())) {
+          throw refuse("No request_token found in the pasted text. After logging in, copy the whole address from the browser's address bar.");
+        }
+        return loginSucceeded();
       },
       cancelLogin: () => (state.session.state === 'logging_in' ? setSession({ state: 'logged_out' }) : copy(state.session)),
       logout: () => {
@@ -214,9 +232,13 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
           credentials: { ...state.session.credentials, secretBackend: 'file' },
         });
       },
-      refuseSecretStorage: () => setSession({ secrets: { ...state.session.secrets, mode: 'none', backend: 'none' } }),
+      // As Go service.RefuseSecretStorage: mode "none" with no choices, and no session.state is published.
+      refuseSecretStorage: () => {
+        state.session = { ...state.session, secrets: { ...state.session.secrets, mode: 'none', backend: 'none', choices: [] } };
+        return copy(state.session);
+      },
       unlock: (passphrase: string) => {
-        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Wrong passphrase');
+        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Unlock failed: wrong passphrase or damaged file. Check the passphrase and try again.'); // Go msgBadPassphrase
         return setSession({
           state: state.session.credentials.configured ? 'logged_out' : 'no_credentials',
           secrets: { ...state.session.secrets, backend: 'file' },
