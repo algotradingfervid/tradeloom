@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IconButton } from './IconButton';
+import { Tooltip } from './Tooltip';
 
 afterEach(() => vi.useRealTimers());
 
@@ -27,6 +28,21 @@ describe('FR-SHELL-013 tooltips', () => {
     expect(screen.getByRole('tooltip')).toHaveTextContent('Refresh chart data');
     expect(button).toHaveAccessibleDescription('Refresh chart data');
     fireEvent.keyDown(button, { key: 'Escape' });
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+});
+
+describe('tooltip rendering (fix round 1)', () => {
+  it('renders the bubble in a portal on document.body, not inside the anchor', () => {
+    render(<IconButton label="Refresh" icon="refresh" />);
+    act(() => screen.getByRole('button').focus());
+    const tip = screen.getByRole('tooltip');
+    expect(tip.parentElement).toBe(document.body);
+    expect(tip.style.left).toBe('0px'); // positioned from the anchor rect, not CSS-relative
+  });
+  it('is suppressed while the trigger controls an open popup', () => {
+    render(<Tooltip label="Menu"><button aria-haspopup="menu" aria-expanded="true">x</button></Tooltip>);
+    act(() => screen.getByRole('button').focus());
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 });

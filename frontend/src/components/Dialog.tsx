@@ -15,6 +15,8 @@ export interface DialogProps {
   size?: 'sm' | 'md' | 'lg';
   initialFocus?: RefObject<HTMLElement | null>;
   closeLabel?: string;
+  /** id of an element inside the dialog that describes it (used when `description` is not given). */
+  describedById?: string;
   /** false while an irreversible operation runs: Escape, overlay click and × do nothing. */
   dismissible?: boolean;
 }
@@ -24,7 +26,7 @@ export function Dialog(props: DialogProps) {
   return createPortal(<DialogPanel {...props} />, document.body);
 }
 
-function DialogPanel({ title, description, onClose, children, footer, size = 'md', initialFocus, closeLabel, dismissible = true }: DialogProps) {
+function DialogPanel({ title, description, onClose, children, footer, size = 'md', initialFocus, closeLabel, describedById, dismissible = true }: DialogProps) {
   const panel = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const descId = useId();
@@ -50,9 +52,10 @@ function DialogPanel({ title, description, onClose, children, footer, size = 'md
     const root = panel.current;
     if (!root) return;
     const observer = new MutationObserver(() => {
-      if (document.activeElement === null || document.activeElement === document.body) root.focus();
+      const a = document.activeElement;
+      if (a === null || a === document.body || (a instanceof HTMLButtonElement && a.disabled)) root.focus();
     });
-    observer.observe(root, { childList: true, subtree: true });
+    observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
     return () => observer.disconnect();
   }, []);
 
@@ -71,10 +74,11 @@ function DialogPanel({ title, description, onClose, children, footer, size = 'md
     }
     const first = items[0];
     const last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === panel.current)) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
+    } else if (!e.shiftKey && (active === last || active === panel.current)) {
       e.preventDefault();
       first.focus();
     }
@@ -87,7 +91,7 @@ function DialogPanel({ title, description, onClose, children, footer, size = 'md
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        aria-describedby={description ? descId : undefined}
+        aria-describedby={description ? descId : describedById}
         className={`dialog dialog--${size}`}
         tabIndex={-1}
         onKeyDown={onKeyDown}

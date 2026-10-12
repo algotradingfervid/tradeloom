@@ -16,14 +16,16 @@
 .icon-btn:not(:disabled):hover { background: var(--surface-2); }
 .icon-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
-.tooltip-anchor { position: relative; display: inline-flex; }
+.tooltip-anchor { display: inline-flex; }
+.sidebar li > .tooltip-anchor { display: flex; width: 100%; }
+.tooltip-anchor > a, .tooltip-anchor > .sidebar__link { flex: 1 1 auto; min-width: 0; }
 .tooltip {
-  position: absolute; z-index: var(--z-tooltip); left: 50%; top: calc(100% + 6px); transform: translateX(-50%);
+  position: fixed; z-index: var(--z-tooltip); transform: translateX(-50%);
   max-width: 320px; width: max-content; padding: var(--space-1) var(--space-2); border-radius: var(--radius-1);
   background: var(--text); color: var(--bg); font-size: var(--fs-xs); white-space: pre-line; pointer-events: none;
 }
-.tooltip-anchor--top .tooltip { top: auto; bottom: calc(100% + 6px); }
-.tooltip-anchor--right .tooltip { left: calc(100% + 6px); top: 50%; transform: translateY(-50%); }
+.tooltip--top { transform: translate(-50%, -100%); }
+.tooltip--right { transform: translateY(-50%); }
 
 .dialog-overlay {
   position: fixed; inset: 0; z-index: var(--z-dialog); display: flex; align-items: center; justify-content: center;
@@ -52,7 +54,8 @@
   border: none; background: transparent; text-align: left; cursor: pointer; justify-content: flex-start;
 }
 .menu__item[role="menuitemcheckbox"] { justify-content: space-between; }
-.menu__item:focus, .menu__item:hover { background: var(--surface-2); outline: none; }
+.menu__item:focus, .menu__item:hover { background: var(--surface-2); }
+.menu__item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .menu__separator { height: 1px; margin: var(--space-1) 0; background: var(--border); }
 .menu__static { padding: var(--space-2) var(--space-3); }
 

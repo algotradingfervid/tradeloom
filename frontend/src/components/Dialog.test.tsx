@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -80,5 +80,35 @@ describe('FR-SHELL-015 dialogs', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
     await user.keyboard('{Escape}');
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('dialog focus containment (fix round 1)', () => {
+  it('refocuses inside the panel when the focused button becomes disabled (ConfirmDialog busy)', async () => {
+    const user = userEvent.setup();
+    function Busy() {
+      const [busy, setBusy] = useState(false);
+      return <ConfirmDialog open title="Delete" message="Sure?" confirmLabel="Delete" busy={busy} onConfirm={() => setBusy(true)} onCancel={() => {}} />;
+    }
+    render(<Busy />);
+    const confirm = screen.getByRole('button', { name: 'Delete' });
+    await user.click(confirm);
+    await waitFor(() => expect(screen.getByRole('dialog')).toHaveFocus());
+  });
+  it('wraps Shift+Tab and Tab from the panel fallback', async () => {
+    const user = userEvent.setup();
+    render(<Dialog open title="T" onClose={() => {}} footer={<Button>Last</Button>}><p>text</p></Dialog>);
+    const dialog = screen.getByRole('dialog');
+    // body has no focusables, so the first is the footer button; the close button is last in DOM order? header comes first.
+    act(() => dialog.focus());
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: 'Last' })).toHaveFocus();
+    act(() => dialog.focus());
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+  it('ConfirmDialog message describes the dialog', () => {
+    render(<ConfirmDialog open title="Delete" message="This cannot be undone." confirmLabel="Delete" onConfirm={() => {}} onCancel={() => {}} />);
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription('This cannot be undone.');
   });
 });

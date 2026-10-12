@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import { componentCopy } from '../i18n/copy';
 import { Button } from './Button';
 import { Dialog } from './Dialog';
@@ -25,12 +25,14 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
 
 function ConfirmDialogBody({ title, message, confirmLabel, cancelLabel, tone = 'default', typedConfirmation, busy = false, error, onConfirm, onCancel }: ConfirmDialogProps) {
   const [typed, setTyped] = useState('');
+  const messageId = useId();
   const ready = !busy && (typedConfirmation === undefined || typed === typedConfirmation);
   return (
     <Dialog
       open
       title={title}
       onClose={onCancel}
+      describedById={messageId}
       size="sm"
       dismissible={!busy}
       footer={
@@ -40,7 +42,7 @@ function ConfirmDialogBody({ title, message, confirmLabel, cancelLabel, tone = '
         </>
       }
     >
-      <div className="confirm__message">{message}</div>
+      <div id={messageId} className="confirm__message">{message}</div>
       {typedConfirmation !== undefined && (
         <TextField
           label={componentCopy.typeToConfirm(typedConfirmation)}

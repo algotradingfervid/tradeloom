@@ -53,7 +53,7 @@ export function MenuButton({ label, trigger, items, align = 'end' }: MenuButtonP
         e.stopPropagation();
         close(true);
         break;
-      case 'Tab': close(false); break;
+      case 'Tab': close(true); break; // refocus trigger so the browser's Tab continues from it
       default: break;
     }
   };

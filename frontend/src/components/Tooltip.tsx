@@ -1,8 +1,12 @@
-import { Children, cloneElement, useEffect, useId, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
+import { Children, cloneElement, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react';
+import { createPortal } from 'react-dom';
+import './components.css';
 
 export const TOOLTIP_DELAY_MS = 500;
 
 interface TriggerProps {
+  'aria-expanded'?: boolean | 'true' | 'false';
+  'aria-haspopup'?: unknown;
   'aria-describedby'?: string;
   onMouseEnter?: (e: MouseEvent<HTMLElement>) => void;
   onMouseLeave?: (e: MouseEvent<HTMLElement>) => void;
@@ -17,6 +21,8 @@ export interface TooltipProps { label: string; children: ReactElement<TriggerPro
 export function Tooltip({ label, children, placement = 'bottom' }: TooltipProps) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLSpanElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const timer = useRef<number | undefined>(undefined);
   const clear = () => {
     if (timer.current !== undefined) window.clearTimeout(timer.current);
@@ -25,8 +31,22 @@ export function Tooltip({ label, children, placement = 'bottom' }: TooltipProps)
   useEffect(() => clear, []);
   const child = Children.only(children);
   const p = child.props;
+  // A trigger whose popup is open (menu button) must not also show a tooltip over it.
+  const suppressed = Boolean(p['aria-haspopup']) && (p['aria-expanded'] === true || p['aria-expanded'] === 'true');
+  const visible = open && !suppressed;
+
+  useLayoutEffect(() => {
+    if (!visible || !anchor.current) {
+      setPos(null);
+      return;
+    }
+    const r = anchor.current.getBoundingClientRect();
+    if (placement === 'right') setPos({ left: r.right + 6, top: r.top + r.height / 2 });
+    else if (placement === 'top') setPos({ left: r.left + r.width / 2, top: r.top - 6 });
+    else setPos({ left: r.left + r.width / 2, top: r.bottom + 6 });
+  }, [visible, placement]);
   const trigger = cloneElement(child, {
-    'aria-describedby': open ? id : p['aria-describedby'],
+    'aria-describedby': visible ? id : p['aria-describedby'],
     onMouseEnter: (e: MouseEvent<HTMLElement>) => {
       p.onMouseEnter?.(e);
       clear();
@@ -53,9 +73,20 @@ export function Tooltip({ label, children, placement = 'bottom' }: TooltipProps)
     },
   });
   return (
-    <span className={`tooltip-anchor tooltip-anchor--${placement}`}>
+    <span ref={anchor} className="tooltip-anchor">
       {trigger}
-      {open && <span role="tooltip" id={id} className="tooltip">{label}</span>}
+      {visible &&
+        createPortal(
+          <span
+            role="tooltip"
+            id={id}
+            className={`tooltip tooltip--${placement}`}
+            style={pos ? { left: pos.left, top: pos.top } : { visibility: 'hidden' }}
+          >
+            {label}
+          </span>,
+          document.body,
+        )}
     </span>
   );
 }

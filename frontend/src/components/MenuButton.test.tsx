@@ -48,3 +48,15 @@ describe('MenuButton (FR-SHELL-010 keyboard behaviour)', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 });
+
+describe('MenuButton fix round 1', () => {
+  it('Tab closes the menu and continues from the trigger to the next control', async () => {
+    const { user } = setup();
+    const trigger = screen.getByRole('button', { name: 'Account menu' });
+    await user.click(trigger);
+    await user.keyboard('{Tab}');
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(screen.getByText('outside')).toHaveFocus(); // trigger was focused first, so Tab moved on from it
+    expect(trigger).not.toHaveFocus();
+  });
+});

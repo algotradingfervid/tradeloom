@@ -32,3 +32,19 @@ describe('form primitives', () => {
     expect(sw).toHaveAttribute('aria-checked', 'false');
   });
 });
+
+describe('form primitives fix round 1', () => {
+  it('Toggle description is wired with aria-describedby', () => {
+    render(<Toggle label="Dark" description="Uses the dark palette" checked={false} onChange={() => {}} />);
+    expect(screen.getByRole('switch')).toHaveAccessibleDescription('Uses the dark palette');
+  });
+  it('TextField merges a caller aria-describedby with hint and error', () => {
+    render(<><p id="extra">Extra help</p><TextField label="Port" hint="Hint" error="Bad" aria-describedby="extra" /></>);
+    expect(screen.getByLabelText('Port')).toHaveAccessibleDescription('Extra help Hint Bad');
+    expect(screen.getByRole('alert')).toHaveTextContent('Bad');
+  });
+  it('SelectField merges a caller aria-describedby with the error', () => {
+    render(<><p id="extra">Extra help</p><SelectField label="L" options={[{ value: 'a', label: 'A' }]} error="Bad" aria-describedby="extra" /></>);
+    expect(screen.getByLabelText('L')).toHaveAccessibleDescription('Extra help Bad');
+  });
+});
