@@ -323,6 +323,7 @@ func (s *Session) exchange(ctx context.Context, requestToken, nonce string) (Ses
 	}
 	s.d.Tokens.SetAPIKey(apiKey)
 	s.d.Tokens.SetAccessToken(rec.AccessToken)
+	tokGen := s.installedTokenGen()
 	s.d.Limiter.Resume()
 	st := readyState(rec, PlanUnknown, true, false)
 	s.mu.Lock()
@@ -333,6 +334,7 @@ func (s *Session) exchange(ctx context.Context, requestToken, nonce string) (Ses
 		s.nonces[nonce] = nonceBinding{gen: gen, token: requestToken}
 	}
 	s.rec = &rec
+	s.tokGen = tokGen
 	s.st = st
 	s.mu.Unlock()
 	s.feedMu.Unlock()

@@ -22,7 +22,8 @@ func TestSetAPIKey_LaterAttemptsUseNewKeyOnSameTransport(t *testing.T) {
 		t.Fatalf("APIKey() = %q", c.APIKey())
 	}
 	for name, class := range map[string]ratelimit.Class{"api": ratelimit.ClassOther, "hist": ratelimit.ClassHistorical} {
-		if u := c.attempt(context.Background(), class).GetLoginURL(); !strings.Contains(u, "api_key=key2") {
+		kc, _ := c.attempt(context.Background(), class)
+		if u := kc.GetLoginURL(); !strings.Contains(u, "api_key=key2") {
 			t.Fatalf("%s client still uses the old key: %s", name, u)
 		}
 	}

@@ -37,8 +37,11 @@ type Options struct {
 type Client struct {
 	o     Options
 	rec   *recorder
-	mu    sync.RWMutex // guards token and o.APIKey (SetAPIKey, P0-3)
+	mu    sync.RWMutex // guards token, tokenGen and o.APIKey (SetAPIKey, P0-3)
 	token string
+	// tokenGen numbers the tokens installed by SetAccessToken (Ruling 70); each attempt records the
+	// generation it sent in Err.TokenGen, so a late TokenException for a replaced token is recognisable.
+	tokenGen uint64
 	// dumpMu serialises Instruments calls: the recorder keeps one captured dump error, so two
 	// concurrent dumps could otherwise take each other's error.
 	dumpMu sync.Mutex
@@ -68,14 +71,15 @@ func New(o Options) *Client {
 }
 
 // attempt builds the gokiteconnect client for one attempt: requests bound to ctx, 30 s timeout
-// for historical data and 10 s otherwise (§5.1).
-func (c *Client) attempt(ctx context.Context, class ratelimit.Class) *kiteconnect.Client {
+// for historical data and 10 s otherwise (§5.1). It also returns the generation of the token it
+// installed (Ruling 70), read under the same lock as the token.
+func (c *Client) attempt(ctx context.Context, class ratelimit.Class) (*kiteconnect.Client, uint64) {
 	timeout := 10 * time.Second
 	if class == ratelimit.ClassHistorical {
 		timeout = 30 * time.Second
 	}
 	c.mu.RLock()
-	key, token := c.o.APIKey, c.token
+	key, token, gen := c.o.APIKey, c.token, c.tokenGen
 	c.mu.RUnlock()
 	kc := kiteconnect.New(key)
 	kc.SetHTTPClient(&http.Client{Timeout: timeout, Transport: ctxTransport{ctx: ctx, next: c.rec}})
@@ -83,16 +87,26 @@ func (c *Client) attempt(ctx context.Context, class ratelimit.Class) *kiteconnec
 		kc.SetBaseURI(c.o.BaseURI)
 	}
 	kc.SetAccessToken(token)
-	return kc
+	return kc, gen
 }
 
-// SetAccessToken installs the day's token (kite.Session, P0-3) for every later attempt.
-// The token is registered with the log redactor so it can never appear in a log line.
+// SetAccessToken installs the day's token (kite.Session, P0-3) for every later attempt and starts a
+// new token generation (also for "", which clears the token). The token is registered with the log
+// redactor so it can never appear in a log line.
 func (c *Client) SetAccessToken(token string) {
 	logging.RegisterSecret(token)
 	c.mu.Lock()
 	c.token = token
+	c.tokenGen++
 	c.mu.Unlock()
+}
+
+// TokenGen returns the generation of the token installed now (0 before the first SetAccessToken).
+// kite.Session reads it right after installing a session's token (Ruling 70).
+func (c *Client) TokenGen() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tokenGen
 }
 
 // APIKey returns the configured key.
@@ -121,11 +135,14 @@ func (c *Client) call(ctx context.Context, class ratelimit.Class, idempotent boo
 	// cancellation is reported as KindCanceled rather than as a network error.
 	// A Kite answer (TokenException, 429, …) keeps its own kind so the session pause and the
 	// class back-off still happen.
+	var gen uint64 // token generation of the latest attempt (Ruling 70)
 	locked := func() error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := fn(c.attempt(ctx, class))
+		kc, g := c.attempt(ctx, class)
+		gen = g
+		err := fn(kc)
 		if k := Classify(err); k == KindNetwork || k == KindUnknown {
 			if cerr := ctx.Err(); cerr != nil && !errors.Is(err, errNothingPicked) {
 				return cerr
@@ -148,9 +165,12 @@ func (c *Client) call(ctx context.Context, class ratelimit.Class, idempotent boo
 			return wrap(op, err)
 		}
 		e := wrap(op, err)
+		if e.TokenGen == 0 {
+			e.TokenGen = gen
+		}
 		switch e.Kind {
 		case KindSession:
-			c.o.Limiter.PauseAll("session expired")
+			c.pauseForSession(op, e.TokenGen)
 			if c.o.OnSessionError != nil {
 				c.o.OnSessionError(e)
 			}
@@ -181,6 +201,21 @@ func (c *Client) call(ctx context.Context, class ratelimit.Class, idempotent boo
 		c.o.Log.Info("kite call failed", "op", op, "kind", e.Kind.String(), "code", e.Code, "type", e.Type)
 		return e
 	}
+}
+
+// pauseForSession pauses every queue for a TokenException, unless the attempt sent a token that has been
+// replaced since (Ruling 70): a day-1 call answered after the day-2 login must not stall the day-2
+// queues. The check and the pause run under c.mu, so a SetAccessToken (and the Resume that follows it)
+// cannot slip between them. gen 0 (unknown) pauses, as before Ruling 70. Only counters are logged.
+func (c *Client) pauseForSession(op string, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen != 0 && gen != c.tokenGen {
+		c.o.Log.Info("kite token error for an earlier access token; queues not paused", "op", op,
+			"token_gen", gen, "current_gen", c.tokenGen)
+		return
+	}
+	c.o.Limiter.PauseAll("session expired")
 }
 
 func get[T any](c *Client, ctx context.Context, class ratelimit.Class, op string, fn func(kc *kiteconnect.Client) (T, error)) (T, error) {
