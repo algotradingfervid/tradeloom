@@ -20,7 +20,7 @@ func loadFixture(t *testing.T, tags string) []string {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, v := range append(CheckOrderWrite("fixture", pkgs), CheckClock("fixture", pkgs)...) {
+	for _, v := range append(append(CheckOrderWrite("fixture", pkgs), CheckClock("fixture", pkgs)...), CheckKiteIndirect("fixture", pkgs)...) {
 		got = append(got, v.Rule+" "+strings.SplitN(v.Pkg, ":", 2)[0])
 	}
 	sort.Strings(got)
@@ -28,18 +28,31 @@ func loadFixture(t *testing.T, tags string) []string {
 }
 
 func TestASTChecks_Fixture(t *testing.T) {
+	// The reviewer's generic probe (Ruling 39) and its method-value / interface variants, in every configuration.
+	indirect := []string{
+		"g0-generic bad/generic.go", "g0-generic bad/genericvalue.go",
+		"g0-iface bad/generic.go",
+		"g0-kitecall bad/generic.go", "g0-kitecall bad/genericvalue.go", "g0-kitecall bad/genericvalue.go",
+		"g0-typearg bad/generic.go", "g0-typearg bad/genericvalue.go", "g0-typearg bad/genericvalue.go",
+		"g0-typearg bad/ifacecall.go", "g0-typearg bad/ifacecall.go",
+	}
+	with := func(vs ...string) []string {
+		out := append(append([]string{}, vs...), indirect...)
+		sort.Strings(out)
+		return out
+	}
 	cases := []struct {
 		tags string
 		want []string
 	}{
-		{"noorders", []string{"g0-call bad/bad.go", "g0-call bad/embed.go", "g0-call bad/value.go", "g0-call orderwrite/untagged.go",
-			"rule8 timeuser/dotuser.go", "rule8 timeuser/timeuser.go", "rule8 timeuser/timeuser.go"}},
+		{"noorders", with("g0-call bad/bad.go", "g0-call bad/embed.go", "g0-call bad/value.go", "g0-call orderwrite/untagged.go",
+			"rule8 timeuser/dotuser.go", "rule8 timeuser/timeuser.go", "rule8 timeuser/timeuser.go")},
 		// With the orders tag writer.go is loaded and allowed; orders-only files are flagged.
-		{"orders", []string{"g0-call bad/bad.go", "g0-call bad/embed.go", "g0-call bad/value.go", "g0-call orderwrite/ordersonly.go", "g0-call orderwrite/untagged.go",
-			"rule8 timeuser/dotuser.go", "rule8 timeuser/timeuser.go", "rule8 timeuser/timeuser.go"}},
+		{"orders", with("g0-call bad/bad.go", "g0-call bad/embed.go", "g0-call bad/value.go", "g0-call orderwrite/ordersonly.go", "g0-call orderwrite/untagged.go",
+			"rule8 timeuser/dotuser.go", "rule8 timeuser/timeuser.go", "rule8 timeuser/timeuser.go")},
 		// Both tags: writer.go is excluded; a file tagged only "orders" still links and is flagged.
-		{"orders,noorders", []string{"g0-call bad/bad.go", "g0-call bad/embed.go", "g0-call bad/value.go", "g0-call orderwrite/ordersonly.go", "g0-call orderwrite/untagged.go",
-			"rule8 timeuser/dotuser.go", "rule8 timeuser/timeuser.go", "rule8 timeuser/timeuser.go"}},
+		{"orders,noorders", with("g0-call bad/bad.go", "g0-call bad/embed.go", "g0-call bad/value.go", "g0-call orderwrite/ordersonly.go", "g0-call orderwrite/untagged.go",
+			"rule8 timeuser/dotuser.go", "rule8 timeuser/timeuser.go", "rule8 timeuser/timeuser.go")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.tags, func(t *testing.T) {

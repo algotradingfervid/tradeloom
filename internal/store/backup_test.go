@@ -116,7 +116,7 @@ func TestBackup_ContentsAndNoSecrets(t *testing.T) {
 	if err := json.Unmarshal(ents["manifest.json"], &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.Schema != 1 || m.AppVersion != "v0.1.0" || m.Counts["watchlists"] != 1 || m.Counts["order_journal"] != 1 || m.IncludesCandles {
+	if m.Schema != 2 || m.AppVersion != "v0.1.0" || m.Counts["watchlists"] != 1 || m.Counts["order_journal"] != 1 || m.IncludesCandles {
 		t.Fatalf("manifest %+v", m)
 	}
 }

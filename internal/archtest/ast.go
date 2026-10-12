@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -176,4 +177,162 @@ func requiresOrdersTag(f *ast.File) bool {
 func position(fset *token.FileSet, pos token.Pos) string {
 	pp := fset.Position(pos)
 	return filepath.ToSlash(filepath.Base(filepath.Dir(pp.Filename))) + "/" + filepath.Base(pp.Filename) + ":" + strconv.Itoa(pp.Line)
+}
+
+// CheckKiteIndirect reports G-0 bypasses that reach *kiteconnect.Client without naming it
+// (Ruling 39). CheckOrderWrite resolves a selector to its declared method, so a generic
+// function constrained by an interface with CancelOrder, instantiated by inference with
+// *kiteconnect.Client and handed to kite.(*Client).Call, slipped past it. Four rules:
+//
+//   - g0-kitecall: any reference (call, method value, method expression, promoted) to
+//     kite.(*Client).Call outside packages under internal/kite.
+//   - g0-generic: a selector naming an order-write method whose receiver is a type parameter or
+//     interface, outside internal/kite/orderwrite, unless the method is declared there
+//     (orderwrite.Writer, which the build tags gate).
+//   - g0-iface: an interface type outside internal/kite/orderwrite declaring an order-write method.
+//   - g0-typearg: outside internal/kite, a generic instantiation whose type arguments mention
+//     kiteconnect.Client. Rule 3 forbids naming it there, so only inference can produce one.
+//
+// Residual: reflection (reflect.ValueOf(c).MethodByName, reflect.MakeFunc) is not visible to
+// the AST; the `go tool nm` check on the noorders binary is the backstop.
+func CheckKiteIndirect(module string, pkgs []*packages.Package) []Violation {
+	var out []Violation
+	for _, p := range pkgs {
+		rel := relPkg(module, p.PkgPath)
+		inKite := under(rel, "internal/kite")
+		inOrderWrite := rel == "internal/kite/orderwrite"
+		for _, f := range p.Syntax {
+			ast.Inspect(f, func(n ast.Node) bool {
+				switch n := n.(type) {
+				case *ast.SelectorExpr:
+					s, ok := p.TypesInfo.Selections[n]
+					if !ok {
+						return true
+					}
+					fn, ok := s.Obj().(*types.Func)
+					if !ok {
+						return true
+					}
+					if !inKite && fn.Name() == "Call" && isNamed(recvType(fn), module+"/internal/kite", "Client") {
+						out = append(out, Violation{"g0-kitecall", position(p.Fset, n.Pos()),
+							"kite.(*Client).Call is only allowed in packages under internal/kite"})
+					}
+					if !inOrderWrite && orderWriteMethods[fn.Name()] && isAbstract(s.Recv()) &&
+						(fn.Pkg() == nil || fn.Pkg().Path() != module+"/internal/kite/orderwrite") {
+						out = append(out, Violation{"g0-generic", position(p.Fset, n.Pos()),
+							n.Sel.Name + " selected through a type parameter or interface outside internal/kite/orderwrite"})
+					}
+				case *ast.InterfaceType:
+					if inOrderWrite || n.Methods == nil {
+						return true
+					}
+					for _, m := range n.Methods.List {
+						for _, name := range m.Names {
+							if orderWriteMethods[name.Name] {
+								out = append(out, Violation{"g0-iface", position(p.Fset, name.Pos()),
+									"interface declares order-write method " + name.Name + " outside internal/kite/orderwrite"})
+							}
+						}
+					}
+				}
+				return true
+			})
+		}
+		if inKite {
+			continue
+		}
+		for id, inst := range p.TypesInfo.Instances {
+			for i := 0; i < inst.TypeArgs.Len(); i++ {
+				if mentionsKiteClient(inst.TypeArgs.At(i), map[types.Type]bool{}) {
+					out = append(out, Violation{"g0-typearg", position(p.Fset, id.Pos()),
+						id.Name + " instantiated with a type argument mentioning *kiteconnect.Client outside internal/kite"})
+					break
+				}
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+func recvType(fn *types.Func) types.Type {
+	if r := fn.Type().(*types.Signature).Recv(); r != nil {
+		return r.Type()
+	}
+	return nil
+}
+
+func isNamed(t types.Type, pkg, name string) bool {
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := t.(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == pkg && named.Obj().Name() == name
+}
+
+// isAbstract reports whether a selection's receiver is a type parameter or an interface.
+func isAbstract(t types.Type) bool {
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	if _, ok := t.(*types.TypeParam); ok {
+		return true
+	}
+	return types.IsInterface(t)
+}
+
+// mentionsKiteClient reports whether t is kiteconnect.Client or is built from it by type
+// constructors (pointer, func, slice, …) or type arguments.
+func mentionsKiteClient(t types.Type, seen map[types.Type]bool) bool {
+	if t == nil || seen[t] {
+		return false
+	}
+	seen[t] = true
+	switch t := t.(type) {
+	case *types.Named:
+		if isKiteClient(t) {
+			return true
+		}
+		for i := 0; i < t.TypeArgs().Len(); i++ {
+			if mentionsKiteClient(t.TypeArgs().At(i), seen) {
+				return true
+			}
+		}
+		// Not the underlying type: kite.Client wraps a *kiteconnect.Client field and may be
+		// named outside internal/kite (atomic.Pointer[kite.Client] is fine).
+		return false
+	case *types.Alias:
+		return mentionsKiteClient(types.Unalias(t), seen)
+	case *types.Pointer:
+		return mentionsKiteClient(t.Elem(), seen)
+	case *types.Slice:
+		return mentionsKiteClient(t.Elem(), seen)
+	case *types.Array:
+		return mentionsKiteClient(t.Elem(), seen)
+	case *types.Chan:
+		return mentionsKiteClient(t.Elem(), seen)
+	case *types.Map:
+		return mentionsKiteClient(t.Key(), seen) || mentionsKiteClient(t.Elem(), seen)
+	case *types.Signature:
+		return mentionsKiteClient(t.Params(), seen) || mentionsKiteClient(t.Results(), seen)
+	case *types.Tuple:
+		for i := 0; i < t.Len(); i++ {
+			if mentionsKiteClient(t.At(i).Type(), seen) {
+				return true
+			}
+		}
+	case *types.Struct:
+		for i := 0; i < t.NumFields(); i++ {
+			if mentionsKiteClient(t.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	case *types.Interface:
+		for i := 0; i < t.NumMethods(); i++ {
+			if mentionsKiteClient(t.Method(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
 }
