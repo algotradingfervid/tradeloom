@@ -76,6 +76,11 @@ func CheckClock(module string, pkgs []*packages.Package) []Violation {
 			continue
 		}
 		for _, f := range p.Syntax {
+			for _, imp := range f.Imports {
+				if imp.Name != nil && imp.Name.Name == "." && imp.Path.Value == `"time"` {
+					out = append(out, Violation{"rule8", position(p.Fset, imp.Pos()), "dot-import of time outside internal/clock"})
+				}
+			}
 			ast.Inspect(f, func(n ast.Node) bool {
 				sel, ok := n.(*ast.SelectorExpr)
 				if !ok || !bannedTime[sel.Sel.Name] {
@@ -104,20 +109,26 @@ func CheckOrderWrite(module string, pkgs []*packages.Package) []Violation {
 		for _, f := range p.Syntax {
 			tagged := requiresOrdersTag(f)
 			ast.Inspect(f, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
+				sel, ok := n.(*ast.SelectorExpr)
 				if !ok || !orderWriteMethods[sel.Sel.Name] {
 					return true
 				}
+				// Any selector (call, method value, method expression, promoted via embedding) whose
+				// resolved method is declared on kiteconnect.Client.
 				s, ok := p.TypesInfo.Selections[sel]
-				if !ok || !isKiteClient(s.Recv()) {
+				if !ok {
+					return true
+				}
+				fn, ok := s.Obj().(*types.Func)
+				if !ok || !orderWriteMethods[fn.Name()] {
+					return true
+				}
+				recv := fn.Type().(*types.Signature).Recv()
+				if recv == nil || !isKiteClient(recv.Type()) {
 					return true
 				}
 				if !(inPkg && tagged) {
-					out = append(out, Violation{"g0-call", position(p.Fset, call.Pos()),
+					out = append(out, Violation{"g0-call", position(p.Fset, sel.Pos()),
 						"(*kiteconnect.Client)." + sel.Sel.Name + " is only allowed in internal/kite/orderwrite files built with the orders tag"})
 				}
 				return true
@@ -154,7 +165,9 @@ func requiresOrdersTag(f *ast.File) bool {
 			}
 			with := expr.Eval(func(tag string) bool { return tag == "orders" })
 			without := expr.Eval(func(tag string) bool { return false })
-			return with && !without
+			// Must link only with orders and never when noorders is also set.
+			both := expr.Eval(func(tag string) bool { return tag == "orders" || tag == "noorders" })
+			return with && !without && !both
 		}
 	}
 	return false

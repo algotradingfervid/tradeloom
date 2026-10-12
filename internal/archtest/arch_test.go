@@ -3,6 +3,7 @@ package archtest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -10,7 +11,7 @@ func moduleRoot(t *testing.T) string {
 	t.Helper()
 	dir, _ := os.Getwd()
 	for {
-		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && len(b) > 0 && string(b[:len("module tradeloom\n")]) == "module tradeloom\n" {
+		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && strings.HasPrefix(string(b), "module tradeloom\n") {
 			return dir
 		}
 		parent := filepath.Dir(dir)
@@ -27,7 +28,7 @@ func TestArchitecture(t *testing.T) {
 		t.Skip("loads and type-checks the whole module")
 	}
 	root := moduleRoot(t)
-	for _, tags := range []string{"webkit2_41,noorders", "webkit2_41,orders"} {
+	for _, tags := range []string{"webkit2_41,noorders", "webkit2_41,orders", "webkit2_41,orders,noorders"} {
 		t.Run(tags, func(t *testing.T) {
 			pkgs, err := Load(root, nil, tags, "./...")
 			if err != nil {
