@@ -200,6 +200,8 @@ export interface EventMap {
   'candle.forming': CandleEventDTO[];
   'candle.closed': CandleEventDTO;
   'backfill.progress': BackfillProgress[];
+  /** Go publishes the whole new state after every watchlist mutation (incl. SetActive) and after a restore. */
+  'watchlists.changed': WatchlistsState;
 }
 export type EventName = keyof EventMap;
 

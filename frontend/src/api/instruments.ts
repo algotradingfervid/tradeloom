@@ -5,11 +5,13 @@ import { BindingError, call } from './call';
 import { currentBackend } from './current';
 
 export function toInstrument(d: InstrumentDTO): Instrument {
-  return {
+  const i: Instrument = {
     token: d.token, exchange: d.exchange, segment: d.segment, tag: d.tag, tradingsymbol: d.tradingsymbol, name: d.name,
     displayName: d.displayName, instrumentType: d.instrumentType, expiryMs: d.expiryMs, tickSizePaise: d.tickSizePaise,
     lotSize: d.lotSize, isIndex: d.isIndex, isFuture: d.isFuture, underlying: d.underlying,
   };
+  if (d.alsoOnNse) i.alsoOnNse = true; // optional flag: left out when false, so rows compare equal to the fixtures
+  return i;
 }
 
 const inScope = (list: InstrumentDTO[]): Instrument[] => list.map(toInstrument).filter(isInScope);

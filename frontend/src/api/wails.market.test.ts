@@ -47,7 +47,7 @@ describe('Wails adapter — market domains', () => {
     expect((await b.watchlists.list()).lists).toEqual([]);
     expect((await b.watchlists.create('Watchlist 1')).lists[0].items).toEqual([]);
   });
-  it('normalises null candle.forming and backfill.progress batches', () => {
+  it('normalises null candle.forming / backfill.progress batches and watchlists.changed items', () => {
     const handlers = new Map<string, (p: unknown) => void>();
     (window as WailsWindow).runtime = {
       EventsOnMultiple: vi.fn((name: string, fn: (p: unknown) => void) => {
@@ -58,11 +58,15 @@ describe('Wails adapter — market domains', () => {
     const b = createWailsBackend();
     const forming = vi.fn();
     const progress = vi.fn();
+    const lists = vi.fn();
     b.on('candle.forming', forming);
     b.on('backfill.progress', progress);
+    b.on('watchlists.changed', lists);
     handlers.get('candle.forming')?.(null);
     handlers.get('backfill.progress')?.(null);
+    handlers.get('watchlists.changed')?.({ lists: [{ id: 'wl-1', name: 'Watchlist 1', items: null }], activeId: 'wl-1' });
     expect(forming).toHaveBeenCalledWith([]);
     expect(progress).toHaveBeenCalledWith([]);
+    expect(lists).toHaveBeenCalledWith({ lists: [{ id: 'wl-1', name: 'Watchlist 1', items: [] }], activeId: 'wl-1' });
   });
 });

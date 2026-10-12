@@ -49,6 +49,7 @@ const EVENT_NORMALISERS: { [K in EventName]?: (p: EventMap[K]) => EventMap[K] } 
   'holdings.changed': normHoldings,
   'candle.forming': arr,
   'backfill.progress': arr,
+  'watchlists.changed': normWatchlists,
 };
 
 export function createWailsBackend(): Backend {
