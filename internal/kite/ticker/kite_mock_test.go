@@ -2,6 +2,7 @@ package ticker_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -213,5 +214,153 @@ func TestKiteConnErrorsNeverCarryCredentials(t *testing.T) {
 		if strings.Contains(e, "s3cret-access-token") || strings.Contains(e, "my-api-key") {
 			t.Fatalf("error leaks credentials: %s", e)
 		}
+	}
+}
+
+// The Manager dials its three slots at once; the library writes gorilla's global DefaultDialer
+// during every dial (ticker.go:300), so concurrent dials must be serialised (-race catches it).
+func TestKiteConnsDialConcurrentlyWithoutRace(t *testing.T) {
+	srv := mock.NewServer()
+	defer srv.Close()
+	root := srv.TickerURL()
+	const n = 3
+	var conns []ticker.Conn
+	var dones []<-chan struct{}
+	for i := 0; i < n; i++ {
+		c := ticker.KiteDialer("key", "token", &root)(ticker.Events{})
+		conns = append(conns, c)
+		dones = append(dones, serveAsync(context.Background(), c))
+	}
+	waitFor(t, 5*time.Second, "three connects", func() bool { return srv.Connects() == n })
+	for i, c := range conns {
+		c.Stop()
+		waitDone(t, dones[i], 4*time.Second, "Stop")
+	}
+}
+
+// A Stop must not sit behind another conn's dial (up to the 7 s connect timeout): a conn waiting
+// for the dial lock returns from Serve as soon as it is stopped or its ctx ends.
+func TestKiteConnStopWhileWaitingForAnotherDial(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var accepted []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept() // accept, never answer the handshake: the dial hangs
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			accepted = append(accepted, c)
+			mu.Unlock()
+		}
+	}()
+	defer func() {
+		_ = ln.Close()
+		mu.Lock()
+		for _, c := range accepted {
+			_ = c.Close()
+		}
+		mu.Unlock()
+	}()
+	root := url.URL{Scheme: "ws", Host: ln.Addr().String(), Path: "/ws"}
+	a := ticker.KiteDialer("key", "token", &root)(ticker.Events{})
+	aDone := serveAsync(context.Background(), a)
+	defer func() { a.Stop(); <-aDone }()
+	waitFor(t, 2*time.Second, "first dial in progress", func() bool { mu.Lock(); defer mu.Unlock(); return len(accepted) == 1 })
+
+	b := ticker.KiteDialer("key", "token", &root)(ticker.Events{})
+	bDone := serveAsync(context.Background(), b)
+	time.Sleep(100 * time.Millisecond)
+	b.Stop()
+	waitDone(t, bDone, time.Second, "Stop while waiting to dial")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := ticker.KiteDialer("key", "token", &root)(ticker.Events{})
+	cDone := serveAsync(ctx, c)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	waitDone(t, cDone, time.Second, "ctx cancel while waiting to dial")
+}
+
+// The URL carries the query-escaped forms of the credentials; those must be redacted too.
+func TestKiteConnErrorsNeverCarryEscapedCredentials(t *testing.T) {
+	const key, tok = "api key+1", "tok/en+s3cret=="
+	var mu sync.Mutex
+	var errs []string
+	root := url.URL{Scheme: "ws", Host: "[::1", Path: "/ws"}
+	c := ticker.KiteDialer(key, tok, &root)(ticker.Events{OnError: func(err error) {
+		mu.Lock()
+		errs = append(errs, err.Error())
+		mu.Unlock()
+	}})
+	waitDone(t, serveAsync(context.Background(), c), 3*time.Second, "failed dial")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) == 0 {
+		t.Fatal("no error reported for a failed dial")
+	}
+	for _, e := range errs {
+		for _, s := range []string{key, tok, url.QueryEscape(key), url.QueryEscape(tok)} {
+			if strings.Contains(e, s) {
+				t.Fatalf("error leaks %q: %s", s, e)
+			}
+		}
+	}
+}
+
+// Errors the library raises because we closed the socket ("use of closed network connection")
+// are noise: none may reach OnError after Stop.
+func TestKiteConnNoErrorsAfterStop(t *testing.T) {
+	srv := mock.NewServer()
+	defer srv.Close()
+	var mu sync.Mutex
+	var stopped bool
+	var late []string
+	up := make(chan struct{}, 1)
+	root := srv.TickerURL()
+	c := ticker.KiteDialer("key", "token", &root)(ticker.Events{
+		OnConnect: func() { up <- struct{}{} },
+		OnError: func(err error) {
+			mu.Lock()
+			if stopped {
+				late = append(late, err.Error())
+			}
+			mu.Unlock()
+		},
+	})
+	done := serveAsync(context.Background(), c)
+	select {
+	case <-up:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no OnConnect")
+	}
+	mu.Lock()
+	stopped = true
+	mu.Unlock()
+	c.Stop()
+	waitDone(t, done, 4*time.Second, "Stop")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(late) > 0 {
+		t.Fatalf("errors after Stop: %v", late)
+	}
+}
+
+// When Serve returns on its own (peer dropped, library data timeout), the conn is closed: a later
+// write reports not-connected instead of touching the dead socket.
+func TestKiteConnWriteAfterServeReturnsIsNotConnected(t *testing.T) {
+	t.Parallel() // waits for the library's 5 s data timeout
+	srv := mock.NewServer()
+	defer srv.Close()
+	c, done := connected(t, context.Background(), srv.TickerURL())
+	defer c.Stop()
+	srv.DropConnections()
+	waitDone(t, done, 10*time.Second, "peer drop")
+	if err := c.Subscribe([]uint32{1}); err == nil || err.Error() != "ticker: not connected" {
+		t.Fatalf("write after Serve returned: %v", err)
 	}
 }
