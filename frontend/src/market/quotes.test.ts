@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { useTicksStore } from '../store/ticks';
-import { applySnapshot, isStaleQuote, quoteChange, runStartedMs } from './quotes';
+import { applySnapshot, isStaleQuote, quoteChange, runStartedMs, setRunStartedMs } from './quotes';
 import { tick } from './testing';
 
 describe('quote selectors over useTicksStore', () => {
@@ -38,5 +38,16 @@ describe('stale quotes (persisted snapshot from a previous run)', () => {
     expect(isStaleQuote(old)).toBe(true);
     expect(isStaleQuote(fresh)).toBe(false);
     expect(isStaleQuote(undefined)).toBe(false);
+  });
+  it('the run start is injectable (tests, mock)', () => {
+    const started = runStartedMs();
+    try {
+      setRunStartedMs(1_000);
+      expect(runStartedMs()).toBe(1_000);
+      expect(isStaleQuote(tick(1, 1, 1, { tsMs: 999 }))).toBe(true);
+      expect(isStaleQuote(tick(1, 1, 1, { tsMs: 1_000 }))).toBe(false);
+    } finally {
+      setRunStartedMs(started);
+    }
   });
 });

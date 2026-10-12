@@ -25,6 +25,7 @@ describe('MarketDataBridge', () => {
     setFeedState('live');
     expect(resendAll).toHaveBeenCalledTimes(1);
     unmount();
+    expect(() => currentBackend()).toThrow(/No backend registered/); // M5: no stale backend after unmount
     setFeedState('offline');
     setFeedState('live');
     expect(resendAll).toHaveBeenCalledTimes(1);

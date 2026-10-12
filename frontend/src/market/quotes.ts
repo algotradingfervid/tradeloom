@@ -21,11 +21,16 @@ export function applySnapshot(snapshot: readonly TickDTO[]): void {
 
 // Go persists the last quote per token (QuoteCacheKey) and serves it in Watch snapshots after a restart, so a
 // snapshot quote can come from a previous run. Ticks of this run are stamped at or after the moment it started.
-const startedMs = Date.now();
+let startedMs = Date.now();
 
 /** When this app run started (Unix ms); quotes stamped before it come from a previous run. */
 export function runStartedMs(): number {
   return startedMs;
+}
+
+/** Overrides the run start (tests and the mock backend's fake clock, Ruling 95 I4). */
+export function setRunStartedMs(ms: number): void {
+  startedMs = ms;
 }
 
 /** A quote from a previous run (persisted snapshot): stale until a fresh tick for its token arrives. */

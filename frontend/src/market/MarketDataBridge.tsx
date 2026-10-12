@@ -12,7 +12,10 @@ export function MarketDataBridge(): null {
   const backend = useBackend();
   // Register during the first render: this component renders before the router, so every view's effects see it.
   useState(() => { setBackend(backend); return backend; });
-  useEffect(() => { setBackend(backend); }, [backend]);
+  useEffect(() => {
+    setBackend(backend);
+    return () => setBackend(null); // M5: helpers fail loudly instead of using an unmounted backend
+  }, [backend]);
   useEffect(() => useStatusStore.subscribe((s, prev) => {
     if (s.feed.state === 'live' && prev.feed.state !== 'live') subscriptions.resendAll();
   }), []);
