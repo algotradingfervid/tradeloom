@@ -298,7 +298,7 @@ export const dataCopy = {
   backupSaved: (path: string) => `Backup saved to ${path}`,
   backupFailed: (reason: string) => `Backup failed: ${reason}`,
   scheduled: 'Scheduled daily backup',
-  scheduledHint: 'Runs after 16:00 or when you quit, into the folder below.',
+  scheduledHint: 'Runs once a day after 16:00 IST, or when you quit after 16:00 if it has not run yet.',
   folder: 'Backup folder',
   noFolder: 'Not chosen — the backups folder inside the data folder',
   chooseFolder: 'Choose folder…',
@@ -312,7 +312,7 @@ export const dataCopy = {
   restoreFrom: (when: string, version: string) => `Backup made on ${when} by Tradeloom v${version}. It replaces:`,
   count: (label: string, n: number) => `${label}: ${n}`,
   // Keys of the P0-1 backup manifest `counts`.
-  counts: { strategies: 'Strategies', scanners: 'Scanners', backtest_runs: 'Backtest runs', deployments: 'Deployments', watchlists: 'Watchlists' },
+  counts: { strategies: 'Strategies', scanners: 'Scanners', backtest_runs: 'Backtest runs', deployments: 'Deployments', watchlists: 'Watchlists', order_journal: 'Order journal entries' },
   withCandles: 'The archive includes the candle store.',
   withoutCandles: 'The archive does not include candles; charts will download history again.',
   restoreWarning: 'Your current data folder is not deleted: it is renamed to end in “.replaced-” and the date and time, and the restored data takes its place. Earlier backups in the default backups folder inside the data folder move there with it. Tradeloom restarts when the restore finishes; settings you are still editing are discarded.',

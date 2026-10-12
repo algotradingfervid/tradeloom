@@ -9,3 +9,10 @@ it('formats sizes in binary units with Indian grouping', () => {
   expect(formatBytes(-1)).toBe(DASH);
   expect(formatBytes(undefined)).toBe(DASH);
 });
+
+it('fix round 1: unit boundaries and the TB range', () => {
+  expect(formatBytes(1023)).toBe('1,023 B');
+  expect(formatBytes(1024)).toBe('1.00 KB');
+  expect(formatBytes(1.5 * 1024 ** 4)).toBe('1.50 TB');
+  expect(formatBytes(1024 ** 5)).toBe('1,024.0 TB');
+});

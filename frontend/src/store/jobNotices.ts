@@ -40,6 +40,23 @@ export function beginJobClaim(): void {
   pending += 1;
 }
 
+/**
+ * Runs `start` (a call that returns a job id) inside a claim window with the done-flag pattern (Ruling 86): the
+ * window is closed exactly once, whether the call resolves, is refused or its caller has gone away.
+ */
+export async function startClaimedJob(start: () => Promise<string>): Promise<string> {
+  let done = false;
+  beginJobClaim();
+  try {
+    const id = await start();
+    done = true;
+    endJobClaim(id);
+    return id;
+  } finally {
+    if (!done) endJobClaim();
+  }
+}
+
 /** Ends a beginJobClaim window; `jobId` is the started job (omit it when the call was refused). */
 export function endJobClaim(jobId?: string): void {
   if (jobId !== undefined) claimJob(jobId);

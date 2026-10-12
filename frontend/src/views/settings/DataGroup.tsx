@@ -8,7 +8,8 @@ import { Dialog } from '../../components/Dialog';
 import { Toggle } from '../../components/Toggle';
 import { componentCopy, dataCopy as copy } from '../../i18n/copy';
 import { DASH, formatBytes, formatDateTimeLong } from '../../i18n/format';
-import { beginJobClaim, endJobClaim } from '../../store/jobNotices';
+import { startManualBackup, useBackupNoticesStore } from '../../store/backupNotices';
+import { startClaimedJob } from '../../store/jobNotices';
 import { useJobsStore } from '../../store/jobs';
 import { reloadSettings, resumeSettingsWrites, suspendSettingsWrites, useSetting } from '../../store/settings';
 import { pushToast } from '../../store/toasts';
@@ -21,24 +22,7 @@ const STAGE_RESTART = 'restart';
 
 const fail = (e: unknown) => pushToast({ level: 'error', message: parseBackendError(e).reason });
 
-/**
- * Starts a job inside a claim window (Ruling 86): a job that finishes before its id comes back is still ours,
- * so jobNotices does not toast it as an unknown (scheduled) job.
- */
-async function startClaimedJob(start: () => Promise<string>): Promise<string> {
-  let done = false;
-  beginJobClaim();
-  try {
-    const id = await start();
-    done = true;
-    endJobClaim(id);
-    return id;
-  } finally {
-    if (!done) endJobClaim();
-  }
-}
-
-const COUNT_KEYS = ['strategies', 'scanners', 'backtest_runs', 'deployments', 'watchlists'] as const;
+const COUNT_KEYS = ['strategies', 'scanners', 'backtest_runs', 'deployments', 'watchlists', 'order_journal'] as const;
 
 function RestoreSummary({ manifest }: { manifest: BackupInfo }) {
   const created = timeMs(manifest.createdAt);
@@ -160,8 +144,11 @@ export function DataGroup() {
   const [clearing, setClearing] = useState(false);
   const [busy, setBusy] = useState<'clear' | 'instruments' | 'backup' | null>(null);
   const [includeCandles, setIncludeCandles] = useSetting<boolean>('backup.include_candles', false);
-  const [backupJob, setBackupJob] = useState<string | null>(null);
-  const backupProgress = useJobsStore((s) => (backupJob ? s.jobs[backupJob] : undefined));
+  // Any unfinished backup (manual or scheduled) counts, so a remount still knows one is running (Ruling 106).
+  const backupProgress = useJobsStore((s) => Object.values(s.jobs).find((j) => j.kind === 'backup' && !j.finished));
+  const backupTracked = useBackupNoticesStore((s) => s.tracked.length > 0);
+  const backupRunning = backupProgress !== undefined || backupTracked || busy === 'backup';
+  const backupStatus = !backupRunning ? '' : backupProgress ? copy.backupStage(backupProgress.done, backupProgress.total) : copy.backingUp;
   const [manifest, setManifest] = useState<BackupInfo | null>(null);
   const [scheduled, setScheduled] = useSetting<boolean>('backup.schedule.enabled', false);
   const [folder, setFolder] = useSetting<string>('backup.schedule.folder', '');
@@ -180,13 +167,6 @@ export function DataGroup() {
     void loadStats();
   }, [loadStats]);
 
-  useEffect(() => {
-    if (!backupProgress?.finished) return;
-    if (backupProgress.error) pushToast({ level: 'error', message: copy.backupFailed(backupProgress.error) });
-    else pushToast({ level: 'success', message: copy.backupSaved(backupProgress.resultPath) });
-    setBackupJob(null);
-  }, [backupProgress]);
-
   const clear = async () => {
     setBusy('clear');
     try {
@@ -203,6 +183,7 @@ export function DataGroup() {
     }
   };
   const refreshInstruments = async () => {
+    if (busy === 'instruments') return;
     setBusy('instruments');
     try {
       await backend.data.refreshInstruments();
@@ -215,12 +196,13 @@ export function DataGroup() {
     }
   };
   const backupNow = async () => {
+    if (backupRunning) return;
     setBusy('backup');
     try {
       const target = await backend.data.chooseFolder();
-      if (!target) return;
-      const id = await startClaimedJob(() => backend.data.backupNow(target, includeCandles));
-      if (mounted.current) setBackupJob(id);
+      if (!target || !mounted.current) return;
+      // The claim and the result toast are owned by store/backupNotices, never by this component (Ruling 106).
+      await startManualBackup(backend, target, includeCandles);
     } catch (e) {
       fail(e);
     } finally {
@@ -252,11 +234,6 @@ export function DataGroup() {
     if (refused) pushToast({ level: 'error', message: refused.reason });
   };
 
-  const backupRunning = backupJob !== null || busy === 'backup';
-  const backupLabel = backupProgress && !backupProgress.finished
-    ? copy.backupStage(backupProgress.done, backupProgress.total)
-    : backupRunning ? copy.backingUp : copy.backupNow;
-
   return (
     <>
       <SettingSection title={copy.storage}>
@@ -269,7 +246,10 @@ export function DataGroup() {
           <Fact label={copy.backfill}>{stats ? copy.backfillOpen(stats.backfillOpenJobs) : DASH}</Fact>
         </dl>
         <div className="settings__actions">
-          <Button onClick={() => void refreshInstruments()} disabled={busy === 'instruments'}>{copy.refreshInstruments}</Button>
+          {/* aria-disabled, not disabled: focus stays on a busy button (Ruling 106). */}
+          <Button onClick={() => void refreshInstruments()} aria-disabled={busy === 'instruments' || undefined} aria-busy={busy === 'instruments' || undefined}>
+            {copy.refreshInstruments}
+          </Button>
           <Button variant="danger" onClick={() => setClearing(true)}>{copy.clearCandles}</Button>
         </div>
       </SettingSection>
@@ -277,8 +257,11 @@ export function DataGroup() {
       <SettingSection title={copy.backup}>
         <Toggle label={copy.includeCandles(formatBytes(stats?.candleBytes))} checked={includeCandles} onChange={(on) => void toggleSetting(setIncludeCandles(on))} />
         <div className="settings__actions">
-          <Button variant="primary" onClick={() => void backupNow()} disabled={backupRunning}>{backupLabel}</Button>
+          <Button variant="primary" onClick={() => void backupNow()} aria-disabled={backupRunning || undefined} aria-busy={backupRunning || undefined}>
+            {copy.backupNow}
+          </Button>
         </div>
+        <p className="muted" role="status">{backupStatus}</p>
         <Toggle label={copy.scheduled} description={copy.scheduledHint} checked={scheduled} onChange={(on) => void toggleSetting(setScheduled(on))} />
         {scheduled && (
           <>

@@ -76,7 +76,7 @@ describe('Settings → Data (FR-ACCT-012, FR-DATA-005 UI)', () => {
     expect(await screen.findByText('Backup saved to /home/asha/Backups/tradeloom-backup-20261012-103000.tar.zst')).toBeInTheDocument();
   });
 
-  it('Ruling 86: a backup that fails before its id comes back is reported once, by the Data group (claim window)', async () => {
+  it('Ruling 86: a backup that fails before its id comes back is reported once, by store/backupNotices (claim window)', async () => {
     const backend = createMockBackend(demoSeed());
     const original = backend.data.backupNow;
     backend.data.backupNow = async (folder, candles) => {
@@ -132,6 +132,7 @@ describe('Settings → Data (FR-ACCT-012, FR-DATA-005 UI)', () => {
     const { user, backend } = renderApp({ route: '/settings/data' });
     const toggle = await screen.findByRole('switch', { name: 'Scheduled daily backup' });
     expect(toggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText('Runs once a day after 16:00 IST, or when you quit after 16:00 if it has not run yet.')).toBeInTheDocument();
     await user.click(toggle);
     await waitFor(() => expect(backend.state.settings['backup.schedule.enabled']).toBe('true'));
     expect(screen.getByText('Not chosen — the backups folder inside the data folder')).toBeInTheDocument();
@@ -156,6 +157,7 @@ describe('Settings → Data (FR-ACCT-012, FR-DATA-005 UI)', () => {
     const dialog = await openRestore(user);
     expect(within(dialog).getByText('Watchlists: 3')).toBeInTheDocument();
     expect(within(dialog).getByText('Strategies: 0')).toBeInTheDocument();
+    expect(within(dialog).getByText('Order journal entries: 0')).toBeInTheDocument();
     expect(within(dialog).getByText(/renamed to end in “\.replaced-” and the date and time/)).toBeInTheDocument();
     expect(within(dialog).getByText(/backups in the default backups folder inside the data folder move there with it/)).toBeInTheDocument();
     expect(within(dialog).getByText(/secrets\.enc.*stays in the “\.replaced-” folder/)).toBeInTheDocument();
@@ -222,13 +224,126 @@ describe('Settings → Data (FR-ACCT-012, FR-DATA-005 UI)', () => {
   });
 });
 
+const deferred = <T,>() => {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+};
+
+const SAVED = '/home/asha/Backups/tradeloom-backup-20261012-103000.tar.zst';
+
+describe('Settings → Data fix round 1 (Ruling 106): backup results survive leaving the view', () => {
+  it('leave, then the backup fails → exactly one error toast', async () => {
+    const { user, backend, router } = renderApp({ route: '/settings/data' });
+    await user.click(await screen.findByRole('button', { name: 'Back up now' }));
+    await waitFor(() => expect(backend.callsTo('data.backupNow')).toHaveLength(1));
+    await act(() => router.navigate('/home'));
+    act(() => backend.emit('job.progress', job({ jobId: 'job-1', stage: 'writing', done: 2, error: 'disk full' })));
+    expect(toastMessages()).toEqual(['Backup failed: disk full']);
+  });
+
+  it('leave, then the backup succeeds → exactly one success toast', async () => {
+    const { user, backend, router } = renderApp({ route: '/settings/data' });
+    await user.click(await screen.findByRole('button', { name: 'Back up now' }));
+    await waitFor(() => expect(backend.callsTo('data.backupNow')).toHaveLength(1));
+    await act(() => router.navigate('/home'));
+    act(() => backend.emit('job.progress', job({ jobId: 'job-1', resultPath: SAVED })));
+    expect(toastMessages()).toEqual([`Backup saved to ${SAVED}`]);
+  });
+
+  it('leave during the claim window; the job fails before its id returns → exactly one error toast', async () => {
+    const backend = createMockBackend(demoSeed());
+    const gate = deferred<string>();
+    backend.data.backupNow = () => gate.promise;
+    const { user, router } = renderApp({ route: '/settings/data', backend });
+    await user.click(await screen.findByRole('button', { name: 'Back up now' }));
+    await act(() => router.navigate('/home'));
+    act(() => backend.emit('job.progress', job({ jobId: 'backup-1', stage: 'writing', done: 2, error: 'disk full' })));
+    expect(toastMessages()).toEqual([]);
+    await act(async () => gate.resolve('backup-1'));
+    await waitFor(() => expect(toastMessages()).toEqual(['Backup failed: disk full']));
+  });
+
+  it('leave during the claim window; the job succeeds after its id returns → exactly one success toast', async () => {
+    const backend = createMockBackend(demoSeed());
+    const gate = deferred<string>();
+    backend.data.backupNow = () => gate.promise;
+    const { user, router } = renderApp({ route: '/settings/data', backend });
+    await user.click(await screen.findByRole('button', { name: 'Back up now' }));
+    await act(() => router.navigate('/home'));
+    await act(async () => gate.resolve('backup-1'));
+    act(() => backend.emit('job.progress', job({ jobId: 'backup-1', resultPath: SAVED })));
+    expect(toastMessages()).toEqual([`Backup saved to ${SAVED}`]);
+  });
+
+  it('a running backup shows its progress in a polite status line; the busy button keeps focus (aria-disabled + aria-busy)', async () => {
+    const { user, backend } = renderApp({ route: '/settings/data' });
+    const button = await screen.findByRole('button', { name: 'Back up now' });
+    await user.click(button);
+    act(() => backend.emit('job.progress', job({ jobId: 'job-1', stage: 'writing', done: 2, finished: false })));
+    expect(screen.getByText('Backing up… (2 of 4)').closest('[role="status"]')).not.toBeNull();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).toHaveAttribute('aria-busy', 'true');
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveFocus();
+    await user.click(button);
+    expect(backend.callsTo('data.backupNow')).toHaveLength(1);
+  });
+
+  it('"backup running" comes from the jobs store, so a remount still knows (e.g. a scheduled backup)', async () => {
+    const { backend, router } = renderApp({ route: '/settings/data' });
+    await screen.findByRole('button', { name: 'Back up now' });
+    act(() => backend.emit('job.progress', job({ jobId: 'backup-5', stage: 'writing', done: 2, finished: false })));
+    await act(() => router.navigate('/home'));
+    await act(() => router.navigate('/settings/data'));
+    expect(await screen.findByRole('button', { name: 'Back up now' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByText('Backing up… (2 of 4)')).toBeInTheDocument();
+    act(() => backend.emit('job.progress', job({ jobId: 'backup-5', resultPath: SAVED })));
+    expect(screen.getByRole('button', { name: 'Back up now' })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('Refresh instrument list now: success toasts and re-reads the stats', async () => {
+    const { user, backend } = renderApp({ route: '/settings/data' });
+    await screen.findByText('700.0 MB of 10.0 GB');
+    const statsBefore = backend.callsTo('data.stats').length;
+    await user.click(screen.getByRole('button', { name: 'Refresh instrument list now' }));
+    await waitFor(() => expect(toastMessages()).toContain('Instrument list refreshed'));
+    expect(backend.callsTo('data.refreshInstruments')).toHaveLength(1);
+    expect(backend.callsTo('data.stats')).toHaveLength(statsBefore + 1);
+  });
+
+  it('Refresh instrument list now: Go\'s not_logged_in refusal is shown', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.failNext('data.refreshInstruments', 'Log in to refresh the instrument list.', 'not_logged_in');
+    const { user } = renderApp({ route: '/settings/data', backend });
+    await user.click(await screen.findByRole('button', { name: 'Refresh instrument list now' }));
+    await waitFor(() => expect(toastMessages()).toEqual(['Log in to refresh the instrument list.']));
+  });
+
+  it('a refused scheduled-folder write toasts the reason and keeps the default folder', async () => {
+    const seed = demoSeed();
+    seed.settings['backup.schedule.enabled'] = 'true';
+    const backend = createMockBackend(seed);
+    const { user } = renderApp({ route: '/settings/data', backend });
+    await screen.findByText('Not chosen — the backups folder inside the data folder');
+    backend.failNext('settings.set', 'settings: backup.schedule.folder: must be an absolute path', 'invalid_setting');
+    await user.click(screen.getByRole('button', { name: 'Choose folder…' }));
+    await waitFor(() => expect(toastMessages()).toEqual(['settings: backup.schedule.folder: must be an absolute path']));
+    expect(screen.getByText('Not chosen — the backups folder inside the data folder')).toBeInTheDocument();
+    expect(setsFor(backend, 'backup.schedule.folder')).toHaveLength(1);
+  });
+});
+
 describe('Settings → Data: nothing sensitive leaves the dialog (security)', () => {
   it('the typed confirmation and archive paths stay out of web storage and the URL; the jobs store holds only job progress', async () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     const backend = createMockBackend(demoSeed());
     const { user, router } = renderApp({ route: '/settings/data', backend });
+    // Sequential, as Go runs one job at a time: the backup finishes before the restore starts.
     await user.click(await screen.findByRole('button', { name: 'Back up now' }));
+    act(() => backend.emit('job.progress', job({ jobId: 'job-1', resultPath: '/home/asha/Backups/tradeloom-backup-20261012-103000.tar.zst' })));
+    await screen.findByText('Backup saved to /home/asha/Backups/tradeloom-backup-20261012-103000.tar.zst');
     await confirmRestore(user);
     act(() => backend.emit('job.progress', job({ kind: 'restore', jobId: 'job-2', stage: 'restart' })));
     await screen.findByText('Restore complete. Tradeloom is restarting…');
