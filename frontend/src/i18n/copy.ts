@@ -179,6 +179,19 @@ export const calendarCopy = {
   duplicateKind: 'Each phase kind appears at most once.',
 } as const;
 
+export const holdingsCardCopy = {
+  title: 'Holdings',
+  loading: 'Loading holdings summary',
+  error: (reason: string) => `Holdings could not be loaded: ${reason}`,
+  staleNotice: (reason: string) => `Showing the last loaded figures. The latest read failed: ${reason}`,
+  empty: 'No holdings',
+  open: 'Open the Holdings view',
+  currentValue: 'Current value',
+  investment: 'Investment',
+  pnl: 'P&L',
+  dayChange: "Day's change",
+} as const;
+
 // --- Settings (P0-4 Task 14)
 export const settingsViewCopy = {
   nav: 'Settings groups',
