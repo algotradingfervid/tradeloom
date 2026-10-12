@@ -10,9 +10,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+
+	"tradeloom/internal/clock"
 )
 
 // RestoreConfirmPhrase must be typed by the user to confirm a restore (FR-DATA-005).
@@ -34,7 +37,8 @@ var (
 )
 
 // RestoreRequest describes one restore. The caller has closed app.db (and the candle store);
-// it keeps holding the data-dir lock and relaunches the app after Restore returns.
+// it keeps holding the data-dir lock. After a successful swap that held lock (an open fd) belongs to
+// the file now inside ReplacedDir, so the caller must only MarkClean/Release and relaunch immediately.
 type RestoreRequest struct {
 	Archive         string
 	DataDir         string // Layout.Root of the running app
@@ -54,7 +58,7 @@ func openArchive(path string) (*tar.Reader, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	zr, err := zstd.NewReader(fh)
+	zr, err := zstd.NewReader(fh, zstd.WithDecoderMaxWindow(64<<20), zstd.WithDecoderConcurrency(1))
 	if err != nil {
 		fh.Close()
 		return nil, nil, fmt.Errorf("%w: %v", ErrBadArchive, err)
@@ -110,6 +114,9 @@ func Restore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	if req.Now == nil {
+		req.Now = clock.SystemNow
+	}
 	ts := req.Now().UTC().Format("20060102T150405Z")
 	root := filepath.Clean(req.DataDir)
 	staging := root + ".restoring-" + ts
@@ -141,6 +148,12 @@ func Restore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
 	if err := nl.Ensure(); err != nil {
 		return RestoreResult{}, err
 	}
+	// Make the staged tree durable before it can become the data directory.
+	for _, d := range []string{nl.Root, nl.CandlesDir, nl.LogsDir, nl.ExportsDir, nl.BackupsDir, nl.LibraryDir, nl.InstrumentsDir} {
+		if err := syncDir(d); err != nil {
+			return RestoreResult{}, err
+		}
+	}
 	replaced := root + ".replaced-" + ts
 	if err := os.Rename(root, replaced); err != nil {
 		return RestoreResult{}, fmt.Errorf("store: move current data directory aside: %w", err)
@@ -153,6 +166,10 @@ func Restore(ctx context.Context, req RestoreRequest) (RestoreResult, error) {
 		return RestoreResult{}, err
 	}
 	ok = true
+	// The swap itself must survive power loss: sync the parent holding both renames.
+	if err := syncDir(filepath.Dir(root)); err != nil {
+		return RestoreResult{Manifest: man, ReplacedDir: replaced}, fmt.Errorf("store: restored but could not sync parent directory: %w", err)
+	}
 	return RestoreResult{Manifest: man, ReplacedDir: replaced}, nil
 }
 
@@ -198,6 +215,9 @@ func extract(ctx context.Context, archive, dst string) error {
 			return err
 		}
 		n, err := io.Copy(out, io.LimitReader(tr, h.Size+1))
+		if err == nil {
+			err = out.Sync()
+		}
 		cerr := out.Close()
 		if err != nil {
 			return err
@@ -250,4 +270,50 @@ func verifyRestored(ctx context.Context, path string, manifestSchema int) error 
 		return fmt.Errorf("%w: manifest says schema %d, app.db is %d", ErrBadArchive, manifestSchema, v)
 	}
 	return nil
+}
+
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	serr := d.Sync()
+	cerr := d.Close()
+	if serr != nil {
+		return fmt.Errorf("store: sync %s: %w", path, serr)
+	}
+	return cerr
+}
+
+// RecoverInterruptedRestore repairs a restore that crashed between its two renames. If root does not
+// exist and <root>.replaced-* directories do, the newest (by UTC timestamp in the name) is renamed
+// back to root and its path returned. Stale <root>.restoring-* staging directories are always removed.
+// When root exists nothing but the staging sweep happens. The app's start-up (app.Start) must call this
+// before Layout.Ensure, which would otherwise create an empty root and hide the interrupted restore.
+func RecoverInterruptedRestore(root string) (recovered string, err error) {
+	root = filepath.Clean(root)
+	stale, _ := filepath.Glob(root + ".restoring-*")
+	for _, p := range stale {
+		if err := os.RemoveAll(p); err != nil {
+			return "", err
+		}
+	}
+	if _, err := os.Lstat(root); err == nil {
+		return "", nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	olds, _ := filepath.Glob(root + ".replaced-*")
+	if len(olds) == 0 {
+		return "", nil
+	}
+	sort.Strings(olds) // fixed-width UTC timestamp: lexical order is chronological
+	newest := olds[len(olds)-1]
+	if err := os.Rename(newest, root); err != nil {
+		return "", fmt.Errorf("store: recover interrupted restore: %w", err)
+	}
+	if err := syncDir(filepath.Dir(root)); err != nil {
+		return newest, err
+	}
+	return newest, nil
 }

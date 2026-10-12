@@ -271,3 +271,73 @@ func TestRestore_ModesAndNoSidecars(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoverInterruptedRestore(t *testing.T) {
+	mk := func(p, content string) {
+		os.MkdirAll(p, 0o700)
+		os.WriteFile(filepath.Join(p, "id"), []byte(content), 0o600)
+	}
+	read := func(p string) string { b, _ := os.ReadFile(filepath.Join(p, "id")); return string(b) }
+
+	t.Run("root missing, two replaced", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "tradeloom")
+		mk(root+".replaced-20261012T100000Z", "old")
+		mk(root+".replaced-20261012T120000Z", "newest")
+		mk(root+".restoring-20261012T120000Z", "partial")
+		got, err := RecoverInterruptedRestore(root)
+		if err != nil || got != root+".replaced-20261012T120000Z" {
+			t.Fatalf("got %q %v", got, err)
+		}
+		if read(root) != "newest" {
+			t.Fatal("newest not restored")
+		}
+		if _, err := os.Stat(root + ".replaced-20261012T100000Z"); err != nil {
+			t.Fatal("older replaced dir must be kept")
+		}
+		if left, _ := filepath.Glob(root + ".restoring-*"); len(left) != 0 {
+			t.Fatalf("staging left: %v", left)
+		}
+	})
+	t.Run("root present untouched", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "tradeloom")
+		mk(root, "current")
+		mk(root+".replaced-20261012T100000Z", "old")
+		got, err := RecoverInterruptedRestore(root)
+		if err != nil || got != "" || read(root) != "current" {
+			t.Fatalf("got %q %v root=%s", got, err, read(root))
+		}
+		if _, err := os.Stat(root + ".replaced-20261012T100000Z"); err != nil {
+			t.Fatal("replaced dir must stay")
+		}
+	})
+	t.Run("stale restoring swept, root present", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "tradeloom")
+		mk(root, "current")
+		mk(root+".restoring-20261012T100000Z", "partial")
+		if got, err := RecoverInterruptedRestore(root); err != nil || got != "" {
+			t.Fatalf("got %q %v", got, err)
+		}
+		if _, err := os.Stat(root + ".restoring-20261012T100000Z"); !os.IsNotExist(err) {
+			t.Fatal("staging not swept")
+		}
+		if read(root) != "current" {
+			t.Fatal("root changed")
+		}
+	})
+	t.Run("nothing at all", func(t *testing.T) {
+		if got, err := RecoverInterruptedRestore(filepath.Join(t.TempDir(), "tradeloom")); err != nil || got != "" {
+			t.Fatalf("got %q %v", got, err)
+		}
+	})
+}
+
+func TestRestore_NilNowDefaultsToSystemClock(t *testing.T) {
+	l, db := seedDataDir(t)
+	archive, _ := db.Backup(context.Background(), backupOpts(l, t.TempDir(), false))
+	db.Close()
+	res, err := Restore(context.Background(), RestoreRequest{Archive: archive, DataDir: l.Root,
+		Confirmation: RestoreConfirmPhrase, DeploymentsFlat: true})
+	if err != nil || !strings.Contains(res.ReplacedDir, ".replaced-") {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
