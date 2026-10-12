@@ -101,6 +101,33 @@ func (r *WatchlistsRepo) ReorderLists(ctx context.Context, ids []string, nowMs i
 		return err
 	}
 	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM watchlists WHERE deleted_at IS NULL`)
+	if err != nil {
+		return err
+	}
+	live := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		live[id] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ids) != len(live) {
+		return ErrConflict
+	}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if !live[id] || seen[id] {
+			return ErrConflict
+		}
+		seen[id] = true
+	}
 	for i, id := range ids {
 		if _, err := tx.ExecContext(ctx, `UPDATE watchlists SET position = ?, updated_at = ? WHERE id = ?`, i, nowMs, id); err != nil {
 			return err
@@ -172,6 +199,40 @@ func (r *WatchlistsRepo) ReorderItems(ctx context.Context, id string, tokens []u
 		return err
 	}
 	defer tx.Rollback()
+	var liveList int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM watchlists WHERE id = ? AND deleted_at IS NULL`, id).Scan(&liveList); err != nil {
+		return err
+	}
+	if liveList == 0 {
+		return ErrNoRow
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT token FROM watchlist_items WHERE watchlist_id = ?`, id)
+	if err != nil {
+		return err
+	}
+	cur := map[uint32]bool{}
+	for rows.Next() {
+		var tok uint32
+		if err := rows.Scan(&tok); err != nil {
+			rows.Close()
+			return err
+		}
+		cur[tok] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(tokens) != len(cur) {
+		return ErrConflict
+	}
+	seen := map[uint32]bool{}
+	for _, tok := range tokens {
+		if !cur[tok] || seen[tok] {
+			return ErrConflict
+		}
+		seen[tok] = true
+	}
 	for i, tok := range tokens {
 		if _, err := tx.ExecContext(ctx, `UPDATE watchlist_items SET position = ? WHERE watchlist_id = ? AND token = ?`, i, id, tok); err != nil {
 			return err
