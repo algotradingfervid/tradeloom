@@ -104,11 +104,14 @@ func TestSkewHysteresisAndAcknowledge(t *testing.T) { // FR-DATA-004 AC3 (clock 
 	if !r.Offset().Skewed {
 		t.Fatal("7 s offset not skewed")
 	}
-	select {
-	case o := <-sub.C():
-		_ = o
-	default:
-		t.Fatal("no clock.offset event published")
+	// The bus delivers through a per-subscriber pump goroutine, so wait for the event.
+	for sawSkew := false; !sawSkew; {
+		select {
+		case o := <-sub.C():
+			sawSkew = o.Skewed
+		case <-time.After(2 * time.Second):
+			t.Fatal("no clock.offset event with Skewed=true published")
+		}
 	}
 	observe(3 * time.Second)
 	if !r.Offset().Skewed {
