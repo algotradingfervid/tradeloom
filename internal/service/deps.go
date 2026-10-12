@@ -149,6 +149,9 @@ type Deps struct {
 	ImportedAt      func() time.Time    // Master.ImportedAt
 	CloseForRestore func() error        // stops the platform and closes app.db before store.Restore
 	supportedSchema func() int          // store.SupportedSchema; tests override it
+
+	// Task 32 (diagnostics façade, FR-SHELL-018)
+	CrashReports []string // Boot.CrashReports: unseen crash-*.json in Layout.LogsDir (any order; newest by name wins)
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
@@ -178,6 +181,9 @@ type Service struct {
 	jobMu      sync.Mutex
 	jobRunning string // kind of the running job, "" when idle
 	jobSeq     int
+
+	// Task 32 (diagnostics façade): guards d.CrashReports after New.
+	crashMu sync.Mutex
 
 	// Task 31 (calendar façade): serialises override writes so app.db, the coverage setting and the
 	// running calendar.Service change in the same order.
