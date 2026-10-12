@@ -233,6 +233,11 @@ func NewSession(d SessionDeps) *Session {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
+	if _, ok := d.Tokens.(tokenGenerations); d.Tokens != nil && !ok {
+		// r70 review (Task 23): without TokenGen a late TokenException from a replaced token ends the
+		// current session (Ruling 70 guard off). Production wires *Client, which implements it.
+		d.Log.Warn("kite session token sink has no TokenGen; stale token errors cannot be told apart")
+	}
 	if d.Secrets != nil {
 		d.Secrets = newBoundedSecrets(d.Secrets)
 	}

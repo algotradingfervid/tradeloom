@@ -1,18 +1,23 @@
 // The only module that imports the generated Wails bindings (ARCHITECTURE §8.1).
 import * as Calendar from '../../wailsjs/go/api/Calendar';
+import * as Chart from '../../wailsjs/go/api/Chart';
 import * as Data from '../../wailsjs/go/api/Data';
 import * as Diagnostics from '../../wailsjs/go/api/Diagnostics';
+import * as Instruments from '../../wailsjs/go/api/Instruments';
 import * as Portfolio from '../../wailsjs/go/api/Portfolio';
+import * as Quotes from '../../wailsjs/go/api/Quotes';
 import * as Session from '../../wailsjs/go/api/Session';
 import * as Settings from '../../wailsjs/go/api/Settings';
 import * as System from '../../wailsjs/go/api/System';
+import * as Watchlists from '../../wailsjs/go/api/Watchlists';
 import { kite, orders, service, settings } from '../../wailsjs/go/models';
 import { EventsOn } from '../../wailsjs/runtime/runtime';
 import type {
-  AppInfo, Backend, BackupInfo, BookSnapshot, CalendarEntryDTO, CalendarEntryInput, CalendarInfo, ClockOffset, CrashInfo,
-  CredentialsInfo, CredentialsInput, DataStats, EventMap, EventName, FeedState, HoldingRow, HoldingsSnapshot, HoldingsSummary,
-  Licence, LoginStart, LogoutResult, MarketStatus, OrderRow, PhaseDTO, PositionRow, PositionsSnapshot, Profile,
-  SecretStorageInfo, SectionCounts, SessionStatus, SettingValue, ShortcutAction, StatusSnapshot,
+  AppInfo, Backend, BackupInfo, BookSnapshot, CalendarEntryDTO, CalendarEntryInput, CalendarInfo, CandleDTO, CandlesRequest,
+  CandlesResult, ClockOffset, CrashInfo, CredentialsInfo, CredentialsInput, DataStats, EventMap, EventName, FeedState, HoldingRow,
+  HoldingsSnapshot, HoldingsSummary, InstrumentDTO, Licence, LoginStart, LogoutResult, MarketStatus, OrderRow, PhaseDTO,
+  PositionRow, PositionsSnapshot, Profile, RefreshRequest, RemovedItem, SecretStorageInfo, SectionCounts, SessionStatus,
+  SettingValue, ShortcutAction, StatusSnapshot, TickDTO, Watchlist, WatchlistItem, WatchlistsState, WatchResult,
 } from './backend';
 
 // The generated functions return the Wails model classes (service.*, kite.*, orders.*, settings.*); their JSON shape
@@ -31,6 +36,10 @@ const normEntry = (e: CalendarEntryDTO): CalendarEntryDTO => ({ ...e, phases: ar
 const normCalendar = (c: CalendarInfo): CalendarInfo => ({ ...c, entries: arr(c.entries).map(normEntry) });
 const normBackup = (b: BackupInfo): BackupInfo => ({ ...b, counts: b.counts ?? {} });
 const normInfo = (i: AppInfo): AppInfo => ({ ...i, licences: arr(i.licences) });
+const normCandles = (r: CandlesResult): CandlesResult => ({ ...r, candles: arr(r.candles) });
+const normWatch = (r: WatchResult): WatchResult => ({ live: arr(r.live), polled: arr(r.polled), snapshot: arr(r.snapshot) });
+const normList = (l: Watchlist): Watchlist => ({ ...l, items: arr(l.items) });
+const normWatchlists = (w: WatchlistsState): WatchlistsState => ({ ...w, lists: arr(w.lists).map(normList) });
 
 const EVENT_NORMALISERS: { [K in EventName]?: (p: EventMap[K]) => EventMap[K] } = {
   'session.state': normSession,
@@ -38,6 +47,9 @@ const EVENT_NORMALISERS: { [K in EventName]?: (p: EventMap[K]) => EventMap[K] } 
   'orders.changed': normBook,
   'positions.changed': normPositions,
   'holdings.changed': normHoldings,
+  'candle.forming': arr,
+  'backfill.progress': arr,
+  'watchlists.changed': normWatchlists,
 };
 
 export function createWailsBackend(): Backend {
@@ -104,6 +116,29 @@ export function createWailsBackend(): Backend {
       info: () => cast<AppInfo>(System.Info()).then(normInfo),
       status: () => cast(System.Status()),
     },
+    chart: {
+      candles: (req) => cast<CandlesResult>(Chart.Candles(service.CandlesRequest.createFrom(req))).then(normCandles),
+      refresh: (req) => cast<CandlesResult>(Chart.Refresh(service.RefreshRequest.createFrom(req))).then(normCandles),
+      openLive: (token, interval) => Chart.OpenLive(token, interval),
+      closeLive: (id) => Chart.CloseLive(id),
+    },
+    instruments: {
+      search: (q, tags, limit) => cast<InstrumentDTO[]>(Instruments.Search(q, tags, limit)).then(arr),
+      byTokens: (tokens) => cast<InstrumentDTO[]>(Instruments.ByTokens(tokens)).then(arr),
+      byIdentifier: (id) => cast(Instruments.ByIdentifier(id)),
+    },
+    quotes: { watch: (consumer, tokens) => cast<WatchResult>(Quotes.Watch(consumer, tokens)).then(normWatch) },
+    watchlists: {
+      list: () => cast<WatchlistsState>(Watchlists.List()).then(normWatchlists),
+      create: (name) => cast<WatchlistsState>(Watchlists.Create(name)).then(normWatchlists),
+      rename: (id, name) => cast<WatchlistsState>(Watchlists.Rename(id, name)).then(normWatchlists),
+      delete: (id) => cast<WatchlistsState>(Watchlists.Delete(id)).then(normWatchlists),
+      setActive: (id) => cast<WatchlistsState>(Watchlists.SetActive(id)).then(normWatchlists),
+      add: (id, token, position) => cast<WatchlistsState>(Watchlists.Add(id, token, position)).then(normWatchlists),
+      remove: (id, token) => cast(Watchlists.Remove(id, token)),
+      reorder: (id, tokens) => cast<WatchlistsState>(Watchlists.Reorder(id, tokens)).then(normWatchlists),
+      reorderLists: (ids) => cast<WatchlistsState>(Watchlists.ReorderLists(ids)).then(normWatchlists),
+    },
     on: (name, cb) => {
       const normalise = EVENT_NORMALISERS[name];
       const handler = normalise ? (p: EventMap[typeof name]) => cb(normalise(p)) : cb;
@@ -154,4 +189,15 @@ export type ModelContract = [
   Assert<Mirrors<CrashInfo, service.CrashInfo>>,
   Assert<Mirrors<Licence, service.Licence>>,
   Assert<Mirrors<AppInfo, service.AppInfo>>,
+  Assert<Mirrors<InstrumentDTO, service.InstrumentDTO>>,
+  Assert<Mirrors<CandleDTO, service.CandleDTO>>,
+  Assert<Mirrors<CandlesRequest, service.CandlesRequest>>,
+  Assert<Mirrors<RefreshRequest, service.RefreshRequest>>,
+  Assert<Mirrors<CandlesResult, service.CandlesResult>>,
+  Assert<Mirrors<TickDTO, service.TickDTO>>,
+  Assert<Mirrors<WatchResult, service.WatchResult>>,
+  Assert<Mirrors<WatchlistItem, service.WatchlistItem>>,
+  Assert<Mirrors<Watchlist, service.Watchlist>>,
+  Assert<Mirrors<WatchlistsState, service.WatchlistsState>>,
+  Assert<Mirrors<RemovedItem, service.RemovedItem>>,
 ];

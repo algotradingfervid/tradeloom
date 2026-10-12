@@ -39,6 +39,3 @@ func Options(a *App, assets fs.FS, uniqueID string, smoke bool) *options.App {
 	}
 	return o
 }
-
-// SecondInstance is replaced by the real handler in internal/app/singleinstance.go (Task 23).
-func (a *App) SecondInstance(options.SecondInstanceData) { a.runtime().Focus() }
