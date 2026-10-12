@@ -1,10 +1,12 @@
 import {
-  ColorType, CrosshairMode,
+  ColorType, CrosshairMode, PriceScaleMode,
   type CandlestickData, type HistogramData, type IChartApi, type ISeriesApi, type LineData, type LogicalRange,
-  type TickMarkType, type Time, type UTCTimestamp, type WhitespaceData,
+  type MouseEventParams, type TickMarkType, type Time, type UTCTimestamp, type WhitespaceData,
 } from 'lightweight-charts';
-import type { ChartAdapter } from './ChartAdapter';
-import type { Bar, ChartTheme, Handle, InstrumentSpec, PriceBandSpec, RangeInfo, StudySpec, TimeRange } from './types';
+import { StudyLimitError, type ChartAdapter } from './ChartAdapter';
+import type {
+  Bar, ChartTheme, Handle, InstrumentSpec, LegendData, PriceBandSpec, RangeInfo, StudySpec, TimeRange, UpdateOutcome,
+} from './types';
 import { realLwc, type LwcLib } from './lwc';
 import { dedupeSorted } from './bars';
 import { formatCrosshairTime, formatTickMark, fromChartTime, toChartTime } from './time';
@@ -71,6 +73,7 @@ export class LightweightChartsAdapter implements ChartAdapter {
   bars(): readonly Bar[] { return this.data; }
 
   addStudy(spec: StudySpec): Handle {
+    if (this.opts.maxStudies !== undefined && this.studies.size >= this.opts.maxStudies) throw new StudyLimitError(this.opts.maxStudies);
     const pane = spec.pane === 'separate' ? this.chart.addPane() : this.chart.panes()[0];
     // setData needs strictly ascending times: sort and de-duplicate (last point wins, as dedupeSorted does for bars).
     const byTime = new Map<number, number>();
@@ -150,6 +153,77 @@ export class LightweightChartsAdapter implements ChartAdapter {
     this.chart.remove();
     this.studies.clear();
     this.bands.clear();
+  }
+
+  setInstrument(spec: InstrumentSpec): void {
+    this.spec = spec;
+    this.candles.applyOptions({ priceFormat: { type: 'price', precision: spec.pricePrecision, minMove: spec.minMove } });
+    this.chart.applyOptions({ timeScale: { timeVisible: spec.intraday } });
+    this.syncVolumeSeries();
+  }
+
+  updateLastBar(bar: Bar): UpdateOutcome {
+    const last = this.data[this.data.length - 1];
+    if (!last || bar.time > last.time) {
+      this.data.push(bar);
+      this.index.set(bar.time, this.data.length - 1);
+      this.candles.update(this.toCandle(bar));
+      this.volume?.update(this.toVolume(bar));
+      return 'appended';
+    }
+    if (bar.time === last.time) {
+      this.data[this.data.length - 1] = bar;
+      this.candles.update(this.toCandle(bar));
+      this.volume?.update(this.toVolume(bar));
+      return 'replaced';
+    }
+    const i = this.index.get(bar.time);
+    if (i === undefined) return 'ignored'; // older than anything loaded, or a gap: never throw (Review Focus 4)
+    this.data[i] = bar;
+    this.candles.update(this.toCandle(bar), true);
+    this.volume?.update(this.toVolume(bar), true);
+    return 'historical';
+  }
+
+  onCrosshairMove(cb: (d: LegendData | null) => void): () => void {
+    const handler = (p: MouseEventParams<Time>) => {
+      const idx = p.time === undefined ? this.data.length - 1 : this.index.get(fromChartTime(p.time as UTCTimestamp));
+      if (idx === undefined || idx < 0) { cb(null); return; }
+      cb({ bar: this.data[idx], previousClose: idx > 0 ? this.data[idx - 1].close : null });
+    };
+    this.chart.subscribeCrosshairMove(handler);
+    return () => this.chart.unsubscribeCrosshairMove(handler);
+  }
+
+  setPriceScale(opts: { log?: boolean; auto?: boolean }): void {
+    const patch: { mode?: PriceScaleMode; autoScale?: boolean } = {};
+    if (opts.log !== undefined) patch.mode = opts.log ? PriceScaleMode.Logarithmic : PriceScaleMode.Normal;
+    if (opts.auto !== undefined) patch.autoScale = opts.auto;
+    this.chart.priceScale('right', 0).applyOptions(patch);
+  }
+
+  priceScaleState(): { log: boolean; auto: boolean } {
+    const o = this.chart.priceScale('right', 0).options();
+    return { log: o.mode === PriceScaleMode.Logarithmic, auto: o.autoScale };
+  }
+
+  /** Negative = towards older bars. */
+  panBars(delta: number): void {
+    const ts = this.chart.timeScale();
+    ts.scrollToPosition(ts.scrollPosition() + delta, false);
+  }
+
+  /** factor > 1 zooms in, < 1 zooms out; the right edge stays fixed. */
+  zoom(factor: number): void {
+    const ts = this.chart.timeScale();
+    const r = ts.getVisibleLogicalRange();
+    if (!r || factor <= 0) return;
+    const width = (r.to - r.from) / factor;
+    ts.setVisibleLogicalRange({ from: r.to - width, to: r.to });
+  }
+
+  scrollToLatest(): void {
+    this.chart.timeScale().scrollToRealTime();
   }
 
   // ---- internals -------------------------------------------------------------------------------

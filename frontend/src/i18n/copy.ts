@@ -475,6 +475,12 @@ export const instrumentCopy = {
   // P0-3 Ruling 38: the same "View only" flag and hint as the portfolio views.
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
+  // InstrumentRow (P0-5 Task 14; reused by P3 scanners): row actions and the polled/stale text hints.
+  showOnChart: (name: string) => `Show ${name} on chart`,
+  remove: (name: string) => `Remove ${name}`,
+  polled: 'polled',
+  polledHint: 'Live subscription limit reached — updates every 5 s',
+  stale: 'last known',
 } as const;
 
 export const chartHeaderCopy = {
@@ -516,3 +522,51 @@ export const helpCopy = {
 } as const;
 
 export const legalCopy = { updatedFor: (v: string) => `Updated for v${v}` } as const;
+
+/** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
+export const symbolSearchCopy = {
+  title: 'Search instruments',
+  inputLabel: 'Search instruments',
+  placeholder: 'Search, e.g. SBIN, TCS',
+  quickChips: 'Quick picks',
+  results: 'Results',
+  colInstrument: 'Instrument',
+  colCompany: 'Company name',
+} as const;
+
+/** Shared by every instrument search box (useInstrumentSearch): the polite result-count announcement. */
+export const instrumentSearchCopy = {
+  noMatch: 'No instruments match',
+  count: (n: number) => (n === 1 ? '1 result' : `${n} results`),
+} as const;
+
+/** Watchlist inline search-and-add (FR-WATCH-004, P0-5 Task 15). Count and no-match text: instrumentSearchCopy. */
+export const watchlistSearchCopy = {
+  label: 'Search instruments to add',
+  placeholder: 'Search to add, e.g. SBIN',
+  results: 'Search results',
+  alreadyIn: (list: string) => `Already in ${list}`,
+  addTo: (list: string) => `Add to ${list}`,
+  added: (symbol: string, list: string) => `Added ${symbol} to ${list}`,
+  searchFailed: 'Search failed. Try again.',
+  addFailed: (symbol: string, reason: string) => `Could not add ${symbol}: ${reason}`,
+} as const;
+
+/** P0-5 Task 14: watchlist rows (FR-WATCH-001/005/006). */
+export const watchlistRowsCopy = {
+  empty: 'Search to add instruments',
+  symbolColumn: 'Symbol',
+  priceColumn: 'LTP / Change',
+  actionsColumn: 'Actions',
+  tableLabel: (list: string) => `${list} instruments`,
+  removed: (name: string, list: string) => `Removed ${name} from ${list}`,
+  undo: 'Undo',
+  missing: 'Instrument no longer available',
+  removeMissing: (row: number) => `Remove unavailable instrument in row ${row}`,
+  missingName: 'unavailable instrument',
+  removeFailed: (reason: string) => `Could not remove the instrument: ${reason}`,
+  undoFailed: (reason: string) => `Could not restore the instrument: ${reason}`,
+  moveFailed: (reason: string) => `Could not reorder the watchlist: ${reason}`,
+  moved: (name: string, position: number, count: number) => `${name} moved to ${position} of ${count}`,
+  readOnlyMisuse: 'WatchlistRows: the list is not the active watchlist; rendering it read-only (store actions act on the active list)',
+} as const;

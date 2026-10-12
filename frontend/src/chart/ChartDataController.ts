@@ -1,4 +1,5 @@
-import type { Bar, InstrumentSpec, RangeInfo, TimeRange, UpdateOutcome } from './types';
+import type { ChartAdapter } from './ChartAdapter';
+import type { Bar } from './types';
 import type { Instrument } from '../instruments/types';
 import { tickRupees } from '../instruments/naming';
 import { MAX_REFRESH_SPAN_MS, timeframeById, type KiteInterval, type Timeframe, type TimeframeId } from './timeframes';
@@ -45,19 +46,11 @@ export interface ChartDataApi {
   onBackfillProgress(cb: (progress: BackfillProgress[]) => void): () => void;
 }
 
-/**
- * The part of the plan's ChartAdapter (ARCHITECTURE §8.5, Tasks 3–4) this controller drives. Any ChartAdapter
- * satisfies it structurally; the controller never sees lightweight-charts.
- */
-export interface ChartDataSink {
-  setInstrument(spec: InstrumentSpec): void;
-  setCandles(bars: readonly Bar[], opts?: { keepView?: boolean }): void;
-  prependHistory(bars: readonly Bar[]): number;
-  updateLastBar(bar: Bar): UpdateOutcome;
-  bars(): readonly Bar[];
-  onVisibleRangeChange(cb: (r: RangeInfo) => void): () => void;
-  visibleTimeRange(): TimeRange | null;
-}
+/** The part of ChartAdapter (ARCHITECTURE §8.5) this controller drives; the controller never sees lightweight-charts. */
+export type ChartDataSink = Pick<
+  ChartAdapter,
+  'setInstrument' | 'setCandles' | 'prependHistory' | 'updateLastBar' | 'bars' | 'onVisibleRangeChange' | 'visibleTimeRange'
+>;
 
 /**
  * Sign-out and a change of user (the event bridge's resetOnLogout, Ruling 98) cancel every controller's in-flight
