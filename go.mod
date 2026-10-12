@@ -6,7 +6,10 @@ ignore ./frontend/node_modules
 
 replace tradeloom/ta => ./ta
 
-require github.com/wailsapp/wails/v2 v2.16.0
+require (
+	github.com/wailsapp/wails/v2 v2.16.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+)
 
 require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
