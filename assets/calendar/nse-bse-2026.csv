@@ -1,0 +1,49 @@
+# Tradeloom shipped market calendar
+# version: 2026.3
+# covers: 2026-01-01..2026-12-31
+# Weekday NSE/BSE equity trading holidays for 2026. Source: NSE circular NSE/CMTR/71775
+# (12-12-2025), read 2026-10-12, plus NSE/CMTR/72260 (12-01-2026, circular 07/2026), which adds
+# 2026-01-15 (Maharashtra Municipal Corporation elections; BSE lists it as "MCGM Election day").
+# The BSE list was not read at the BSE site; BSE rows mirror NSE. Derivatives (NFO/BFO) follow
+# their cash exchange.
+# 2026-02-01 (Sunday, Union Budget day) is a special live session, normal hours 09:15-15:30 with
+# pre-open 09:00-09:08. Source: press reports; the exchange circular was not located.
+# Muhurat trading 2026 (Sunday 08-11-2026, Diwali Laxmi Pujan) is not listed: the exchanges had
+# not announced its timings. Add it in Settings -> Market calendar or import an updated file.
+date,exchange,type,phase,start,end
+2026-01-15,NSE,holiday,,,
+2026-01-15,BSE,holiday,,,
+2026-02-01,NSE,special,pre-open,09:00,09:08
+2026-02-01,NSE,special,continuous,09:15,15:30
+2026-02-01,BSE,special,pre-open,09:00,09:08
+2026-02-01,BSE,special,continuous,09:15,15:30
+2026-01-26,NSE,holiday,,,
+2026-01-26,BSE,holiday,,,
+2026-03-03,NSE,holiday,,,
+2026-03-03,BSE,holiday,,,
+2026-03-26,NSE,holiday,,,
+2026-03-26,BSE,holiday,,,
+2026-03-31,NSE,holiday,,,
+2026-03-31,BSE,holiday,,,
+2026-04-03,NSE,holiday,,,
+2026-04-03,BSE,holiday,,,
+2026-04-14,NSE,holiday,,,
+2026-04-14,BSE,holiday,,,
+2026-05-01,NSE,holiday,,,
+2026-05-01,BSE,holiday,,,
+2026-05-28,NSE,holiday,,,
+2026-05-28,BSE,holiday,,,
+2026-06-26,NSE,holiday,,,
+2026-06-26,BSE,holiday,,,
+2026-09-14,NSE,holiday,,,
+2026-09-14,BSE,holiday,,,
+2026-10-02,NSE,holiday,,,
+2026-10-02,BSE,holiday,,,
+2026-10-20,NSE,holiday,,,
+2026-10-20,BSE,holiday,,,
+2026-11-10,NSE,holiday,,,
+2026-11-10,BSE,holiday,,,
+2026-11-24,NSE,holiday,,,
+2026-11-24,BSE,holiday,,,
+2026-12-25,NSE,holiday,,,
+2026-12-25,BSE,holiday,,,
