@@ -167,10 +167,13 @@ const backupFixture: BackupInfo = {
 const calendarFixture: CalendarInfo = {
   version: '2026.1', coversUntil: '2026-12-31', stale: false,
   entries: [
-    { exchange: 'NSE', date: '2026-10-20', type: 'holiday', phases: [], source: 'shipped' },
-    { exchange: 'NSE', date: '2026-11-08', type: 'special', phases: [{ kind: 'continuous', start: '18:15', end: '19:15' }], source: 'shipped' },
+    { exchange: 'NSE', date: '2026-10-20', type: 'holiday', phases: [], source: 'import' },
+    { exchange: 'NSE', date: '2026-11-08', type: 'special', phases: [{ kind: 'continuous', start: '18:15', end: '19:15' }], source: 'import' },
   ],
 };
+
+/** What a mock `Calendar.Import` reads: one valid row (Go's CSV header and format). */
+const calendarCsvFixture = 'date,exchange,type,phase,start,end\n# version: 2026.2\n2026-12-25,NSE,holiday,,,\n';
 
 const infoFixture: AppInfo = {
   version: '0.1.0', build: 'go1.25.14 webkit2_41,noorders', schemaVersion: 1, dataDir: '/home/asha/.local/share/tradeloom',
@@ -190,7 +193,7 @@ function base(): MockState {
       { ...positionOpen, key: 'day|NSE|INFY|MIS' }, { ...positionClosed, key: 'day|NSE|TATAMOTORS|MIS' },
     ]),
     holdings: holdingsOf([holdingA, holdingB]), settings: {}, uiState: {}, shortcuts: shortcutFixture, stats: statsFixture,
-    backup: backupFixture, calendar: calendarFixture, info: infoFixture, crash: { path: '', atMs: 0 },
+    backup: backupFixture, calendar: calendarFixture, calendarCsv: calendarCsvFixture, info: infoFixture, crash: { path: '', atMs: 0 },
     folderChoice: '/home/asha/Backups', fileChoice: backupFixture.path, encPassphrase: '', loginListenerOk: true,
   });
 }
