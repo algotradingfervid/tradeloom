@@ -35,6 +35,7 @@ components:
   logging:    { in: internal/logging }
   settings:   { in: internal/settings }
   store:      { in: internal/store }
+  storetest:  { in: internal/store/storetest }          # test helper: no production component may depend on it
   secrets:    { in: internal/secrets }
   keyringprobe: { in: internal/secrets/keyringprobe }   # S0-4 spike tool
   orderwrite: { in: internal/kite/orderwrite }
@@ -43,9 +44,13 @@ components:
   calendardata: { in: assets/calendar }                 # embedded exchange-calendar CSV
   calendar:   { in: internal/calendar }
   candles:    { in: internal/candles }
+  candles_sqlite: { in: internal/candles/sqlite }       # §2.4 rule 4: the only other sqlite user
   kite:       { in: internal/kite }
   ratelimit:  { in: internal/kite/ratelimit }
+  ticker:     { in: internal/kite/ticker }
   kitemock:   { in: internal/kite/mock }                # test double: no production component may depend on it
+  # P0-3 (local order/position cache; read-only until P4 wires orderwrite).
+  orders:     { in: internal/orders }
 
 commonComponents:
   - logging
@@ -78,9 +83,19 @@ deps:
     mayDependOn: [calendardata]
   candles:
     mayDependOn: [calendar]
+  candles_sqlite:
+    mayDependOn: [candles, calendar, store]
+    canUse: [sqlite]
   kite:
-    mayDependOn: [bus, ratelimit]
+    mayDependOn: [bus, ratelimit, settings]   # settings: registers kite.* keys (settings is a §2.3 leaf)
     canUse: [kite]
+  ticker:
+    mayDependOn: [bus, kite]
+    canUse: [kite]
+  orders:
+    mayDependOn: [kite]   # §2.3 also allows orderwrite; added when P4 wires it
+  storetest:
+    mayDependOn: [store]
   ratelimit:
     mayDependOn: [bus]
   kitemock:

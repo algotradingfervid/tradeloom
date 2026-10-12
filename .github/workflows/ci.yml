@@ -79,21 +79,14 @@ jobs:
       - run: npm run build
 
   licence:
+    # Runs inside the Linux build container (Ruling 47): the scan covers the shipped graph
+    # (GOOS=linux, CGO_ENABLED=1, tags desktop,production,webkit2_41,noorders) with the GTK/WebKit
+    # headers present, using the container's pinned go-licenses and Node.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache-dependency-path: go.sum
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: go install github.com/google/go-licenses@v1.6.0
-      - run: cd frontend && npm ci
-      - run: make licenses
-      - name: THIRD_PARTY_NOTICES.md is current
-        run: make notices && git diff --exit-code THIRD_PARTY_NOTICES.md
+      - name: Licence check and THIRD_PARTY_NOTICES.md freshness (in the build container)
+        run: make docker-licence
 
   linux-package:
     needs: [go-unit, arch-lint, frontend, licence]
@@ -101,7 +94,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build in the ubuntu:22.04 container (wails build, G-0 nm check, .deb, AppImage)
-        run: make docker-release VERSION="${{ inputs.version || format('0.0.0+ci.{0}', github.run_number) }}"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          version="${INPUT_VERSION:-0.0.0+ci.${RUN_NUMBER}}"
+          version="${version#v}"   # release tags are vX.Y.Z; packages carry X.Y.Z
+          if [[ ! "$version" =~ ^[0-9][0-9A-Za-z.+~-]*$ ]]; then
+            echo "invalid version: $version" >&2
+            exit 1
+          fi
+          make docker-release VERSION="$version"
       - uses: actions/upload-artifact@v7
         with:
           name: linux-packages
@@ -126,4 +129,6 @@ jobs:
         with:
           name: linux-packages
           path: dist
-      - run: bash scripts/install-smoke.sh ${{ matrix.kind }}
+      - env:
+          KIND: ${{ matrix.kind }}
+        run: bash scripts/install-smoke.sh "$KIND"

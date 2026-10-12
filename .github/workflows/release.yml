@@ -7,7 +7,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   ci:
@@ -18,6 +18,8 @@ jobs:
   publish:
     needs: ci
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # only this job creates the release
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -26,8 +28,10 @@ jobs:
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release create "${{ github.ref_name }}" dist/* \
-            --repo "${{ github.repository }}" \
-            --title "Tradeloom ${{ github.ref_name }} (noorders)" \
+          gh release create "$TAG" dist/* \
+            --repo "$REPO" \
+            --title "Tradeloom ${TAG} (noorders)" \
             --notes "P0-P3 build. Order placement is not compiled in (gate G-0)."
