@@ -451,3 +451,189 @@ func TestRawCancelClosesStream(t *testing.T) {
 	}
 	r.d.get(0).ev.OnTick(models.Tick{InstrumentToken: 1, LastPrice: 1}) // no send on closed channel
 }
+
+// waitGoroutines waits (real time) until every Manager goroutine has returned.
+func waitGoroutines(t *testing.T, m *Manager) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { m.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("manager goroutines still running after Stop")
+	}
+}
+
+func TestStopEndsGoroutinesTimersAndEvents(t *testing.T) {
+	// conn 0 goes Offline (waits on Reconnect), conn 1 sits in a reconnect back-off.
+	r := newRig(t, Options{PerConn: 1, MaxConns: 2, MaxAttempts: 1})
+	feed := bus.Subscribe(r.bus, TopicFeed, bus.SubOpts[FeedState]{Buffer: 256})
+	_ = r.m.Subscribe(ConsumerWatchlist, "w", []uint32{1, 2}, ModeQuote)
+	eventually(t, "two dials", func() bool { return r.d.n() == 2 })
+	r.d.mu.Lock()
+	r.d.failNext = 1
+	r.d.mu.Unlock()
+	r.d.get(0).Stop()
+	if !r.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("no reconnect timer")
+	}
+	r.clk.Advance(2 * time.Second) // conn 0 redial fails -> Offline
+	eventually(t, "conn 0 offline", func() bool { return r.d.n() == 3 && r.clk.PendingTimers() == 1 })
+	r.d.get(1).Stop() // conn 1 drops -> reconnect timer
+	if !r.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("no reconnect timer for conn 1")
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	r.m.Stop()
+	eventually(t, "stopped event", func() bool {
+		for _, v := range drain(feed) {
+			if v.State == "stopped" {
+				return true
+			}
+		}
+		return false
+	})
+	waitGoroutines(t, r.m)
+	if n := r.clk.PendingTimers(); n != 0 {
+		t.Fatalf("%d timers still armed after Stop", n)
+	}
+	r.m.Reconnect() // must not revive the Offline connection
+	r.clk.Advance(time.Hour)
+	var after []string
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, v := range drain(feed) {
+			after = append(after, v.State)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(after) != 0 {
+		t.Fatalf("feed events after stopped: %v", after)
+	}
+	if n := r.d.n(); n != 3 {
+		t.Fatalf("dialled after Stop: %d dials", n)
+	}
+}
+
+// gatedConn connects only when its gate opens, and records whether Stop came after the connect.
+type gatedConn struct {
+	ev    Events
+	gate  chan struct{}
+	mu    sync.Mutex
+	conn  bool
+	after bool
+}
+
+func (g *gatedConn) Serve(ctx context.Context) {
+	<-g.gate
+	g.mu.Lock()
+	g.conn = true
+	g.mu.Unlock()
+	g.ev.OnConnect()
+	<-ctx.Done()
+}
+func (g *gatedConn) Subscribe([]uint32) error     { return nil }
+func (g *gatedConn) Unsubscribe([]uint32) error   { return nil }
+func (g *gatedConn) SetMode(Mode, []uint32) error { return nil }
+func (g *gatedConn) Stop() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.conn {
+		g.after = true
+	}
+}
+
+func TestConnectAfterStopClosesTheSocket(t *testing.T) {
+	g := &gatedConn{gate: make(chan struct{})}
+	dialed := make(chan struct{})
+	m := New(Options{Clock: clock.NewFake(time.Date(2026, 10, 12, 10, 0, 0, 0, clock.IST)),
+		Dial: func(ev Events) Conn { g.ev = ev; close(dialed); return g }})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := m.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-dialed
+	eventually(t, "serving", func() bool { m.mu.Lock(); defer m.mu.Unlock(); return m.slots[0].conn != nil })
+	m.Stop()      // the dial is still in progress: this Stop cannot close it
+	close(g.gate) // the socket connects after Stop
+	eventually(t, "late connection stopped", func() bool { g.mu.Lock(); defer g.mu.Unlock(); return g.after })
+	waitGoroutines(t, m)
+}
+
+func TestStartPublishesConnectingFirst(t *testing.T) {
+	d := &dialer{}
+	b := bus.New(nil)
+	feed := bus.Subscribe(b, TopicFeed, bus.SubOpts[FeedState]{Buffer: 16})
+	clk := clock.NewFake(time.Date(2026, 10, 12, 10, 0, 0, 0, clock.IST))
+	m := New(Options{Dial: d.dial, Clock: clk, Bus: b})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := m.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var states []string
+	eventually(t, "two feed events", func() bool {
+		for _, v := range drain(feed) {
+			states = append(states, v.State)
+		}
+		return len(states) >= 2
+	})
+	if states[0] != "connecting" || states[1] != "live" {
+		t.Fatalf("feed states %v, want [connecting live ...]", states)
+	}
+}
+
+func TestStartLaunchesEverySlotWithTokensOnce(t *testing.T) {
+	d := &dialer{}
+	clk := clock.NewFake(time.Date(2026, 10, 12, 10, 0, 0, 0, clock.IST))
+	m := New(Options{Dial: d.dial, Clock: clk, PerConn: 1, MaxConns: 3})
+	if err := m.Subscribe(ConsumerChart, "c", []uint32{1, 2, 3}, ModeQuote); err != nil { // before Start
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := m.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "three connections", func() bool { return d.n() == 3 })
+	if err := m.Start(ctx); err == nil {
+		t.Fatal("second Start accepted")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := d.n(); n != 3 {
+		t.Fatalf("second Start dialled: %d dials", n)
+	}
+	m.Stop()
+	waitGoroutines(t, m)
+}
+
+func TestFailedStartLaunchesNothing(t *testing.T) {
+	d := &dialer{}
+	clk := clock.NewFake(time.Date(2026, 10, 12, 10, 0, 0, 0, clock.IST))
+	m := New(Options{Dial: d.dial, Clock: clk, PerConn: 1, MaxConns: 1, ClockRef: 256265})
+	if err := m.Subscribe(ConsumerChart, "c", []uint32{1}, ModeQuote); err != nil { // budget full
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var eb *ErrBudget
+	if err := m.Start(ctx); !errors.As(err, &eb) {
+		t.Fatalf("Start err = %v, want *ErrBudget for the clock reference", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n, p := d.n(), clk.PendingTimers(); n != 0 || p != 0 {
+		t.Fatalf("failed Start launched work: %d dials, %d timers", n, p)
+	}
+	waitGoroutines(t, m)
+}
+
+func TestEmptiedOwnerLeavesNoUsageRow(t *testing.T) {
+	r := newRig(t, Options{})
+	_ = r.m.Subscribe(ConsumerChart, "c", []uint32{1, 2}, ModeQuote)
+	r.m.Unsubscribe(ConsumerChart, "c", []uint32{1, 2})
+	if u := r.m.Usage(); len(u.ByConsumer) != 0 || u.Used != 0 {
+		t.Fatalf("usage %+v, want no rows", u)
+	}
+}

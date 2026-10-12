@@ -63,8 +63,11 @@ type slot struct {
 type Manager struct {
 	o       Options
 	mu      sync.Mutex
-	ctx     context.Context
+	ctx     context.Context    // derived in Start; cancelled by Stop
+	cancel  context.CancelFunc // ends the flusher and every connection loop
+	started bool
 	stopped bool
+	wg      sync.WaitGroup // the flusher and the connection loops
 	owners  map[ownerKey]map[uint32]Mode
 	assign  map[uint32]int
 	slots   []*slot
@@ -115,30 +118,63 @@ func New(o Options) *Manager {
 	return m
 }
 
-// Start opens connection 1, subscribes the clock reference, and starts the tick flusher.
-// Connections 2 and 3 open only when the previous one is full.
+// Start opens connection 1 (and every connection that already holds tokens subscribed before
+// Start), subscribes the clock reference, and starts the tick flusher. Further connections open
+// only when the previous one is full. Start may be called once; if it fails nothing was launched.
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
-	m.ctx = ctx
+	if m.started || m.stopped {
+		m.mu.Unlock()
+		return fmt.Errorf("ticker: Start called on a started or stopped manager")
+	}
+	m.started = true // claims Start; reset below if the clock reference is refused
 	m.mu.Unlock()
-	logging.Go("ticker.flush", func() { m.flushLoop(ctx) })
-	if m.o.ClockRef != 0 {
+	if m.o.ClockRef != 0 { // m.ctx is still nil: this only registers and assigns, launches nothing
 		if err := m.Subscribe(ConsumerClock, "clock", []uint32{m.o.ClockRef}, ModeFull); err != nil {
+			m.mu.Lock()
+			m.started = false
+			m.mu.Unlock()
 			return err
 		}
 	}
 	m.mu.Lock()
-	m.startSlot(m.slots[0])
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	if m.stopped { // Stop ran while the clock reference was being registered
+		return fmt.Errorf("ticker: manager stopped during Start")
+	}
+	m.ctx, m.cancel = context.WithCancel(ctx)
+	runCtx := m.ctx
+	m.goLocked("ticker.flush", func() { m.flushLoop(runCtx) })
+	for i, s := range m.slots {
+		if i == 0 || len(s.tokens) > 0 {
+			m.startSlot(s)
+		}
+	}
 	return nil
+}
+
+// goLocked starts a tracked goroutine (caller holds mu).
+func (m *Manager) goLocked(name string, fn func()) {
+	m.wg.Add(1)
+	logging.Go(name, func() {
+		defer m.wg.Done()
+		fn()
+	})
 }
 
 // Stop closes every connection (logout, shutdown). A Manager serves one session: Stop is final
 // and a new Manager is built with the next access token.
+// It cancels the flusher and every connection loop; none publishes after the "stopped" event.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.stopped {
+		return
+	}
 	m.stopped = true
+	if m.cancel != nil {
+		m.cancel()
+	}
 	for _, s := range m.slots {
 		if s.conn != nil {
 			s.conn.Stop()
@@ -206,6 +242,9 @@ func (m *Manager) Unsubscribe(c Consumer, owner string, tokens []uint32) {
 	if set := m.owners[ownerKey{c, owner}]; set != nil {
 		for _, t := range tokens {
 			delete(set, t)
+		}
+		if len(set) == 0 {
+			delete(m.owners, ownerKey{c, owner})
 		}
 	}
 	m.applyLocked()
@@ -323,14 +362,16 @@ func (m *Manager) send(s *slot, what string, fn func() error, n int) {
 	}
 }
 
-// startSlot launches the connect/reconnect loop of s (caller holds mu, m.ctx set).
+// startSlot launches the connect/reconnect loop of s and publishes "connecting" (caller holds mu).
+// Before Start (m.ctx nil) it does nothing; Start launches every slot that holds tokens.
 func (m *Manager) startSlot(s *slot) {
 	if s.started || m.ctx == nil || m.stopped {
 		return
 	}
 	s.started, s.state = true, "connecting"
 	ctx := m.ctx
-	logging.Go(fmt.Sprintf("ticker.conn.%d", s.idx), func() { m.run(ctx, s) })
+	m.goLocked(fmt.Sprintf("ticker.conn.%d", s.idx), func() { m.run(ctx, s) })
+	m.publishFeedLocked()
 }
 
 func (m *Manager) run(ctx context.Context, s *slot) {
@@ -380,6 +421,10 @@ func (m *Manager) run(ctx context.Context, s *slot) {
 				return
 			case <-retry:
 				m.mu.Lock()
+				if ctx.Err() != nil || m.stopped { // Reconnect raced with Stop: stay stopped, publish nothing
+					m.mu.Unlock()
+					return
+				}
 				s.attempt = 0
 				s.state = "connecting"
 				m.publishFeedLocked()
@@ -406,7 +451,8 @@ func (m *Manager) run(ctx context.Context, s *slot) {
 func (m *Manager) onConnect(s *slot, c Conn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.stopped {
+	if m.stopped { // connected after Stop: close it so no live socket outlives the manager
+		c.Stop()
 		return
 	}
 	s.live, s.state, s.connectedAt = true, "live", m.o.Clock.Now()
@@ -466,7 +512,8 @@ func (m *Manager) onTick(kt models.Tick) {
 }
 
 // Raw returns a stream of every tick (all tokens) for the candle builder and live SL/TP checks,
-// and a cancel function. A full buffer drops ticks and counts them in Usage.RawDrops.
+// and a cancel function. A full buffer drops ticks and counts them in Usage.RawDrops. The channel
+// is closed when cancel is called (cancel is idempotent); it is not closed by Stop.
 func (m *Manager) Raw(buffer int) (<-chan Tick, func()) {
 	ch := make(chan Tick, buffer)
 	m.tickMu.Lock()
