@@ -391,3 +391,35 @@ describe('fix round 1 (Ruling 108)', () => {
       .rejects.toThrow('secret store not answering — unlock it and retry');
   });
 });
+
+describe('fix round 2 (focus when waiting ends)', () => {
+  it('I1: Cancel login returns focus to Log in with Kite', async () => {
+    const { user } = start(loggedOutSeed());
+    await user.click(await screen.findByRole('button', { name: 'Log in with Kite' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel login' })).toHaveFocus());
+    await user.click(screen.getByRole('button', { name: 'Cancel login' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel login' })).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Log in with Kite' })).toHaveFocus());
+  });
+  it('I1: a listener timeout while waiting moves focus to the paste field', async () => {
+    const { user, backend } = start(loggedOutSeed());
+    await user.click(await screen.findByRole('button', { name: 'Log in with Kite' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel login' })).toHaveFocus());
+    act(() => backend.emit('session.state', { ...backend.state.session, state: 'logged_out', errorCode: 'listener_timeout', errorMessage: 'The login window timed out.' }));
+    await waitFor(() => expect(screen.getByLabelText('Redirect URL or request token')).toHaveFocus());
+  });
+  it('I1: Cancel gets focus even when logging_in arrives after Login() resolved (Wails event ordering)', async () => {
+    const backend = createMockBackend(loggedOutSeed());
+    backend.session.login = () => Promise.resolve({
+      loginUrl: 'https://kite.zerodha.com/connect/login?v=3&api_key=kiteapikey9f2c',
+      redirectUrl: 'http://127.0.0.1:7420/kite/callback', listenerOk: true, listenerError: '',
+    });
+    const { user } = renderApp({ route: '/', backend });
+    await user.click(await screen.findByRole('button', { name: 'Log in with Kite' }));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      backend.emit('session.state', { ...backend.state.session, state: 'logging_in' });
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel login' })).toHaveFocus());
+  });
+});

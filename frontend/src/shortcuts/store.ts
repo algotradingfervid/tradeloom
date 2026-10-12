@@ -29,4 +29,4 @@ export function applyShortcutsEvent(value: unknown): void {
 }
 
 // Not account data: signing out keeps the list (Ruling 85).
-registerReset(() => useShortcutStore.setState({ actions: [], version: 0 }), { onLogout: false, inspect: () => useShortcutStore.getState() });
+registerReset(() => useShortcutStore.setState({ actions: [], version: 0 }), { onLogout: false, name: 'shortcuts', inspect: () => useShortcutStore.getState() });

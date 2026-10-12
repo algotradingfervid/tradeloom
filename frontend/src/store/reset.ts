@@ -6,23 +6,26 @@ export interface ResetOptions {
    */
   onLogout?: boolean;
   /**
-   * Returns everything the registration resets (store state plus module-level caches). Tests enumerate it through
+   * Returns everything the registration resets: the store's state plus the module-level variables its reset clears
+   * (epochs, user ids, caches, the toast focus origin). Tests enumerate it through
    * `storeSnapshots()`, e.g. the onboarding leak tests (Ruling 108 M1), so a new store is covered automatically.
    */
   inspect?: () => unknown;
+  /** Store name, so a registry check can say which registration is missing something. */
+  name?: string;
 }
 
-export interface Registration { fn: () => void; onLogout: boolean; inspect?: () => unknown }
+export interface Registration { fn: () => void; onLogout: boolean; inspect?: () => unknown; name?: string }
 
 const resets: Registration[] = [];
 
 export function registerReset(fn: () => void, opts: ResetOptions = {}): void {
-  resets.push({ fn, onLogout: opts.onLogout ?? true, inspect: opts.inspect });
+  resets.push({ fn, onLogout: opts.onLogout ?? true, inspect: opts.inspect, name: opts.name });
 }
 
-/** The reset registry (read-only view): one entry per registered store or module cache. */
-export function registeredResets(): readonly Readonly<Registration>[] {
-  return resets;
+/** A copy of the reset registry: one entry per registered store (with its module state). */
+export function registeredResets(): Readonly<Registration>[] {
+  return [...resets];
 }
 
 /** Test helper: what every registration currently holds (`inspect()` of each; `undefined` where none is given). */

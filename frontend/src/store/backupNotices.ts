@@ -16,7 +16,7 @@ interface BackupNoticesStore { tracked: string[] }
 export const useBackupNoticesStore = create<BackupNoticesStore>()(() => ({ tracked: [] }));
 
 // Not account data: a backup started before a logout still reports its result (Ruling 85).
-registerReset(() => useBackupNoticesStore.setState({ tracked: [] }), { onLogout: false, inspect: () => useBackupNoticesStore.getState() });
+registerReset(() => useBackupNoticesStore.setState({ tracked: [] }), { onLogout: false, name: 'backupNotices', inspect: () => useBackupNoticesStore.getState() });
 
 /** Toasts the result of a tracked job once it has finished; true when it did. */
 function settle(jobId: string): boolean {

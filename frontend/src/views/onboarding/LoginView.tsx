@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { useBackend } from '../../api/BackendContext';
 import { parseBackendError } from '../../api/errors';
@@ -32,6 +32,7 @@ export function LoginView() {
   const [busy, setBusy] = useState(false);
   const pasteRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const loginRef = useRef<HTMLButtonElement>(null);
   const pasteFormId = useId();
 
   // Go ends a login with an error code on the session (listener timeout, refused exchange): open the paste field
@@ -52,6 +53,20 @@ export function LoginView() {
       : null;
   const guidanceUrl = redirectUrl || session?.credentials.redirectUrl || '';
 
+  // M8 focus (fix round 2): Log in is disabled while waiting and Cancel unmounts when waiting ends, so focus follows
+  // Go's state — whenever the logging_in event arrives — instead of being left on a disabled or removed control
+  // (Ruling 22). Only focus that would otherwise be stranded (on <body> or the disabled Log in) is moved.
+  const wasWaiting = useRef(waiting);
+  useEffect(() => {
+    if (wasWaiting.current === waiting) return;
+    wasWaiting.current = waiting;
+    const active = document.activeElement;
+    const stranded = !active || active === document.body || active === loginRef.current;
+    if (!stranded) return;
+    if (waiting) cancelRef.current?.focus();
+    else (showPaste && pasteRef.current ? pasteRef.current : loginRef.current)?.focus();
+  }, [waiting, showPaste]);
+
   // Login() opens the system browser and returns LoginStart; success arrives as a "session.state" event (A3).
   const login = async () => {
     setError(null);
@@ -59,11 +74,7 @@ export function LoginView() {
     try {
       const start = await backend.session.login();
       setRedirectUrl(start.redirectUrl || null);
-      if (start.listenerOk) {
-        // Log in is disabled while waiting (M8): keep focus on a live control (Ruling 22).
-        requestAnimationFrame(() => cancelRef.current?.focus());
-        return;
-      }
+      if (start.listenerOk) return; // waiting starts with Go's logging_in event; focus follows it (effect above)
       // The loopback listener could not start (port busy): the browser still opens, the user pastes the redirect.
       setListenerFailed(true);
       setError(start.listenerError);
@@ -114,7 +125,7 @@ export function LoginView() {
       {guidanceUrl && <p className="muted">{copy.redirectGuidance(guidanceUrl)}</p>}
       <Link to="/settings/kite">{copy.settingsLink}</Link>
       {/* M8: no second login while one waits for the browser; Cancel stays available. */}
-      <Button variant="primary" onClick={login} disabled={waiting}>{copy.button}</Button>
+      <Button ref={loginRef} variant="primary" onClick={login} disabled={waiting}>{copy.button}</Button>
       {waiting && (
         <div className="row">
           <p role="status">{copy.waiting}</p>

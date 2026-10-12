@@ -36,7 +36,7 @@ export function registerShellBanner(banner: ComponentType): () => void {
   };
 }
 
-/** The banners currently in the slot (a copy). */
+/** The banners currently in the slot (a copy). Rendered keyed by position: function names do not survive minification. */
 export function shellBannerSlot(): ComponentType[] {
   return [...slot];
 }
@@ -60,7 +60,7 @@ export function ShellBanners() {
           <Button variant="primary" onClick={() => void navigate('/login')}>{bannerCopy.logIn}</Button>
         </div>
       )}
-      {shellBannerSlot().map((Banner, i) => <Banner key={Banner.displayName ?? Banner.name ?? i} />)}
+      {shellBannerSlot().map((Banner, i) => <Banner key={i} />)}
     </>
   );
 }

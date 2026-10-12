@@ -2,6 +2,7 @@ import { act, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { freshSeed, lockedSeed, loggedOutSeed, noKeyringSeed } from '../../api/mock/fixtures';
 import { createMockBackend, type MockBackend, type MockState } from '../../api/mock/index';
+import '../../store/instrumentsStore';
 import '../../store/jobNotices';
 import { registeredResets, storeSnapshots } from '../../store/reset';
 import { useToastStore } from '../../store/toasts';
@@ -73,7 +74,24 @@ describe('the reset registry covers every store (M1)', () => {
     await screen.findByRole('heading', { name: 'Connect your Kite account' });
     const regs = registeredResets();
     expect(regs.length).toBeGreaterThanOrEqual(10);
-    expect(regs.filter((r) => !r.inspect)).toEqual([]);
+    // Minor 1 (fix round 2): a failure names the store that lacks inspect().
+    expect(regs.filter((r) => !r.inspect).map((r) => r.name ?? '(unnamed)')).toEqual([]);
+    const names = regs.map((r) => r.name);
+    for (const n of ['app', 'nav', 'session', 'settings', 'status', 'ticks', 'toasts', 'jobNotices', 'portfolio', 'shortcuts']) {
+      expect(names).toContain(n);
+    }
+    expect(names.filter((n) => !n)).toEqual([]);
+    // Minor 2: module state outside the zustand stores is part of the snapshot too.
+    const snap = (n: string) => regs.find((r) => r.name === n)?.inspect?.() as Record<string, unknown>;
+    expect(snap('watchlists')).toHaveProperty('epoch');
+    expect(snap('watchlists')).toHaveProperty('lastUserId');
+    expect(snap('ticks')).toHaveProperty('healEpoch');
+    expect(snap('instruments')).toHaveProperty('idInflight');
+    expect(snap('portfolio')).toHaveProperty('epoch');
+    expect(snap('toasts')).toHaveProperty('returnFocus');
+    // A copy: callers cannot change the registry.
+    (regs as unknown[]).length = 0;
+    expect(registeredResets().length).toBeGreaterThanOrEqual(10);
   });
 });
 

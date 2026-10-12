@@ -33,6 +33,23 @@ describe('ShellBanners', () => {
     }
     expect(shellBannerSlot()).not.toContain(TestBanner);
   });
+  it('minor 4: banners whose function names collide (minified builds) all render without key warnings', async () => {
+    const make = (text: string) => {
+      const C = () => <div role="status">{text}</div>;
+      Object.defineProperty(C, 'name', { value: 'a' });
+      return C;
+    };
+    const errors = vi.spyOn(console, 'error');
+    const offs = [registerShellBanner(make('first banner')), registerShellBanner(make('second banner'))];
+    try {
+      renderApp({ route: '/home' });
+      expect(await screen.findByText('first banner')).toBeInTheDocument();
+      expect(screen.getByText('second banner')).toBeInTheDocument();
+      expect(errors.mock.calls.flat().join(' ')).not.toMatch(/same key/i);
+    } finally {
+      offs.forEach((off) => off());
+    }
+  });
   it('order: crash notice (banner--error) first, then the boot notice, then the slot', async () => {
     const backend = createMockBackend(demoSeed());
     backend.state.crash = { path: '/tmp/crash-1.txt', atMs: Date.UTC(2026, 9, 11, 10, 0) };

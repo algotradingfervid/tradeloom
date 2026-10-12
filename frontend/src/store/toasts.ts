@@ -72,7 +72,7 @@ registerReset(() => {
   useToastStore.setState({ visible: [], queued: [] });
   queuedAt.clear();
   returnFocus = null;
-}, { onLogout: false, inspect: () => ({ ...useToastStore.getState(), queuedAt }) });
+}, { onLogout: false, name: 'toasts', inspect: () => ({ ...useToastStore.getState(), queuedAt, returnFocus: returnFocus?.outerHTML ?? null }) });
 
 export function pushToast(t: Omit<Toast, 'id'>): number {
   return useToastStore.getState().push(t);

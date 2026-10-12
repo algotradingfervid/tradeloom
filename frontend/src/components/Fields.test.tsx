@@ -48,3 +48,20 @@ describe('form primitives fix round 1', () => {
     expect(screen.getByLabelText('L')).toHaveAccessibleDescription('Extra help Bad');
   });
 });
+
+describe('TextField aria-invalid (P0-4 Task 9 fix round 2, minor 3)', () => {
+  it('an error keeps aria-invalid even when the caller passes undefined or false', () => {
+    render(
+      <>
+        <TextField label="One" error="Bad one" aria-invalid={undefined} />
+        <TextField label="Two" error="Bad two" aria-invalid={false} />
+        <TextField label="Three" aria-invalid />
+        <TextField label="Four" />
+      </>,
+    );
+    expect(screen.getByLabelText('One')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Two')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Three')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Four')).not.toHaveAttribute('aria-invalid');
+  });
+});

@@ -16,4 +16,4 @@ export const useSecretsNoticeStore = create<SecretsNoticeStore>()((set) => ({
   setLeftoverFile: (leftoverFile) => set({ leftoverFile }),
 }));
 
-registerReset(() => useSecretsNoticeStore.setState({ leftoverFile: false }), { onLogout: false, inspect: () => useSecretsNoticeStore.getState() });
+registerReset(() => useSecretsNoticeStore.setState({ leftoverFile: false }), { onLogout: false, name: 'secretsNotice', inspect: () => useSecretsNoticeStore.getState() });

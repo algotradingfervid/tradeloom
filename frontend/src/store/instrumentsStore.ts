@@ -77,7 +77,7 @@ registerReset(() => {
   idInflight.clear();
   unknown.clear();
   useInstruments.setState((s) => ({ byToken: {}, byId: {}, generation: s.generation + 1 }));
-}, { inspect: () => ({ ...useInstruments.getState(), unknown }) });
+}, { name: 'instruments', inspect: () => ({ ...useInstruments.getState(), epoch, lastUserId, inflight, idInflight, unknown }) });
 
 /**
  * Loads the tokens not cached yet with one Instruments.ByTokens call; tokens already being loaded share that call.

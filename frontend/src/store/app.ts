@@ -49,4 +49,4 @@ export const useAppStore = create<AppStore>()((set) => ({
   retryBoot: () => set((st) => ({ bootAttempt: st.bootAttempt + 1 })),
 }));
 
-registerReset(() => useAppStore.setState(initial), { onLogout: false, inspect: () => useAppStore.getState() });
+registerReset(() => useAppStore.setState(initial), { onLogout: false, name: 'app', inspect: () => useAppStore.getState() });
