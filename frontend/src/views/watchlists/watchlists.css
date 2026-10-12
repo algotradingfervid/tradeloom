@@ -17,16 +17,22 @@
   border-radius: var(--radius-pill); border: 1px solid var(--border); font-weight: 700; line-height: 1;
 }
 .watchlist-search__add.is-in-list { color: var(--accent); border-color: currentColor; }
-.watchlist-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.watchlist-panel__header { display: flex; align-items: center; justify-content: space-between; }
-.watchlist-panel__header h2 { margin: 0; font-size: 15px; }
-.watchlist-panel__tools { display: flex; gap: 6px; align-items: center; position: relative; }
-.watchlist-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
-.watchlist-tab { white-space: nowrap; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: none; color: inherit; cursor: pointer; }
+/* Watchlist panel, tabs, tab menu and name errors (P0-5 Task 16; spacing and type from design tokens). */
+.watchlist-panel { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.watchlist-panel__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.watchlist-panel__header h2 { margin: 0; font-size: var(--fs-md); }
+.watchlist-panel__tools { display: flex; gap: var(--space-2); align-items: center; position: relative; }
+.watchlist-panel__body { min-width: 0; }
+.watchlist-tabs-wrap { position: relative; display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.watchlist-tabs { display: flex; gap: var(--space-1); overflow-x: auto; scrollbar-width: thin; }
+.watchlist-tab { white-space: nowrap; padding: var(--space-1) var(--space-3); border-radius: var(--radius-pill); border: 1px solid var(--border); background: none; color: inherit; font-size: var(--fs-sm); cursor: pointer; }
 .watchlist-tab[aria-selected="true"] { border-color: var(--accent); font-weight: 600; }
-.watchlist-menu { position: absolute; z-index: 10; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
-.watchlist-menu button { white-space: nowrap; background: none; border: 0; color: var(--text); padding: 6px 10px; cursor: pointer; }
-.watchlist-error { margin: 0; font-size: 12px; color: var(--down); }
+.watchlist-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.watchlist-menu { position: absolute; z-index: var(--z-menu); margin: 0; padding: var(--space-1) 0; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-2); box-shadow: var(--shadow); }
+.watchlist-menu button { white-space: nowrap; background: none; border: 0; color: var(--text); padding: var(--space-2) var(--space-3); cursor: pointer; }
+/* Busy controls stay focusable (aria-disabled) and lose their hover style (P0-4 Ruling 84 M6). */
+.watchlist-panel [aria-busy="true"][aria-disabled="true"], .watchlist-panel [aria-busy="true"][aria-disabled="true"]:hover { opacity: 0.55; cursor: progress; background: transparent; }
+.watchlist-error { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--fs-xs); color: var(--down); }
 .watchlist-empty { color: var(--text-muted); padding: var(--space-3) var(--space-1); }
 .watchlist-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .watchlist-table th { text-align: left; font-size: var(--fs-xs); font-weight: 500; color: var(--text-muted); padding: var(--space-1); }

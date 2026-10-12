@@ -42,7 +42,7 @@ const listeners = new Set<() => void>();
 registerReset(() => {
   epoch += 1;
   listeners.forEach((l) => l());
-});
+}, { name: 'instrumentSearch', inspect: () => ({ epoch, listeners: listeners.size }) });
 
 const NONE: readonly Instrument[] = [];
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));

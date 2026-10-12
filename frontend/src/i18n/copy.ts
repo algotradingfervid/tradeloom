@@ -551,3 +551,25 @@ export const watchlistRowsCopy = {
   moved: (name: string, position: number, count: number) => `${name} moved to ${position} of ${count}`,
   readOnlyMisuse: 'WatchlistRows: the list is not the active watchlist; rendering it read-only (store actions act on the active list)',
 } as const;
+
+/** P0-5 Task 16: watchlist panel, tabs, create/rename/delete (FR-WATCH-001/002/003). */
+export const watchlistPanelCopy = {
+  region: 'Watchlist',
+  heading: 'Watchlist',
+  tablist: 'Watchlists',
+  newList: 'New watchlist +',
+  newName: 'New watchlist name',
+  renameField: 'Watchlist name',
+  renameHint: 'Double-click or F2 to rename',
+  menu: (list: string) => `Actions for ${list}`,
+  rename: 'Rename',
+  loading: 'Loading watchlists…',
+  loadFailed: (reason: string) => `Could not load watchlists: ${reason}`,
+  retry: 'Retry',
+  switchFailed: (reason: string) => `Could not switch watchlist: ${reason}`,
+  deleteLabel: (list: string) => `Delete watchlist ${list}`,
+  deleteTitle: 'Delete watchlist',
+  deleteMessage: (list: string, count: number) => `Delete watchlist ${list} and its ${count} ${count === 1 ? 'instrument' : 'instruments'}?`,
+  deleteConfirm: 'Delete',
+  deleteFailed: (list: string, reason: string) => `Could not delete ${list}: ${reason}`,
+} as const;
