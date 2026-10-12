@@ -342,7 +342,7 @@ func TestLogin_LoopbackHardening(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if got := resp.Header.Get("Content-Security-Policy"); got != "default-src 'none'; style-src 'unsafe-inline'" {
+	if got := resp.Header.Get("Content-Security-Policy"); got != "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" {
 		t.Fatalf("CSP %q", got)
 	}
 	e.sess.mu.Lock()
@@ -443,5 +443,106 @@ func TestLogin_TokenStoreFailure_FixedMessageAndInvalidates(t *testing.T) {
 	}
 	if strings.Contains(e.logs.String(), "acc-live-777") {
 		t.Fatal("token leaked into logs")
+	}
+}
+
+// Ruling 57: each state nonce is bound to its login attempt. A nonce of a cancelled or restarted attempt
+// is refused; after a success the nonce stays bound to the exchanged request token, so reloading the
+// callback tab still shows success, but a different request token under that nonce is refused.
+func TestLogin_CallbackNonceBoundToAttempt(t *testing.T) {
+	e := newEnv(t, ist(2026, 10, 12, 9, 2))
+	e.configure()
+	setPort(t, e, freePort(t))
+	e.auth.allow("rtok12345678", AuthSession{UserID: "AB1234", AccessToken: "acc-live-777"})
+	e.auth.allow("rtokother9999", AuthSession{UserID: "ZZ9999", AccessToken: "acc-other-888"})
+	ls1, err := e.sess.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := stateFrom(t, ls1.LoginURL)
+	e.sess.CancelLogin()
+	ls2, err := e.sess.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur := stateFrom(t, ls2.LoginURL)
+	code, body := httpGet(t, ls2.RedirectURL+"?request_token=rtok12345678&status=success&state="+old)
+	if code != http.StatusBadRequest || !strings.Contains(body, "not recognised") || e.auth.exchangeCount() != 0 {
+		t.Fatalf("cancelled attempt's nonce: %d %s (exchanges %d)", code, body, e.auth.exchangeCount())
+	}
+	// A restart (BeginLogin while logging in) retires the previous nonce too.
+	ls3, err := e.sess.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := httpGet(t, ls3.RedirectURL+"?request_token=rtok12345678&status=success&state="+cur); code != http.StatusBadRequest {
+		t.Fatalf("restarted attempt's nonce: %d", code)
+	}
+	cur = stateFrom(t, ls3.LoginURL)
+	ok := ls3.RedirectURL + "?request_token=rtok12345678&status=success&state=" + cur
+	if code, body := httpGet(t, ok); code != http.StatusOK || !strings.Contains(body, "Logged in") {
+		t.Fatalf("current nonce: %d %s", code, body)
+	}
+	code, body = httpGet(t, ls3.RedirectURL+"?request_token=rtokother9999&status=success&state="+cur)
+	if code != http.StatusBadRequest || !strings.Contains(body, "not recognised") {
+		t.Fatalf("other token under a spent nonce: %d %s", code, body)
+	}
+	if code, body := httpGet(t, ok); code != http.StatusOK || !strings.Contains(body, "Logged in") {
+		t.Fatalf("reload: %d %s", code, body)
+	}
+	if n := e.auth.exchangeCount(); n != 1 {
+		t.Fatalf("exchanged %d times, want 1", n)
+	}
+	if st := e.sess.State(); st.State != StateReady || st.UserID != "AB1234" {
+		t.Fatalf("state %+v", st)
+	}
+}
+
+// Ruling 57: credentials that vanish mid-login fail the login (no stuck logging_in).
+func TestLogin_ExchangeWithoutCredentials_FailsLogin(t *testing.T) {
+	e := newEnv(t, ist(2026, 10, 12, 9, 2))
+	e.configure()
+	setPort(t, e, freePort(t))
+	if _, err := e.sess.BeginLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.secrets.Delete(secrets.KeyAPISecret); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.sess.CompleteLogin(context.Background(), "rtok12345678")
+	var le *LoginError
+	if !errors.As(err, &le) || le.Code != CodeNoCredentials {
+		t.Fatalf("err %v", err)
+	}
+	if st := e.sess.State(); st.State == StateLoggingIn || st.ErrorCode != CodeNoCredentials {
+		t.Fatalf("state %+v", st)
+	}
+	if e.auth.exchangeCount() != 0 {
+		t.Fatal("no exchange without credentials")
+	}
+}
+
+// Ruling 57: an exchange error never shows the full API key; it is masked as MaskKey shows it.
+func TestLogin_ExchangeErrorMasksAPIKey(t *testing.T) {
+	e := newEnv(t, ist(2026, 10, 12, 9, 2))
+	e.configure()
+	setPort(t, e, freePort(t))
+	ea := &echoAuth{}
+	e.sess.d.Auth = func(string) AuthAPI { return ea }
+	if _, err := e.sess.BeginLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.sess.CompleteLogin(context.Background(), "rtokleaky1234")
+	var le *LoginError
+	if !errors.As(err, &le) || le.Code != CodeCredentialsRejected {
+		t.Fatalf("err %v", err)
+	}
+	for _, s := range []string{le.Message, e.sess.State().ErrorMessage, e.logs.String()} {
+		if strings.Contains(s, testKey) {
+			t.Fatalf("api key leaked: %s", s)
+		}
+	}
+	if !strings.Contains(le.Message, MaskKey(testKey)) {
+		t.Fatalf("masked key missing: %s", le.Message)
 	}
 }

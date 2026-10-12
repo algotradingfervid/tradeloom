@@ -33,6 +33,8 @@ func startLoopback(port int, h callbackHandler, log *slog.Logger) (*loopback, er
 	if err != nil {
 		return nil, err
 	}
+	bound := ln.Addr().(*net.TCPAddr).Port
+	host := net.JoinHostPort("127.0.0.1", strconv.Itoa(bound))
 	mux := http.NewServeMux()
 	mux.HandleFunc(CallbackPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -43,18 +45,27 @@ func startLoopback(port int, h callbackHandler, log *slog.Logger) (*loopback, er
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
 	})
+	// Ruling 57: answer only requests addressed to 127.0.0.1:<port>. A page on another origin that
+	// rebinds its own host name to 127.0.0.1 sends its own name in Host and is refused (DNS rebinding).
+	guard := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != host {
+			http.Error(w, "bad host", http.StatusBadRequest)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           guard,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    8 << 10,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
-	l := &loopback{port: ln.Addr().(*net.TCPAddr).Port, ln: ln, srv: srv}
+	l := &loopback{port: bound, ln: ln, srv: srv}
 	logging.Go("kite.loopback", func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Warn("loopback listener stopped", "err", err)

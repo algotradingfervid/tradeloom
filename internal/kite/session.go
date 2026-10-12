@@ -172,16 +172,28 @@ type Session struct {
 	rec    *TokenRecord
 	prior  State // state to fall back to when a login attempt fails or times out
 	lb     *loopback
-	nonces map[string]bool
-	done   map[string]bool // request tokens already exchanged in this run (reload-safe)
-	gen    int             // login attempt generation
+	nonces map[string]nonceBinding // state nonces issued in this run (Ruling 57)
+	done   map[string]bool         // request tokens already exchanged in this run (reload-safe)
+	gen    int                     // login attempt generation
 	runCtx context.Context
+	// cancelBase cancels the base run context made by NewSession (Ruling 58 (2)): login timers and
+	// probes started before Run wait on it, and Close (also at the end of Run) cancels it.
+	cancelBase context.CancelFunc
 
 	exMu sync.Mutex // serialises token exchange and logout
-	// feedMu makes "is this session still current? then start the feed" (afterReady) and
-	// "end the session, stop the feed, delete the token" (endSession) mutually exclusive, so the
-	// feed can never start with a token that was just deleted (Ruling 52). Lock order: feedMu, then mu.
+	// feedMu makes "is this session still current? then start the feed" (afterReady), "commit a new
+	// login" (exchange) and "end the session, stop the feed, delete the token" (expire, endSession,
+	// Logout) mutually exclusive, so the feed can never start with a token that was just deleted
+	// (Ruling 52) and an ending session can never wipe a login that committed meanwhile (Ruling 58).
+	// Lock order: exMu, then feedMu, then mu. feedMu is never held across a Kite call.
 	feedMu sync.Mutex
+}
+
+// nonceBinding ties a state nonce to the login attempt (gen) that issued it and, once that attempt's
+// exchange succeeded, to the request token it exchanged (Ruling 57).
+type nonceBinding struct {
+	gen   int
+	token string
 }
 
 func NewSession(d SessionDeps) *Session {
@@ -197,13 +209,15 @@ func NewSession(d SessionDeps) *Session {
 	if d.Secrets != nil {
 		d.Secrets = newBoundedSecrets(d.Secrets)
 	}
+	base, cancel := context.WithCancel(context.Background())
 	return &Session{
-		d:      d,
-		st:     SessionState{State: StateNoCredentials, DataPlan: PlanUnknown},
-		prior:  StateLoggedOut,
-		nonces: map[string]bool{},
-		done:   map[string]bool{},
-		runCtx: context.Background(),
+		d:          d,
+		st:         SessionState{State: StateNoCredentials, DataPlan: PlanUnknown},
+		prior:      StateLoggedOut,
+		nonces:     map[string]nonceBinding{},
+		done:       map[string]bool{},
+		runCtx:     base,
+		cancelBase: cancel,
 	}
 }
 
@@ -322,7 +336,19 @@ func (s *Session) SaveCredentials(ctx context.Context, apiKey, apiSecret string)
 }
 
 // Restore resumes a still-valid session at startup without asking for a login (FR-ACCT-006 AC4).
+//
+// Ruling 59 (1): Restore holds exMu for its whole run (its Kite call included), so a Logout or a paste
+// login waits for it and then wins. Its commit (s.rec → ready) runs under feedMu and is abandoned when a
+// login attempt began meanwhile (gen changed) or another session is current; the paste login that is
+// waiting on exMu then commits on its own. Ruling 59 (2): a stored token whose session row already ended
+// (a logout that could not delete it) is deleted, never resumed, and Kite is not called.
 func (s *Session) Restore(ctx context.Context) SessionState {
+	s.exMu.Lock()
+	defer s.exMu.Unlock()
+	s.mu.Lock()
+	gen := s.gen
+	s.mu.Unlock()
+
 	configured, err := s.configured()
 	if err != nil || !configured {
 		if err != nil {
@@ -351,6 +377,16 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		return s.set(idle(true, nil, "", ""))
 	}
 	logging.RegisterSecret(rec.AccessToken)
+	row, rowErr := s.d.Repo.Get(ctx, rec.SessionID)
+	if rowErr == nil && row.EndedAtMs != 0 {
+		s.d.Log.Warn("restore: the stored token belongs to an ended session; deleting it", "session_id", rec.SessionID, "end_reason", row.EndReason)
+		s.d.Limiter.PauseAll("logged out")
+		derr := s.deleteToken()
+		if derr != nil {
+			s.storeFailed("delete ended session's access token", derr)
+		}
+		return s.set(idle(true, derr, "", ""))
+	}
 	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
 		return s.endSession(rec, CodeSessionExpired)
 	}
@@ -365,13 +401,13 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		s.d.Log.Warn("Kite unreachable at startup; continuing with cached data", "kind", errKind(err))
 	}
 	plan, ackRequired := PlanUnknown, true
-	switch row, err := s.d.Repo.Get(ctx, rec.SessionID); {
-	case err == nil:
+	switch {
+	case rowErr == nil:
 		if row.DataPlan != "" {
 			plan = DataPlan(row.DataPlan)
 		}
 		ackRequired = row.RiskAckAtMs == 0
-	case errors.Is(err, store.ErrNoRow):
+	case errors.Is(rowErr, store.ErrNoRow):
 		// The token outlived its row (e.g. app.db restored from a backup): recreate it so the risk
 		// acknowledgement and the data plan of this session can be persisted.
 		s.d.Log.Warn("restore: session row missing; recreating it", "session_id", rec.SessionID)
@@ -379,12 +415,29 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 			s.d.Log.Warn("recreating the session row failed", "session_id", rec.SessionID, "err", ierr)
 		}
 	default:
-		s.d.Log.Warn("reading the session row failed", "err", err)
+		s.d.Log.Warn("reading the session row failed", "err", rowErr)
 	}
+	s.feedMu.Lock()
 	s.mu.Lock()
+	if s.gen != gen || s.supersededLocked(rec.SessionID) || s.st.State == StateLoggingIn {
+		// A login began during Restore: it owns the session state now.
+		if s.st.State == StateLoggingIn && s.prior == StateNoCredentials {
+			s.prior = StateLoggedOut // credentials exist; a cancelled login falls back to logged_out
+		}
+		cur := s.st
+		s.mu.Unlock()
+		s.d.Tokens.SetAccessToken("")
+		s.d.Limiter.PauseAll("logged out")
+		s.feedMu.Unlock()
+		s.d.Log.Info("restore abandoned: a login began meanwhile", "session_id", rec.SessionID)
+		return cur
+	}
+	st := readyState(rec, plan, ackRequired, offline)
 	s.rec = &rec
+	s.st = st
 	s.mu.Unlock()
-	st := s.set(readyState(rec, plan, ackRequired, offline))
+	s.feedMu.Unlock()
+	bus.Publish(s.d.Bus, TopicSessionState, st)
 	s.afterReady(apiKey, rec)
 	return st
 }
@@ -493,27 +546,59 @@ func (s *Session) applyPlan(sessionID string, plan DataPlan) bool {
 	return true
 }
 
-// endSession performs the side effects of a session ending through expiry or rejection. Under feedMu
-// it first leaves the ready state (so a probe still in flight finds the session no longer current),
-// then stops the feed and deletes the token; a Feed.Start already running finishes first and is stopped.
+// endSession performs the side effects of a session ending through expiry or rejection.
 func (s *Session) endSession(rec TokenRecord, code string) SessionState {
 	s.feedMu.Lock()
 	defer s.feedMu.Unlock()
+	return s.endSessionLocked(rec, code)
+}
+
+// endSessionLocked runs with feedMu held. It first leaves the ready state (so a probe still in flight
+// finds the session no longer current), then stops the feed and deletes the token; a Feed.Start already
+// running finishes first and is stopped. Ruling 58 (1): when a newer session committed while this call
+// waited for feedMu, only rec's row is ended; the new session's state, feed and token are left alone.
+func (s *Session) endSessionLocked(rec TokenRecord, code string) SessionState {
 	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	s.mu.Lock()
+	if s.supersededLocked(rec.SessionID) {
+		cur := s.st
+		s.mu.Unlock()
+		s.endRow(rec.SessionID, code)
+		s.d.Log.Info("kite session ended after a newer login; the new session is kept", "reason", code)
+		return cur
+	}
 	s.st = st
 	s.rec = nil
 	s.mu.Unlock()
-	s.d.Limiter.PauseAll("session expired")
-	s.d.Feed.Stop()
-	s.d.Tokens.SetAccessToken("")
-	if err := s.d.Secrets.Delete(secrets.KeyAccessToken); err != nil && !errors.Is(err, secrets.ErrNotFound) {
+	s.stopTraffic("session expired")
+	if err := s.deleteToken(); err != nil {
 		s.storeFailed("delete access token", err)
 	}
 	s.endRow(rec.SessionID, code)
 	s.d.Log.Info("kite session ended", "reason", code)
 	bus.Publish(s.d.Bus, TopicSessionState, st)
 	return st
+}
+
+// supersededLocked reports (mu held) whether a session other than sessionID is the current one.
+func (s *Session) supersededLocked(sessionID string) bool {
+	return (s.rec != nil && s.rec.SessionID != sessionID) || (s.st.State == StateReady && s.st.SessionID != sessionID)
+}
+
+// stopTraffic stops the ticker, pauses all Kite REST traffic and clears the in-memory token. Callers
+// hold feedMu, so a probe cannot start the feed again in between.
+func (s *Session) stopTraffic(reason string) {
+	s.d.Feed.Stop()
+	s.d.Limiter.PauseAll(reason)
+	s.d.Tokens.SetAccessToken("")
+}
+
+// deleteToken removes the stored token record; an absent record is not an error.
+func (s *Session) deleteToken() error {
+	if err := s.d.Secrets.Delete(secrets.KeyAccessToken); err != nil && !errors.Is(err, secrets.ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 func (s *Session) endRow(sessionID, reason string) {

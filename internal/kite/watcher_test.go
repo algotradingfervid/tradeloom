@@ -48,7 +48,10 @@ func TestExpiry_At0600_WithTickerRunning(t *testing.T) {
 	st := loginViaPaste(t, e)
 	runWatcher(t, e)
 	e.clock.Set(ist(2026, 10, 13, 5, 59))
-	time.Sleep(30 * time.Millisecond)
+	// Ruling 58 (3): the watcher re-arms its timer only after its check at 05:59 has run.
+	if !e.clock.WaitTimers(1, 3*time.Second) {
+		t.Fatal("watcher did not re-arm after 05:59")
+	}
 	if e.sess.State().State != StateReady {
 		t.Fatal("expired before 06:00")
 	}
@@ -59,6 +62,23 @@ func TestExpiry_At0600_WithTickerRunning(t *testing.T) {
 		row, _ := e.repo.Get(context.Background(), st.SessionID)
 		return row.EndReason == CodeSessionExpired
 	})
+	assertNoSecondStop(t, e)
+}
+
+// assertNoSecondStop lets the watcher poll once more after the expiry and checks that the end-of-session
+// side effects did not run again (Ruling 58 (3)).
+func assertNoSecondStop(t *testing.T, e *testEnv) {
+	t.Helper()
+	if !e.clock.WaitTimers(1, 3*time.Second) {
+		t.Fatal("watcher did not re-arm after the expiry")
+	}
+	e.clock.Advance(expiryPoll)
+	if !e.clock.WaitTimers(1, 3*time.Second) {
+		t.Fatal("watcher did not re-arm after the extra poll")
+	}
+	if n := e.feed.stopCount(); n != 1 {
+		t.Fatalf("ticker stopped %d times after one more poll, want 1", n)
+	}
 }
 
 // Review Focus 3: the machine was suspended across 06:00; monotonic timers are late, the 5 s check is not.
@@ -69,6 +89,7 @@ func TestExpiry_ClockJumpAfterSuspend(t *testing.T) {
 	runWatcher(t, e)
 	e.clock.Set(ist(2026, 10, 13, 7, 30))
 	assertExpired(t, e, CodeSessionExpired)
+	assertNoSecondStop(t, e)
 }
 
 // FR-ACCT-006 AC5: any TokenException enters the expired state; other errors do not.

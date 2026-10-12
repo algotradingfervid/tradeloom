@@ -69,7 +69,10 @@ func (s *Session) BeginLogin(_ context.Context) (LoginStart, error) {
 	if s.st.State != StateLoggingIn {
 		s.prior = s.st.State
 	}
-	s.nonces[nonce] = true
+	s.gen++
+	gen := s.gen
+	// Ruling 57: only this attempt's nonce is accepted from now on; earlier ones are forgotten.
+	s.nonces = map[string]nonceBinding{nonce: {gen: gen}}
 	var stale *loopback
 	if s.lb != nil && s.lb.port != port {
 		stale, s.lb = s.lb, nil
@@ -83,8 +86,6 @@ func (s *Session) BeginLogin(_ context.Context) (LoginStart, error) {
 		}
 	}
 	start.ListenerOK = s.lb != nil
-	s.gen++
-	gen := s.gen
 	st := SessionState{State: StateLoggingIn, DataPlan: PlanUnknown}
 	s.st = st
 	runCtx := s.runCtx
@@ -170,31 +171,55 @@ func (s *Session) CancelLogin() SessionState {
 // handleCallback serves the loopback redirect. Ruling 36: the callback must carry a state nonce issued
 // in this run (Kite echoes it through redirect_params); a missing or unknown state is a forged local
 // request and is refused before anything else is read. Stateless redirects are accepted only by paste.
+// Ruling 57: the nonce must belong to the current login attempt, and once that attempt succeeded it
+// accepts only the request token it exchanged (a reload shows success again; another token is refused).
 func (s *Session) handleCallback(r *http.Request) (int, string) {
 	state := r.URL.Query().Get("state")
 	s.mu.Lock()
-	known := state != "" && s.nonces[state]
+	known := s.nonceAcceptsLocked(state, "")
 	ctx := s.runCtx
 	s.mu.Unlock()
 	if !known {
-		s.d.Log.Warn("loopback callback refused", "reason", "unknown or missing state")
-		return http.StatusBadRequest, resultPage("Login link not recognised",
-			"This login was started by an earlier Tradeloom run or another app. Return to Tradeloom and click \"Log in with Kite\" again.")
+		return s.refuseCallback("unknown, missing or retired state")
 	}
 	red, err := ParseRedirect("?" + r.URL.RawQuery)
 	if err != nil {
 		return http.StatusBadRequest, resultPage("Login not completed", safeRedirectError(err).Error())
 	}
 	s.mu.Lock()
+	known = s.nonceAcceptsLocked(state, red.RequestToken)
 	already := s.done[red.RequestToken]
 	s.mu.Unlock()
+	if !known {
+		return s.refuseCallback("state already used by another request token")
+	}
 	if already {
 		return http.StatusOK, resultPage(pageTitleOK, pageMsgOK)
 	}
-	if _, err := s.exchange(ctx, red.RequestToken); err != nil {
+	if _, err := s.exchange(ctx, red.RequestToken, state); err != nil {
+		var le *LoginError
+		if errors.As(err, &le) && le.Code == CodeStateMismatch {
+			return s.refuseCallback("state retired during the exchange")
+		}
 		return http.StatusBadRequest, resultPage("Login failed", err.Error())
 	}
 	return http.StatusOK, resultPage(pageTitleOK, pageMsgOK)
+}
+
+func (s *Session) refuseCallback(reason string) (int, string) {
+	s.d.Log.Warn("loopback callback refused", "reason", reason)
+	return http.StatusBadRequest, resultPage("Login link not recognised",
+		"This login was started by an earlier Tradeloom run or another app. Return to Tradeloom and click \"Log in with Kite\" again.")
+}
+
+// nonceAcceptsLocked (mu held) reports whether state is a nonce of the current login attempt that may
+// carry requestToken ("" = any): an unused nonce accepts any token, a spent one only its own.
+func (s *Session) nonceAcceptsLocked(state, requestToken string) bool {
+	b, ok := s.nonces[state]
+	if state == "" || !ok || b.gen != s.gen {
+		return false
+	}
+	return requestToken == "" || b.token == "" || b.token == requestToken
 }
 
 // safeRedirectError replaces ParseRedirect's cancelled-login message, which quotes Kite's raw status
@@ -216,23 +241,30 @@ func (s *Session) CompleteLogin(ctx context.Context, pasted string) (SessionStat
 	}
 	if red.State != "" {
 		s.mu.Lock()
-		known := s.nonces[red.State]
+		_, known := s.nonces[red.State]
 		s.mu.Unlock()
 		if !known {
 			s.d.Log.Info("pasted redirect carries a state from another login attempt; accepted because pasting is explicit")
 		}
 	}
-	return s.exchange(ctx, red.RequestToken)
+	return s.exchange(ctx, red.RequestToken, "")
 }
 
-// exchange trades a request_token for an access token. Lock order: exMu, then mu (afterReady takes
-// feedMu on its own goroutine, never under exMu).
-func (s *Session) exchange(ctx context.Context, requestToken string) (SessionState, error) {
+// exchange trades a request_token for an access token. nonce is the callback's state ("" for a paste):
+// when set, it must still belong to the current attempt (Ruling 57), and a success binds it to
+// requestToken. Lock order: exMu, then feedMu (around the commit only, never across a Kite call), then mu.
+func (s *Session) exchange(ctx context.Context, requestToken, nonce string) (SessionState, error) {
 	s.exMu.Lock()
 	defer s.exMu.Unlock()
 	logging.RegisterSecret(requestToken)
 
 	s.mu.Lock()
+	gen := s.gen // Ruling 59 (3): the attempt this exchange was accepted for
+	if nonce != "" && !s.nonceAcceptsLocked(nonce, requestToken) {
+		st := s.st
+		s.mu.Unlock()
+		return st, &LoginError{Code: CodeStateMismatch, Message: "This login link belongs to an earlier login attempt. Click \"Log in with Kite\" again."}
+	}
 	if s.done[requestToken] {
 		st := s.st
 		s.mu.Unlock()
@@ -254,12 +286,14 @@ func (s *Session) exchange(ctx context.Context, requestToken string) (SessionSta
 		return s.State(), le
 	}
 	if apiKey == "" || secret == "" {
-		return s.State(), &LoginError{Code: CodeNoCredentials, Message: msgNoCredentials}
+		le := &LoginError{Code: CodeNoCredentials, Message: msgNoCredentials}
+		s.failLogin(le)
+		return s.State(), le
 	}
 	auth := s.d.Auth(apiKey)
 	us, err := auth.GenerateSession(ctx, requestToken, secret)
 	if err != nil {
-		le := mapExchangeError(scrubErr(err, requestToken, secret))
+		le := mapExchangeError(scrubErr(err, apiKey, requestToken, secret))
 		s.failLogin(le)
 		return s.State(), le
 	}
@@ -271,7 +305,11 @@ func (s *Session) exchange(ctx context.Context, requestToken string) (SessionSta
 	if err != nil {
 		return s.State(), err
 	}
+	// Ruling 58 (1): the commit (Secrets.Set → s.rec → ready) runs under feedMu, so an endSession or
+	// expire of an older session either finishes before it or sees this session as the current one.
+	s.feedMu.Lock()
 	if err := s.d.Secrets.Set(secrets.KeyAccessToken, string(b)); err != nil {
+		s.feedMu.Unlock()
 		s.storeFailed("save access token", err)
 		if ierr := auth.Invalidate(ctx, us.AccessToken); ierr != nil {
 			s.d.Log.Warn("invalidating the unsaved access token failed", "kind", errKind(ierr))
@@ -286,11 +324,19 @@ func (s *Session) exchange(ctx context.Context, requestToken string) (SessionSta
 	s.d.Tokens.SetAPIKey(apiKey)
 	s.d.Tokens.SetAccessToken(rec.AccessToken)
 	s.d.Limiter.Resume()
+	st := readyState(rec, PlanUnknown, true, false)
 	s.mu.Lock()
 	s.done[requestToken] = true
+	if nonce != "" && s.gen == gen {
+		// Bind only while the nonce's attempt is still current; a nonce retired during the exchange
+		// (cancel or restart) stays retired.
+		s.nonces[nonce] = nonceBinding{gen: gen, token: requestToken}
+	}
 	s.rec = &rec
+	s.st = st
 	s.mu.Unlock()
-	st := s.set(readyState(rec, PlanUnknown, true, false))
+	s.feedMu.Unlock()
+	bus.Publish(s.d.Bus, TopicSessionState, st)
 	s.d.Log.Info("kite login complete", "user", MaskUserID(rec.UserID), "expires_at_ms", rec.ExpiresAtMs)
 	s.afterReady(apiKey, rec)
 	return st, nil
@@ -319,11 +365,15 @@ func scrub(msg string, values ...string) string {
 	return msg
 }
 
-// scrubErr returns err with the given values removed from a Kite error's message (before any truncation).
-func scrubErr(err error, values ...string) error {
+// scrubErr returns err with the given values removed from a Kite error's message (before any truncation),
+// and the API key shown only as MaskKey shows it (Ruling 57).
+func scrubErr(err error, apiKey string, values ...string) error {
 	var ke kiteconnect.Error
 	if errors.As(err, &ke) {
 		ke.Message = scrub(ke.Message, values...)
+		if apiKey != "" {
+			ke.Message = strings.ReplaceAll(ke.Message, apiKey, MaskKey(apiKey))
+		}
 		return ke
 	}
 	return err
