@@ -354,12 +354,14 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	s.mu.Unlock()
 
 	configured, err := s.configured()
-	if err != nil || !configured {
-		if err != nil {
-			s.storeFailed("read api secret", err)
-		}
+	if err != nil {
+		s.storeFailed("read api secret", err)
 		s.d.Limiter.PauseAll("no credentials")
-		return s.set(idle(configured, err, "", ""))
+		return s.restoreIdle(gen, idle(false, err, "", ""))
+	}
+	if !configured {
+		s.d.Limiter.PauseAll("no credentials")
+		return s.set(idle(false, nil, "", ""))
 	}
 	apiKey := s.apiKey()
 	s.d.Tokens.SetAPIKey(apiKey)
@@ -367,10 +369,10 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	if err != nil {
 		s.d.Limiter.PauseAll("logged out")
 		if errors.Is(err, secrets.ErrNotFound) {
-			return s.set(idle(true, nil, "", ""))
+			return s.restoreIdle(gen, idle(true, nil, "", ""))
 		}
 		s.storeFailed("read access token", err)
-		return s.set(idle(true, err, "", ""))
+		return s.restoreIdle(gen, idle(true, err, "", ""))
 	}
 	var rec TokenRecord
 	if err := json.Unmarshal([]byte(raw), &rec); err != nil || rec.AccessToken == "" || rec.SessionID == "" {
@@ -378,7 +380,7 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 			s.storeFailed("delete unreadable access token", derr)
 		}
 		s.d.Limiter.PauseAll("logged out")
-		return s.set(idle(true, nil, "", ""))
+		return s.restoreIdle(gen, idle(true, nil, "", ""))
 	}
 	logging.RegisterSecret(rec.AccessToken)
 	row, rowErr := s.d.Repo.Get(ctx, rec.SessionID)
@@ -402,14 +404,14 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		return s.restoreIdle(gen, idle(true, derr, "", ""))
 	}
 	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
-		return s.endSession(rec, CodeSessionExpired)
+		return s.endSessionAtRestore(gen, rec, CodeSessionExpired)
 	}
 	s.d.Tokens.SetAccessToken(rec.AccessToken)
 	s.d.Limiter.Resume()
 	offline := false
 	if _, err := s.d.Profiles.Profile(ctx); err != nil {
 		if isTokenError(err) {
-			return s.endSession(rec, CodeTokenRejected)
+			return s.endSessionAtRestore(gen, rec, CodeTokenRejected)
 		}
 		offline = true
 		s.d.Log.Warn("Kite unreachable at startup; continuing with cached data", "kind", errKind(err))
@@ -484,6 +486,32 @@ func (s *Session) restoreIdle(gen int, st SessionState) SessionState {
 	}
 	cur, corrected := s.correctNoCredentialsLocked()
 	s.mu.Unlock()
+	if corrected {
+		bus.Publish(s.d.Bus, TopicSessionState, cur)
+	}
+	return cur
+}
+
+// endSessionAtRestore ends rec's session at startup (expired or rejected token). When a login attempt
+// began since Restore started (gen changed), that attempt owns the state: the token is still deleted, the
+// traffic stopped and the row ended, but the state is left alone apart from the no_credentials correction
+// (Ruling 68 (2)). A login cannot commit meanwhile: its exchange waits for exMu, which Restore holds.
+func (s *Session) endSessionAtRestore(gen int, rec TokenRecord, code string) SessionState {
+	s.feedMu.Lock()
+	defer s.feedMu.Unlock()
+	s.mu.Lock()
+	if s.gen == gen {
+		s.mu.Unlock()
+		return s.endSessionLocked(rec, code)
+	}
+	cur, corrected := s.correctNoCredentialsLocked()
+	s.mu.Unlock()
+	s.stopTraffic("session expired")
+	if err := s.deleteToken(); err != nil {
+		s.storeFailed("delete access token", err)
+	}
+	s.endRow(rec.SessionID, code)
+	s.d.Log.Info("kite session ended at startup; a login in progress keeps the state", "reason", code)
 	if corrected {
 		bus.Publish(s.d.Bus, TopicSessionState, cur)
 	}

@@ -327,3 +327,67 @@ type syncBuf struct {
 
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// Ruling 68 (1): the keys moved but the file could not be removed: the switch uses the keyring, the
+// caller gets file_not_removed (never silent success), and a later call removes only the leftover file.
+func TestMigrateToKeyring_FileNotRemoved(t *testing.T) {
+	e, sw, file := lockedFile(t)
+	ctx := context.Background()
+	if _, err := e.svc.Unlock(ctx, passphrase); err != nil {
+		t.Fatal(err)
+	}
+	kr := &memStore{m: map[secrets.Key]string{}, backend: secrets.BackendKeyring}
+	e.svc.d.KeyringProbe = func() error { return nil }
+	e.svc.d.NewKeyring = func() secrets.Store { return kr }
+	dir := filepath.Dir(file)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	info, err := e.svc.MigrateToKeyring(ctx)
+	if refusedCode(t, err) != "file_not_removed" {
+		t.Fatal(err)
+	}
+	if info.Backend != secrets.BackendKeyring || info.Mode != "keyring" || !info.FileExists {
+		t.Fatalf("info %+v", info)
+	}
+	if v, err := sw.Get(secrets.KeyAPISecret); err != nil || v != "s3cr3t-value-abc" || sw.Backend() != secrets.BackendKeyring {
+		t.Fatalf("switch %q %v %s", v, err, sw.Backend())
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	info, err = e.svc.MigrateToKeyring(ctx)
+	if err != nil || info.FileExists || info.Backend != secrets.BackendKeyring {
+		t.Fatalf("leftover removal %+v %v", info, err)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("leftover file still present: %v", err)
+	}
+	if kr.m[secrets.KeyAPISecret] != "s3cr3t-value-abc" {
+		t.Fatal("keyring lost the secret")
+	}
+	// Nothing left to remove: keyring backend without a file is not a file backend.
+	if _, err := e.svc.MigrateToKeyring(ctx); refusedCode(t, err) != "not_file_backend" {
+		t.Fatal(err)
+	}
+}
+
+// Ruling 68 (3): no migration while a login is in progress (the login would write its token mid-move).
+func TestMigrateToKeyring_RefusedWhileLoggingIn(t *testing.T) {
+	e, sw, file := lockedFile(t)
+	ctx := context.Background()
+	if _, err := e.svc.Unlock(ctx, passphrase); err != nil {
+		t.Fatal(err)
+	}
+	kr := &memStore{m: map[secrets.Key]string{}, backend: secrets.BackendKeyring}
+	e.svc.d.KeyringProbe = func() error { return nil }
+	e.svc.d.NewKeyring = func() secrets.Store { return kr }
+	e.session.setState(kite.SessionState{State: kite.StateLoggingIn})
+	if _, err := e.svc.MigrateToKeyring(ctx); refusedCode(t, err) != kite.CodeLoginBusy {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil || sw.Backend() != secrets.BackendFile || len(kr.m) != 0 {
+		t.Fatalf("migration ran: %v %s %v", err, sw.Backend(), kr.m)
+	}
+}

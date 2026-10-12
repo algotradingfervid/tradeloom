@@ -243,3 +243,59 @@ func TestRestore_EndedLogoutRow_InvalidationBounded(t *testing.T) {
 		return strings.Contains(l, "restore: invalidating the ended session's token") && strings.Contains(l, `"kind":"timeout"`)
 	})
 }
+
+// gatedGetSecrets blocks Get of the access token until gate closes.
+type gatedGetSecrets struct {
+	*memSecrets
+	gate    chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (g *gatedGetSecrets) Get(k secrets.Key) (string, error) {
+	if k == secrets.KeyAccessToken {
+		g.once.Do(func() { close(g.entered) })
+		<-g.gate
+	}
+	return g.memSecrets.Get(k)
+}
+
+// Ruling 68 (2): a login begun while Restore waits on a slow token read survives every early exit of
+// Restore (token missing, unreadable record, expired token), and its fallback is logged_out.
+func TestRestore_LoginDuringSlowTokenGet_Survives(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(e *testEnv)
+	}{
+		{"token missing", func(*testEnv) {}},
+		{"unreadable record", func(e *testEnv) { _ = e.secrets.Set(secrets.KeyAccessToken, "{not json") }},
+		{"expired token", func(e *testEnv) { e.seedToken(ist(2026, 10, 11, 8, 0), true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, ist(2026, 10, 12, 9, 2))
+			e.configure()
+			tc.seed(e)
+			setPort(t, e, freePort(t))
+			s := restarted(t, e)
+			gs := &gatedGetSecrets{memSecrets: e.secrets, gate: make(chan struct{}), entered: make(chan struct{})}
+			s.d.Secrets = newBoundedSecrets(gs)
+			restored := make(chan SessionState, 1)
+			go func() { restored <- s.Restore(context.Background()) }()
+			<-gs.entered
+			if _, err := s.BeginLogin(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			close(gs.gate)
+			got := <-restored
+			if st := s.State(); st.State != StateLoggingIn || got.State != StateLoggingIn {
+				t.Fatalf("restore overwrote the login: state %+v, returned %+v", st, got)
+			}
+			if tc.name != "token missing" && e.secrets.has(secrets.KeyAccessToken) {
+				t.Fatal("stale token not deleted")
+			}
+			if st := s.CancelLogin(); st.State != StateLoggedOut {
+				t.Fatalf("fallback after cancel %+v", st)
+			}
+		})
+	}
+}

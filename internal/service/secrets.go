@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 
+	"tradeloom/internal/kite"
 	"tradeloom/internal/logging"
 	"tradeloom/internal/secrets"
 )
@@ -27,10 +28,13 @@ var ErrLocked error = lockedError{}
 // SecretSwitch is a secrets.Store whose backend changes at runtime (FR-ACCT-013). The Session keeps one Store
 // for the whole process while setup, unlock and migration swap what is behind it.
 //
-// Locks: setup serialises the façade's setup/unlock/migration calls and is taken first; op is held shared
-// by Get/Set/Delete for the duration of the backend call and exclusively by Swap and migration, so no
-// write can land in a backend while it is being copied or closed; mu guards the fields and is a leaf.
-// None of them is held while calling into the Session.
+// Locks: setup serialises the façade's setup/unlock/migration calls. It is taken first and held for the
+// whole façade call, including the Session.Restore that UseEncryptedFile and Unlock run afterwards; the
+// Session never calls back into the façade, so the order is setup → (Session: exMu → feedMu → mu) → op.
+// op is held shared by Get/Set/Delete for the duration of the backend call (the Session calls them while
+// holding its own locks) and exclusively by Swap, Refuse and the migration, so no write can land in a
+// backend while it is being copied or closed. The migration holds op exclusively but never calls into the
+// Session while it does. mu guards the fields and is a leaf.
 type SecretSwitch struct {
 	setup sync.Mutex
 	op    sync.RWMutex
@@ -102,12 +106,6 @@ func (w *SecretSwitch) Refused() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.refused
-}
-
-// Current returns the backend itself (for secrets.Migrate).
-func (w *SecretSwitch) Current() secrets.Store {
-	st, _ := w.current()
-	return st
 }
 
 // Swap installs st as the backend and clears the locked and refused flags. A previous *EncFile is closed.
@@ -343,8 +341,13 @@ func (b *boundedKeyring) Delete(k secrets.Key) error {
 
 func (b *boundedKeyring) Backend() string { return b.next.Backend() }
 
+const msgFileNotRemoved = "The secrets were moved to the system keyring, but the old secrets file could not be removed. Try again to remove it."
+
 // MigrateToKeyring moves every secret from the encrypted file into the system keyring and removes the file.
 // secrets.Migrate copies and verifies each key and rolls back on any failure, leaving the file untouched.
+// When the keys moved but the file could not be removed (secrets.ErrSourceNotRemoved), the keyring becomes
+// the backend and the call still refuses with file_not_removed; calling it again with the keyring backend
+// and the leftover file present removes only that file (Ruling 68).
 func (s *Service) MigrateToKeyring(ctx context.Context) (SecretStorageInfo, error) {
 	sw := s.d.Secrets
 	if sw == nil {
@@ -352,6 +355,17 @@ func (s *Service) MigrateToKeyring(ctx context.Context) (SecretStorageInfo, erro
 	}
 	sw.setup.Lock()
 	defer sw.setup.Unlock()
+	if s.d.Session.State().State == kite.StateLoggingIn {
+		return s.secretInfo(), refused(secretsStage, kite.CodeLoginBusy, "Finish or cancel the current login before moving the secrets.")
+	}
+	if sw.Backend() == secrets.BackendKeyring && s.secretsFileExists() {
+		if err := secrets.RemoveFile(s.d.SecretsFile); err != nil {
+			s.d.Log.Warn("removing the leftover secrets file failed", "err", err)
+			return s.secretInfo(), refused(secretsStage, "file_not_removed", msgFileNotRemoved)
+		}
+		s.d.Log.Info("leftover secrets file removed")
+		return s.secretInfo(), nil
+	}
 	if sw.Backend() != secrets.BackendFile {
 		return s.secretInfo(), refused(secretsStage, "not_file_backend", "Only the encrypted-file backend can be moved to the keyring.")
 	}
@@ -366,22 +380,27 @@ func (s *Service) MigrateToKeyring(ctx context.Context) (SecretStorageInfo, erro
 		newKeyring = secrets.NewKeyring
 	}
 	kr := newKeyring()
+	notRemoved := false
 	err := sw.exclusive(func(cur secrets.Store) (secrets.Store, error) {
 		err := secrets.Migrate(cur, newBoundedKeyring(kr))
-		if err == nil {
+		switch {
+		case err == nil:
 			return kr, nil
-		}
-		// Migrate destroys (closes, then removes) the file only after every key was copied and verified.
-		// If only the removal failed, the file store is closed and the keyring holds every secret: keep it.
-		if _, gerr := cur.Get(secrets.KeyAPISecret); gerr != nil && !errors.Is(gerr, secrets.ErrNotFound) {
+		case errors.Is(err, secrets.ErrSourceNotRemoved):
+			// Every key is in the keyring and verified; the file store is closed. Use the keyring.
 			s.d.Log.Warn("secrets moved to the keyring, but the old secrets file could not be removed", "err", err)
+			notRemoved = true
 			return kr, nil
+		default:
+			return nil, err
 		}
-		return nil, err
 	})
 	if err != nil {
 		s.d.Log.Warn("moving the secrets to the keyring failed", "err", err)
 		return s.secretInfo(), refused(secretsStage, "migrate_failed", "The secrets could not be moved to the keyring; they stay in the encrypted file.")
+	}
+	if notRemoved {
+		return s.secretInfo(), refused(secretsStage, "file_not_removed", msgFileNotRemoved)
 	}
 	s.d.Log.Info("secrets moved to the system keyring")
 	return s.secretInfo(), nil
