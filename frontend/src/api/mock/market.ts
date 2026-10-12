@@ -5,6 +5,7 @@ import type {
 import { ALL_IN_SCOPE, NEWCO } from '../../instruments/fixtures';
 import type { MockState } from './index';
 import { QUOTE_CONSUMERS } from '../quotes';
+import { MAX_REFRESH_SPAN_MS } from '../../chart/timeframes';
 
 const MIN = 60_000;
 const STEP: Record<string, number> = {
@@ -19,11 +20,8 @@ export const MOCK_BASE_PRICE: Record<number, number> = { 256265: 22500, 260105: 
 /** Small on purpose so e2e can exercise the "polled" hint. */
 export const MOCK_LIVE_BUDGET = 200;
 const DAY = 86_400_000;
-/** Kite's per-request historical limits, as Go's maxRefreshSpan (internal/service/chart.go). */
-const MAX_REFRESH_SPAN: Record<string, number> = {
-  minute: 60 * DAY, '3minute': 100 * DAY, '5minute': 100 * DAY, '10minute': 100 * DAY, '15minute': 100 * DAY,
-  '30minute': 100 * DAY, '60minute': 400 * DAY, day: 2000 * DAY,
-};
+/** Kite's per-request historical limits: the frontend's shared copy of Go's maxRefreshSpan. */
+const MAX_REFRESH_SPAN: Record<string, number> = MAX_REFRESH_SPAN_MS;
 
 /** An instrument-master row as the mock stores it: `alsoOnNse` is derived per Search result, as Go does. */
 export type MockInstrument = Omit<InstrumentDTO, 'alsoOnNse'>;
