@@ -67,6 +67,22 @@ export const toastCopy = {
   dismiss: 'Dismiss notification',
 } as const;
 
+export const holdingsCopy = {
+  title: 'Holdings',
+  description: 'Long-term equity holdings in your Kite account, valued at live prices.',
+  empty: 'No holdings',
+  refresh: 'Refresh',
+  loading: 'Loading holdings',
+  total: 'Total',
+  outOfScope: 'View only',
+  outOfScopeHint: 'Outside Tradeloom’s equity scope: shown for completeness and counted in the totals.',
+  cols: { symbol: 'Symbol', qty: 'Qty', avg: 'Avg', ltp: 'LTP', invested: 'Invested', current: 'Current value', pnl: 'P&L', net: 'Net change', day: 'Day change' },
+} as const;
+
+export const ordersCopy = {
+  updated: (symbol: string, status: string) => `Order ${symbol}: ${status}`,
+} as const;
+
 export const statusCopy = {
   label: {
     live: 'Live', connecting: 'Connecting', reconnecting: 'Reconnecting', offline: 'Offline', stopped: 'Not connected',
@@ -121,4 +137,140 @@ export const profileMenuCopy = {
   profileUnavailable: 'Profile not loaded',
   retry: 'Retry loading profile',
   themeFailed: (reason: string) => `The theme could not be saved: ${reason}`,
+} as const;
+
+export const calendarCopy = {
+  title: 'Trading days and special sessions',
+  version: 'Calendar version',
+  coversUntil: 'Covers until',
+  stale: 'Calendar may be stale',
+  staleHint: 'It does not cover the next 30 days. Import an updated list or add the missing days.',
+  staleToast: (until: string) => `Calendar may be stale — it ends on ${until}. Import an updated list in Settings → Market calendar.`,
+  open: 'Open',
+  import: 'Import CSV…',
+  importHint: 'A CSV file of up to 1 MiB and 5,000 rows. Every row is checked first; if one is invalid, nothing is imported.',
+  imported: 'Calendar imported',
+  importFailed: (reason: string) => `Calendar import refused: ${reason}`,
+  add: 'Add entry',
+  addTitle: 'Add calendar entry',
+  editTitle: 'Edit calendar entry',
+  edit: 'Edit',
+  remove: 'Remove',
+  removeTitle: 'Remove calendar entry?',
+  removeMessage: (date: string) => `The entry for ${date} is removed. The bundled calendar applies to that day again.`,
+  save: 'Save',
+  empty: 'No holidays or special sessions are listed.',
+  cols: { date: 'Date', exchange: 'Exchange', type: 'Type', session: 'Session', source: 'Source' },
+  tableCaption: 'Calendar entries',
+  // One label per `CalendarEntryDTO.type` Go lists; the dialog offers all but the inferred type.
+  dayTypes: { holiday: 'Holiday', special: 'Special session', trading: 'Trading day', 'inferred-non-trading': 'Non-trading day (inferred)' },
+  // `CalendarEntryDTO.source` of an override: Settings dialog, CSV import or inference (Go lists overrides only).
+  sources: { user: 'Added by you', import: 'Imported', inferred: 'Inferred' } as Record<string, string>,
+  phases: { 'pre-open': 'Pre-open', continuous: 'Continuous trading', closing: 'Closing session', 'post-closing': 'Post-closing', closed: 'Closed' },
+  fields: { date: 'Date', exchange: 'Exchange', type: 'Type', target: 'Phase to edit', phase: 'Session phase', start: 'Start', end: 'End' },
+  phaseList: 'Phases of this day',
+  newPhase: 'New phase',
+  inferredHint: 'This day was marked closed because no market data arrived for it. Saving it makes it a holiday added by you.',
+  tradingTimesHint: 'Leave Start and End empty for the regular session times.',
+  dateRequired: 'Choose a date',
+  timesInvalid: 'Enter a start time before the end time',
+  continuousRequired: 'A session needs a continuous trading phase',
+  // Go's own wording (internal/service/calendar.go parseEntry).
+  duplicateKind: 'Each phase kind appears at most once.',
+} as const;
+
+export const holdingsCardCopy = {
+  title: 'Holdings',
+  loading: 'Loading holdings summary',
+  error: (reason: string) => `Holdings could not be loaded: ${reason}`,
+  staleNotice: (reason: string) => `Showing the last loaded figures. The latest read failed: ${reason}`,
+  empty: 'No holdings',
+  open: 'Open the Holdings view',
+  currentValue: 'Current value',
+  investment: 'Investment',
+  pnl: 'P&L',
+  dayChange: "Day's change",
+} as const;
+
+// --- Settings (P0-4 Task 14)
+export const settingsViewCopy = {
+  nav: 'Settings groups',
+  groups: {
+    kite: 'Kite connection', trading: 'Trading', appearance: 'Appearance', chart: 'Chart', home: 'Home',
+    universes: 'Universes & baskets', calendar: 'Market calendar', data: 'Data', notifications: 'Notifications',
+    shortcuts: 'Shortcuts', limits: 'Limits', updates: 'Updates', diagnostics: 'Diagnostics', tours: 'Tours', about: 'About',
+  },
+  wholeNumber: 'Enter a whole number',
+} as const;
+
+export const kiteSettingsCopy = {
+  credentials: 'Credentials',
+  apiKey: 'API key',
+  apiSecret: 'API secret',
+  dataPlan: 'Data plan',
+  plan: { connect: 'Kite Connect (market data available)', none: 'Orders and portfolio only (no data plan)', unknown: 'Checked after the next login' },
+  secretStorage: 'Secret storage',
+  // Keys are P0-1 secrets backends as `CredentialsInfo.secretBackend` / `SecretStorageInfo.backend` report them.
+  backend: { keyring: 'System keyring', file: 'Encrypted file (secrets.enc)', locked: 'Encrypted file (locked)', none: 'Not stored' } as Record<string, string>,
+  change: 'Change',
+  changeTitle: 'Change Kite credentials',
+  changeConfirmTitle: 'Change Kite credentials?',
+  changeConfirmMessage: 'Changing the API key logs you out of Tradeloom; you will log in to Kite again.',
+  changeConfirm: 'Log out and continue',
+  changeLoginBusy: 'Finish or cancel the current login before changing credentials.',
+  // Same wording as Go's refusals (internal/kite/credentials.go, session.go), checked here before logging out.
+  invalidKey: 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.',
+  invalidSecret: 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.',
+  identical: 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.',
+  loggedOutKept: 'You are logged out; your previous credentials are still saved.',
+  save: 'Save',
+  saved: 'Kite credentials saved. Log in again to use them.',
+  remove: 'Remove credentials',
+  removeTitle: 'Remove Kite credentials?',
+  removeMessage: "The API key, the API secret and today's access token are deleted from this computer. You will need to set them up again before using Kite.",
+  migrate: 'Move secrets to the system keyring',
+  migrated: 'Secrets moved to the system keyring; the encrypted file was deleted.',
+  fileNotRemovedTitle: 'Old secrets file not removed',
+  fileNotRemoved: 'Your secrets are now in the system keyring, but the old encrypted file (secrets.enc) is still on disk.',
+  fileNotRemovedRetry: 'Try removing it again',
+  leftoverFileInfo: 'An old encrypted secrets file (secrets.enc) is still on disk. Tradeloom uses the system keyring and does not read it.',
+  loadFailed: 'The Kite connection details could not be loaded.',
+  loadFailedRetry: 'Retry loading Kite connection',
+  login: 'Login',
+  redirectUrl: 'Redirect URL',
+  port: 'Login callback port',
+  portHint: 'Register the matching redirect URL in the Kite developer console after changing this.',
+  portChangedTitle: 'Redirect URL changed',
+  portChanged: (url: string) => `Update the redirect URL of your app in the Kite developer console to ${url}, or the next login will fail.`,
+} as const;
+
+export const appearanceCopy = {
+  title: 'Theme and layout',
+  darkTheme: 'Dark theme',
+  followSystem: 'Follow system theme',
+  followSystemHint: 'Use the light or dark preference of your desktop.',
+  followingHint: 'Controlled by your desktop while "Follow system theme" is on.',
+  sidebarCollapsed: 'Collapse the sidebar to icons',
+  saveFailed: (reason: string) => `The setting could not be saved: ${reason}`,
+} as const;
+
+export const chartSettingsCopy = {
+  title: 'Chart defaults',
+  timeframe: 'Default chart timeframe',
+  hint: 'Used the first time an instrument is charted; afterwards each chart remembers its own timeframe.',
+} as const;
+
+export const aboutCopy = {
+  app: 'Tradeloom',
+  version: 'Version',
+  build: 'Build',
+  schema: 'Database schema',
+  legal: 'Legal',
+  terms: 'Terms of use',
+  privacy: 'Privacy notice',
+  risk: 'Risk disclosure',
+  licences: 'Third-party licences',
+  component: 'Component',
+  licenceVersion: 'Version',
+  licence: 'Licence',
 } as const;

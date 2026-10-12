@@ -126,6 +126,61 @@ func TestRequiresOrdersTag(t *testing.T) {
 	}
 }
 
+// Ruling 83 (5): a file with only a legacy "// +build" line is not orders-only, even when that line says
+// orders,!noorders: requiresOrdersTag reads //go:build lines only, so such a file is flagged (fail closed).
+func TestRequiresOrdersTag_PlusBuildOnly(t *testing.T) {
+	for _, src := range []string{
+		"// +build orders,!noorders\n\npackage x\n",
+		"// +build orders\n// +build !noorders\n\npackage x\n",
+	} {
+		f, err := parser.ParseFile(token.NewFileSet(), "x.go", src, parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if requiresOrdersTag(f) {
+			t.Errorf("requiresOrdersTag(%q) = true, want false", src)
+		}
+	}
+	// With a //go:build line as well, the //go:build line decides.
+	f, err := parser.ParseFile(token.NewFileSet(), "x.go", "//go:build orders && !noorders\n// +build orders,!noorders\n\npackage x\n", parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requiresOrdersTag(f) {
+		t.Error("//go:build orders && !noorders with a matching +build line is orders-only")
+	}
+}
+
+// g0-exec (Ruling 83) on the fixture module: every reference outside internal/app to os/exec (functions,
+// types, aliases, and methods reached through a value internal/app returns), os.StartProcess,
+// syscall.Exec/ForkExec/StartProcess and golang.org/x/sys/unix Exec/ForkExec, including a function value.
+// internal/app (the opener) and harmless calls in the same packages (os.Getpid, syscall.Getpid, unix.Getpid)
+// are not flagged.
+func TestExecRule_Fixture(t *testing.T) {
+	want := []string{"g0-exec execuser/execuser.go:15"}
+	for line := 18; line <= 26; line++ {
+		want = append(want, fmt.Sprintf("g0-exec execuser/execuser.go:%d", line))
+	}
+	for _, tags := range []string{"noorders", "orders", "orders,noorders"} {
+		t.Run(tags, func(t *testing.T) { assertList(t, runFixture(t, tags, CheckExec), want) })
+	}
+}
+
+// Every g0-exec name must resolve in the standard library of this toolchain (and in golang.org/x/sys/unix
+// when the module graph has it); a renamed function would otherwise silently drop out of the rule.
+func TestExecNames_Resolve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads the standard library")
+	}
+	pkgs, err := Load(moduleRoot(t), nil, "webkit2_41,noorders", "os", "os/exec", "syscall")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing := ExecNamesMissing(pkgs); len(missing) != 0 {
+		t.Fatalf("g0-exec names not found: %v", missing)
+	}
+}
+
 func TestKitePkg_AnyMajorVersion(t *testing.T) {
 	for path, want := range map[string]bool{
 		"github.com/zerodha/gokiteconnect/v4":             true,
@@ -167,6 +222,12 @@ func TestImportRules_Fixture(t *testing.T) {
 		"g0-net fixture/internal/netuser os/exec",
 		"g0-net fixture/internal/netuser unsafe",
 		"g0-mock fixture/internal/netuser fixture/internal/kite/mock",
+		// Ruling 83: syscall and golang.org/x/sys only in the allow-listed packages (fixture/internal/service
+		// is one, so its syscall import is clean); plugin nowhere; internal/app may import os/exec.
+		"g0-exec fixture/internal/execuser golang.org/x/sys/unix",
+		"g0-exec fixture/internal/execuser syscall",
+		"g0-net fixture/internal/execuser os/exec",
+		"g0-plugin fixture/internal/execuser plugin",
 	})
 }
 
@@ -182,6 +243,9 @@ func TestKiteRawWrite_NamesResolve(t *testing.T) {
 	}
 	if missing := KiteRawWriteMissing(pkgs); len(missing) != 0 {
 		t.Fatalf("Ruling 69 identifiers not found in gokiteconnect: %v", missing)
+	}
+	if missing := KiteConstructMissing(pkgs); len(missing) != 0 {
+		t.Fatalf("Ruling 91 g0-kitenew names not found in gokiteconnect: %v", missing)
 	}
 }
 
@@ -217,9 +281,13 @@ const (URIPlaceOrder, URIModifyOrder, URICancelOrder, URIConvertPosition, URIIni
 		impl string
 		want []string
 	}{
-		"with *httpClient":     {"type httpClient struct{}\nfunc (*httpClient) Do(string) error { return nil }\nfunc (h *httpClient) GetClient() *httpClient { return h }\n", nil},
-		"Do renamed":           {"type httpClient struct{}\nfunc (*httpClient) Do2(string) error { return nil }\nfunc (h *httpClient) GetClient() *httpClient { return h }\n", []string{"(*httpClient).Do", "(*httpClient).GetClient"}}, // no longer implements HTTPClient
-		"no implementing type": {"type httpClient struct{}\n", []string{"(*httpClient).Do", "(*httpClient).GetClient"}},
+		"with *httpClient": {"type httpClient struct{}\nfunc (*httpClient) Do(string) error { return nil }\nfunc (h *httpClient) GetClient() *httpClient { return h }\n", nil},
+		// Ruling 83 (5): the message names the type that really implements HTTPClient, not a fixed "httpClient".
+		"renamed implementation": {"type httpClient struct{}\ntype rawClient struct{}\nfunc (*rawClient) Do(string) error { return nil }\nfunc (*rawClient) GetClient() *httpClient { return nil }\n", nil},
+		"promoted Do": {"type httpClient struct{}\ntype base struct{}\nfunc (*base) Do(string) error { return nil }\ntype rawClient struct{ *base }\nfunc (*rawClient) GetClient() *httpClient { return nil }\n",
+			nil}, // the promoted (*base).Do is banned as (*rawClient).Do (checked below)
+		"Do renamed":           {"type httpClient struct{}\nfunc (*httpClient) Do2(string) error { return nil }\nfunc (h *httpClient) GetClient() *httpClient { return h }\n", []string{"HTTPClient.Do (no type implements HTTPClient)", "HTTPClient.GetClient (no type implements HTTPClient)"}}, // no longer implements HTTPClient
+		"no implementing type": {"type httpClient struct{}\n", []string{"HTTPClient.Do (no type implements HTTPClient)", "HTTPClient.GetClient (no type implements HTTPClient)"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fset := token.NewFileSet()
@@ -231,9 +299,16 @@ const (URIPlaceOrder, URIModifyOrder, URICancelOrder, URIConvertPosition, URIIni
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := KiteRawWriteMissing([]*packages.Package{{PkgPath: tp.Path(), Types: tp}})
+			pkgs := []*packages.Package{{PkgPath: tp.Path(), Types: tp}}
+			got := KiteRawWriteMissing(pkgs)
 			if strings.Join(got, "|") != strings.Join(tc.want, "|") {
 				t.Fatalf("missing %q, want %q", got, tc.want)
+			}
+			if name == "promoted Do" {
+				base := tp.Scope().Lookup("base").Type().(*types.Named).Method(0)
+				if n := kiteRawWriteObjects(pkgs)[base]; n != "(*rawClient).Do" {
+					t.Fatalf("promoted (*base).Do banned as %q, want (*rawClient).Do", n)
+				}
 			}
 		})
 	}

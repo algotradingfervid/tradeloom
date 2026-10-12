@@ -392,6 +392,29 @@ describe('the event bridge owns load() (Ruling 102 I3)', () => {
     stop();
   });
 
+  it('ready(A) → expired(A) → ready(B): A\'s in-flight call is dropped and B\'s lists load exactly once (Ruling 98)', async () => {
+    backend.state.watchlists = { lists: [wl('a', 'A list', [SBIN])], activeId: 'a' };
+    const stop = startEventBridge(backend, { navigate: () => {} });
+    backend.emit('session.state', readySession({ userId: 'AB1234' }));
+    await vi.waitFor(() => expect(state().status).toBe('ready'));
+    expect(state().lists.map((l) => l.name)).toEqual(['A list']);
+
+    const d = deferred<void>();
+    backend.watchlists.add = async () => { await d.promise; throw refusal('internal'); };
+    const inFlight = state().addItem(TCS.token);
+    backend.emit('session.state', readySession({ state: 'expired', userId: 'AB1234' }));
+    expect(state().lists.map((l) => l.name)).toEqual(['A list']); // expiry alone keeps the data
+
+    backend.state.watchlists = { lists: [wl('b', 'B list', [INFY])], activeId: 'b' };
+    backend.emit('session.state', readySession({ userId: 'ZX9876' }));
+    await vi.waitFor(() => expect(state().lists.map((l) => l.name)).toEqual(['B list']));
+    d.resolve();
+    expect(await inFlight).toBe('cancelled');
+    expect(state()).toMatchObject({ status: 'ready', activeId: 'b' });
+    expect(backend.callsTo('watchlists.list')).toHaveLength(2); // A once, B once
+    stop();
+  });
+
   it('a non-ready session.state does not load', async () => {
     const stop = startEventBridge(backend, { navigate: () => {} });
     backend.emit('session.state', readySession({ state: 'logged_out', userId: '' }));

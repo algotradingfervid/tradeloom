@@ -3,6 +3,7 @@ import type {
   EventMap, EventName, HoldingsSnapshot, JobProgress, PositionsSnapshot, Profile, RefreshScope, SessionStatus, ShortcutAction,
   ShortcutScope, StatusSnapshot,
 } from '../backend';
+import { CalendarRefusal, checkEntry, mergeOverrides, parseCalendarCsv } from './calendar';
 import { next0600Ist } from './fixtures';
 import { createMarketDomains, type MarketMockState } from './market';
 
@@ -19,7 +20,10 @@ export interface MockState extends MarketMockState {
   shortcuts: ShortcutAction[];
   stats: DataStats;
   backup: BackupInfo;
+  /** Go lists overrides only (user, import, inferred) — never the bundled days. */
   calendar: CalendarInfo;
+  /** Contents of the CSV `Calendar.Import` reads (whatever path was chosen); undefined = file not found. */
+  calendarCsv?: string;
   info: AppInfo;
   crash: CrashInfo;
   folderChoice: string;
@@ -49,6 +53,16 @@ function refusal(code: string, stage: string, reason: string): Error {
   return new Error(JSON.stringify({ code, stage, reason }));
 }
 
+/** Runs a calendar operation, turning a `CalendarRefusal` into Go's `{code, stage: "calendar", reason}` rejection. */
+function goLike<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    if (e instanceof CalendarRefusal) throw refusal(e.code, 'calendar', e.reason);
+    throw e;
+  }
+}
+
 const TIMEFRAMES = ['minute', '3minute', '5minute', '10minute', '15minute', '30minute', '60minute', 'day'];
 
 // The Go validators of contract §E that the UI can trip.
@@ -57,6 +71,13 @@ const VALIDATORS: Record<string, (v: unknown) => string | null> = {
   'log.level': (v) => (v === 'info' || v === 'debug' ? null : 'Log level must be info or debug'),
   'chart.default_timeframe': (v) => (typeof v === 'string' && TIMEFRAMES.includes(v) ? null : 'Unknown timeframe'),
 };
+
+const CRED_RE = /^[A-Za-z0-9]{6,64}$/;
+const normalizeCredential = (v: string): string => v.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+
+/** Go kite.CodeLoginBusy (internal/kite/session_types.go). */
+const LOGIN_BUSY = 'login_in_progress';
+const INVALID_PORT = 'Choose a port between 1024 and 65535. Then set the redirect URL of your app in the Kite developer console to http://127.0.0.1:<port>/kite/callback with that port.';
 
 const overlaps = (a: ShortcutScope, b: ShortcutScope) => a === b || a === 'global' || b === 'global';
 
@@ -165,8 +186,17 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       status: () => copy(state.session),
       credentials: () => copy(state.session.credentials),
       saveCredentials: (input: CredentialsInput) => {
-        const key = input.apiKey.trim();
-        if (!key || !input.apiSecret.trim()) throw refusal('invalid_credentials', 'session', 'Enter both the API key and the API secret');
+        // As Go kite.NormalizeCredential + ValidateAPIKey / ValidateAPISecret (internal/kite/credentials.go).
+        const key = normalizeCredential(input.apiKey);
+        const secret = normalizeCredential(input.apiSecret);
+        if (!CRED_RE.test(key)) throw refusal('invalid_credentials', 'session', 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.');
+        if (!CRED_RE.test(secret)) throw refusal('invalid_credentials', 'session', 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.');
+        if (key === secret) {
+          throw refusal('invalid_credentials', 'session', 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.');
+        }
+        // As Go kite.Session.SaveCredentials: refused while a login runs or a session is live.
+        if (state.session.state === 'logging_in') throw refusal(LOGIN_BUSY, 'session', 'Finish or cancel the current login before changing credentials.');
+        if (state.session.state === 'ready') throw refusal('already_logged_in', 'session', 'Log out before changing the Kite credentials.');
         if (state.session.secrets.mode === 'choose' || state.session.secrets.mode === 'none') {
           throw refusal('secret_store', 'session', 'Choose where to store the secret first');
         }
@@ -177,10 +207,14 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
       removeCredentials: () => setSession({ state: 'no_credentials', riskAckRequired: false, credentials: { ...state.session.credentials, configured: false, apiKeyMasked: '' } }),
       setRedirectPort: (port: number) => {
-        if (!Number.isInteger(port) || port < 1024 || port > 65535) throw refusal('invalid_port', 'session', 'Port must be a whole number between 1024 and 65535');
-        const credentials = { ...state.session.credentials, port, redirectUrl: `http://127.0.0.1:${port}/kite/callback` };
-        setSession({ credentials });
-        return copy(credentials);
+        // As Go kite.Session.SetRedirectPort (texts verbatim); Go publishes no session.state for a port change.
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) throw refusal('invalid_port', 'session', INVALID_PORT);
+        const redirectUrl = `http://127.0.0.1:${port}/kite/callback`;
+        if (state.session.state === 'logging_in') {
+          throw refusal(LOGIN_BUSY, 'session', `Finish or cancel the current login before changing the port. Then set the redirect URL of your app in the Kite developer console to ${redirectUrl}.`);
+        }
+        state.session.credentials = { ...state.session.credentials, port, redirectUrl };
+        return copy(state.session.credentials);
       },
       login: () => {
         const ok = state.loginListenerOk;
@@ -216,16 +250,17 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
       refuseSecretStorage: () => setSession({ secrets: { ...state.session.secrets, mode: 'none', backend: 'none' } }),
       unlock: (passphrase: string) => {
-        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Wrong passphrase');
+        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Unlock failed: wrong passphrase or damaged file. Check the passphrase and try again.'); // Go msgBadPassphrase
         return setSession({
           state: state.session.credentials.configured ? 'logged_out' : 'no_credentials',
           secrets: { ...state.session.secrets, backend: 'file' },
         });
       },
       migrateToKeyring: () => {
-        if (!state.session.secrets.keyringAvailable) throw refusal('keyring_unavailable', 'secrets', 'The system keyring is not available');
+        // As Go service.MigrateToKeyring: no session.state is published; the caller re-reads Credentials().
+        if (!state.session.secrets.keyringAvailable) throw refusal('keyring_unavailable', 'secrets', 'No system keyring is available. Unlock or start it, then try again.');
         const secrets = { mode: 'keyring' as const, backend: 'keyring' as const, keyringAvailable: true, fileExists: false, choices: [] };
-        setSession({ secrets, credentials: { ...state.session.credentials, secretBackend: 'keyring' } });
+        state.session = { ...state.session, secrets, credentials: { ...state.session.credentials, secretBackend: 'keyring' } };
         return copy(secrets);
       },
       reconnectFeed: () => undefined,
@@ -256,10 +291,13 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
         const clash = binding === '' ? undefined : state.shortcuts.find((a) => a.id !== actionId && a.binding === binding && overlaps(a.scope, target.scope));
         if (clash) throw refusal('conflict', 'shortcuts', clash.label);
         target.binding = binding;
+        // As in Go (service.publishShortcuts): the full list on settings.changed key "shortcuts".
+        emit('settings.changed', { key: 'shortcuts', value: state.shortcuts });
         return copy(target);
       },
       resetShortcuts: () => {
         for (const a of state.shortcuts) a.binding = a.defaultBinding;
+        emit('settings.changed', { key: 'shortcuts', value: state.shortcuts });
         return copy(state.shortcuts);
       },
       getUiState: (key: string) => state.uiState[key] ?? '',
@@ -291,18 +329,25 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
     }),
     calendar: wrap('calendar', {
+      // Go-like (Ruling 100 M4): overrides only, Go's refusal codes and reasons (./calendar.ts).
       info: () => copy(state.calendar),
       chooseImportFile: () => state.fileChoice,
-      import: (_path: string) => copy(state.calendar),
-      upsert: (entry: CalendarEntryInput) => {
-        const others = state.calendar.entries.filter((e) => !(e.exchange === entry.exchange && e.date === entry.date));
-        state.calendar.entries = [...others, { ...entry, source: 'user' }].sort((a, b) => a.date.localeCompare(b.date));
+      import: (path: string) => goLike(() => {
+        if (!path || state.calendarCsv === undefined) throw new CalendarRefusal('not_found', 'The calendar file was not found.');
+        mergeOverrides(state.calendar, parseCalendarCsv(state.calendarCsv));
         return copy(state.calendar);
-      },
-      remove: (exchange: string, date: string) => {
+      }),
+      upsert: (entry: CalendarEntryInput) => goLike(() => {
+        mergeOverrides(state.calendar, [checkEntry(entry)]);
+        return copy(state.calendar);
+      }),
+      remove: (exchange: string, date: string) => goLike(() => {
+        if (!state.calendar.entries.some((e) => e.exchange === exchange && e.date === date)) {
+          throw new CalendarRefusal('not_found', `No override for ${exchange} on ${date}.`);
+        }
         state.calendar.entries = state.calendar.entries.filter((e) => !(e.exchange === exchange && e.date === date));
         return copy(state.calendar);
-      },
+      }),
     }),
     diagnostics: wrap('diagnostics', {
       openLogsFolder: () => undefined,

@@ -5,8 +5,10 @@ import { useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
 import { registerReset } from '../store/reset';
 import { useTicksStore } from '../store/ticks';
+import { loadPortfolio, usePortfolioStore } from '../store/portfolio';
+import type { HoldingsSnapshot } from './backend';
 import { bootstrap, startEventBridge } from './events';
-import { demoSeed, FIXED_NOW, freshSeed, readySession, tickFixture } from './mock/fixtures';
+import { demoSeed, FIXED_NOW, freshSeed, holdingA, holdingsOf, readySession, tickFixture } from './mock/fixtures';
 import { createMockBackend } from './mock/index';
 
 describe('event bridge', () => {
@@ -126,6 +128,59 @@ describe('account data is cleared on sign-out (Ruling 83-F M5)', () => {
     expect(useTicksStore.getState().latest[1].ltp).toBe(10);
     expect(useSettingsStore.getState().values).toEqual({ 'appearance.theme': 'dark' });
     expect(useSessionStore.getState().session?.state).toBe('no_credentials');
+    stop();
+  });
+});
+
+describe('a different user signing in clears account data (Ruling 98)', () => {
+  async function switchUser(viaLoggingIn: boolean) {
+    const accountReset = vi.fn();
+    registerReset(accountReset);
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    backend.emit('session.state', readySession({ userId: 'AA1111', sessionId: 'sess-a' }));
+    backend.emit('holdings.changed', holdingsOf([holdingA], FIXED_NOW));
+    expect(usePortfolioStore.getState().holdings.data.rows).toHaveLength(1);
+    let resolve!: (h: HoldingsSnapshot) => void;
+    backend.portfolio.holdings = () => new Promise<HoldingsSnapshot>((r) => { resolve = r; });
+    const read = loadPortfolio('holdings', backend);
+    backend.emit('session.state', readySession({ state: 'expired', userId: 'AA1111', sessionId: 'sess-a' }));
+    if (viaLoggingIn) backend.emit('session.state', readySession({ state: 'logging_in', userId: '', sessionId: '' }));
+    backend.emit('session.state', readySession({ userId: 'BB2222', sessionId: 'sess-b', riskAckRequired: true }));
+    expect(accountReset).toHaveBeenCalledTimes(1);
+    resolve(holdingsOf([holdingA], FIXED_NOW + 1));
+    await read;
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'idle', loading: false, data: { rows: [], asOfMs: 0 } });
+    expect(useSessionStore.getState().session?.userId).toBe('BB2222');
+    // B's first snapshot (asOfMs 0 or later) is accepted: nothing of A's is left to out-rank it.
+    backend.emit('holdings.changed', holdingsOf([], 0));
+    expect(usePortfolioStore.getState().holdings).toMatchObject({ status: 'ready', data: { rows: [] } });
+    stop();
+  }
+
+  it('expired(A) → logging_in → ready(B): A\'s stores are cleared and A\'s in-flight read is dropped', () => switchUser(true));
+  it('paste login expired(A) → ready(B), with no logging_in in between', () => switchUser(false));
+
+  it('the same user signing in again keeps account data; the first session after start never resets', () => {
+    const accountReset = vi.fn();
+    registerReset(accountReset);
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    backend.emit('session.state', readySession());
+    backend.emit('session.state', readySession({ state: 'expired' }));
+    backend.emit('session.state', readySession({ sessionId: 'sess-2' }));
+    expect(accountReset).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it('a user known only from bootstrap (no earlier event) still counts as the previous user', async () => {
+    const accountReset = vi.fn();
+    registerReset(accountReset);
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    await bootstrap(backend);
+    backend.emit('session.state', readySession({ userId: 'BB2222', sessionId: 'sess-b' }));
+    expect(accountReset).toHaveBeenCalledTimes(1);
     stop();
   });
 });
