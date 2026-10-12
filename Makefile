@@ -46,6 +46,7 @@ licenses:
 notices:
 	LICENSE_TAGS=$(LICENSE_TAGS) scripts/gen-notices.sh > THIRD_PARTY_NOTICES.md.tmp
 	mv THIRD_PARTY_NOTICES.md.tmp THIRD_PARTY_NOTICES.md
+	cp THIRD_PARTY_NOTICES.md internal/licences/THIRD_PARTY_NOTICES.md
 
 deb:
 	mkdir -p dist
@@ -75,4 +76,4 @@ docker-licence: docker-image
 licence-in-container:
 	cd frontend && npm ci
 	$(MAKE) licenses notices
-	git diff --exit-code THIRD_PARTY_NOTICES.md
+	git diff --exit-code THIRD_PARTY_NOTICES.md internal/licences/THIRD_PARTY_NOTICES.md
