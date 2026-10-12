@@ -1,0 +1,129 @@
+# ARCHITECTURE §10.4 jobs for P0-1: go-unit (incl. archtest, redaction, G-0 stub), ta, arch-lint,
+# frontend, licence, linux-package (Docker build + G-0 nm check + .deb + AppImage), install-smoke (S0-3).
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.14"
+  NODE_VERSION: "22.23.3"
+  GOWORK: "off"
+  GOTOOLCHAIN: local
+  TAGS: webkit2_41,noorders
+
+jobs:
+  go-unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - name: GTK/WebKit headers (cmd/tradeloom compiles with cgo)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+      - run: go vet -tags "$TAGS" ./...
+      - name: go test (archtest, redaction, journal, backup grep, G-0 stub)
+        run: go test -race -count=1 -tags "$TAGS" ./...
+      - name: G-0 — noorders wins when both tags are set
+        run: go test -count=1 -tags webkit2_41,orders,noorders ./internal/kite/orderwrite/...
+
+  ta:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false   # ta has no dependencies, hence no go.sum to key a cache on
+      - run: cd ta && go vet ./... && go test -count=1 ./...
+
+  arch-lint:
+    runs-on: ubuntu-24.04
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - run: go install github.com/fe3dback/go-arch-lint@v1.19.0
+      - run: go-arch-lint check
+
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  licence:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: go install github.com/google/go-licenses@v1.6.0
+      - run: cd frontend && npm ci
+      - run: make licenses
+      - name: THIRD_PARTY_NOTICES.md is current
+        run: make notices && git diff --exit-code THIRD_PARTY_NOTICES.md
+
+  linux-package:
+    needs: [go-unit, arch-lint, frontend, licence]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build in the ubuntu:22.04 container (wails build, G-0 nm check, .deb, AppImage)
+        run: make docker-release VERSION="${{ inputs.version || format('0.0.0+ci.{0}', github.run_number) }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages
+          path: dist/*
+          if-no-files-found: error
+
+  install-smoke:
+    needs: linux-package
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", kind: deb }
+          - { image: "ubuntu:24.04", kind: deb }
+          - { image: "debian:12", kind: deb }
+          - { image: "fedora:39", kind: appimage }
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-packages
+          path: dist
+      - run: bash scripts/install-smoke.sh ${{ matrix.kind }}

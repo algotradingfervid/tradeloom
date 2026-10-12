@@ -1,0 +1,88 @@
+# go-arch-lint v1.19.0 — ARCHITECTURE §2.4 rules 2, 3, 5, 6, 7 and the component graph.
+# go-arch-lint does not see standard-library imports, so rule 1/4 (database/sql, net/http), rule 8 (time)
+# and the G-0 call check live in internal/archtest. Later sub-plans add their components and vendors here.
+version: 3
+workdir: .
+allow:
+  depOnAnyVendor: false
+  deepScan: false   # interface injection (store.SettingsRepo → settings.Backend) is the intended design
+exclude:
+  - ta
+  - third_party
+  - frontend/node_modules
+  - internal/archtest/testdata
+excludeFiles:
+  - "^.*_test\\.go$"
+
+vendors:
+  wails:      { in: [github.com/wailsapp/wails/v2, github.com/wailsapp/wails/v2/**] }
+  kite:       { in: [github.com/zerodha/gokiteconnect/v4, github.com/zerodha/gokiteconnect/v4/**] }
+  sqlite:     { in: [modernc.org/sqlite, modernc.org/sqlite/**] }
+  keyring:    { in: [github.com/zalando/go-keyring] }
+  xcrypto:    { in: [golang.org/x/crypto/**] }
+  flock:      { in: [github.com/gofrs/flock] }
+  lumberjack: { in: [gopkg.in/natefinch/lumberjack.v2] }
+  zstd:       { in: [github.com/klauspost/compress/zstd] }
+  xtools:     { in: [golang.org/x/tools/go/packages] }
+  websocket:  { in: [github.com/gorilla/websocket] }
+
+components:
+  cmd:        { in: cmd/tradeloom }
+  frontend:   { in: frontend }
+  app:        { in: internal/app }
+  bus:        { in: internal/bus }
+  clock:      { in: internal/clock }
+  logging:    { in: internal/logging }
+  settings:   { in: internal/settings }
+  store:      { in: internal/store }
+  secrets:    { in: internal/secrets }
+  keyringprobe: { in: internal/secrets/keyringprobe }   # S0-4 spike tool
+  orderwrite: { in: internal/kite/orderwrite }
+  archtest:   { in: internal/archtest }
+  # P0-2 market data (packages present on this branch).
+  calendardata: { in: assets/calendar }                 # embedded exchange-calendar CSV
+  calendar:   { in: internal/calendar }
+  candles:    { in: internal/candles }
+  kite:       { in: internal/kite }
+  ratelimit:  { in: internal/kite/ratelimit }
+  kitemock:   { in: internal/kite/mock }                # test double: no production component may depend on it
+
+commonComponents:
+  - logging
+  - clock
+
+deps:
+  cmd:
+    mayDependOn: [frontend, app, store]
+    canUse: [wails]
+  app:
+    mayDependOn: [bus, settings, store, secrets]
+    canUse: [wails]
+  clock:
+    mayDependOn: [bus]
+  settings:
+    mayDependOn: [bus]
+  store:
+    canUse: [sqlite, flock, zstd]
+  secrets:
+    canUse: [keyring, xcrypto]
+  keyringprobe:
+    mayDependOn: [secrets]
+  logging:
+    canUse: [lumberjack]
+  orderwrite:
+    canUse: [kite]
+  archtest:
+    canUse: [xtools]
+  calendar:
+    mayDependOn: [calendardata]
+  candles:
+    mayDependOn: [calendar]
+  kite:
+    mayDependOn: [bus, ratelimit]
+    canUse: [kite]
+  ratelimit:
+    mayDependOn: [bus]
+  kitemock:
+    mayDependOn: [kite, ratelimit]
+    canUse: [websocket]

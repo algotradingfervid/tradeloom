@@ -1,0 +1,33 @@
+# ARCHITECTURE §10.4 release.yml: on a version tag, run the whole CI pipeline (including the
+# install matrix) for that version and publish the noorders packages with SHA-256 sums.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      version: ${{ github.ref_name }}
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: linux-packages
+          path: dist
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "Tradeloom ${{ github.ref_name }} (noorders)" \
+            --notes "P0-P3 build. Order placement is not compiled in (gate G-0)."
