@@ -17,3 +17,19 @@
   border-radius: var(--radius-pill); border: 1px solid var(--border); font-weight: 700; line-height: 1;
 }
 .watchlist-search__add.is-in-list { color: var(--accent); border-color: currentColor; }
+.watchlist-panel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.watchlist-panel__header { display: flex; align-items: center; justify-content: space-between; }
+.watchlist-panel__header h2 { margin: 0; font-size: 15px; }
+.watchlist-panel__tools { display: flex; gap: 6px; align-items: center; position: relative; }
+.watchlist-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: thin; }
+.watchlist-tab { white-space: nowrap; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: none; color: inherit; cursor: pointer; }
+.watchlist-tab[aria-selected="true"] { border-color: var(--accent); font-weight: 600; }
+.watchlist-menu { position: absolute; z-index: 10; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+.watchlist-menu button { white-space: nowrap; background: none; border: 0; color: var(--text); padding: 6px 10px; cursor: pointer; }
+.watchlist-error { margin: 0; font-size: 12px; color: var(--down); }
+.watchlist-empty { color: var(--text-muted); padding: var(--space-3) var(--space-1); }
+.watchlist-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.watchlist-table th { text-align: left; font-size: var(--fs-xs); font-weight: 500; color: var(--text-muted); padding: var(--space-1); }
+/* Two 32 px icon buttons, a 4 px gap and 4 px padding each side. */
+.watchlist-table th:nth-child(3) { width: calc(2 * 32px + var(--space-1) * 3); }
+.watchlist-table .instrument-row[draggable="true"] { cursor: grab; }

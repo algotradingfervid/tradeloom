@@ -475,6 +475,12 @@ export const instrumentCopy = {
   // P0-3 Ruling 38: the same "View only" flag and hint as the portfolio views.
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
+  // InstrumentRow (P0-5 Task 14; reused by P3 scanners): row actions and the polled/stale text hints.
+  showOnChart: (name: string) => `Show ${name} on chart`,
+  remove: (name: string) => `Remove ${name}`,
+  polled: 'polled',
+  polledHint: 'Live subscription limit reached — updates every 5 s',
+  stale: 'last known',
 } as const;
 
 export const chartHeaderCopy = {
@@ -525,4 +531,23 @@ export const watchlistSearchCopy = {
   added: (symbol: string, list: string) => `Added ${symbol} to ${list}`,
   searchFailed: 'Search failed. Try again.',
   addFailed: (symbol: string, reason: string) => `Could not add ${symbol}: ${reason}`,
+} as const;
+
+/** P0-5 Task 14: watchlist rows (FR-WATCH-001/005/006). */
+export const watchlistRowsCopy = {
+  empty: 'Search to add instruments',
+  symbolColumn: 'Symbol',
+  priceColumn: 'LTP / Change',
+  actionsColumn: 'Actions',
+  tableLabel: (list: string) => `${list} instruments`,
+  removed: (name: string, list: string) => `Removed ${name} from ${list}`,
+  undo: 'Undo',
+  missing: 'Instrument no longer available',
+  removeMissing: (row: number) => `Remove unavailable instrument in row ${row}`,
+  missingName: 'unavailable instrument',
+  removeFailed: (reason: string) => `Could not remove the instrument: ${reason}`,
+  undoFailed: (reason: string) => `Could not restore the instrument: ${reason}`,
+  moveFailed: (reason: string) => `Could not reorder the watchlist: ${reason}`,
+  moved: (name: string, position: number, count: number) => `${name} moved to ${position} of ${count}`,
+  readOnlyMisuse: 'WatchlistRows: the list is not the active watchlist; rendering it read-only (store actions act on the active list)',
 } as const;
