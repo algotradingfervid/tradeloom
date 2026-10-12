@@ -14,7 +14,8 @@ import { useInstruments } from '../../store/instrumentsStore';
 import { resetOnLogout } from '../../store/reset';
 import { useToastStore } from '../../store/toasts';
 import { tokensOf, useWatchlists } from '../../store/watchlistsStore';
-import { SEARCH_DEBOUNCE_MS, WatchlistSearch } from './WatchlistSearch';
+import { SEARCH_DEBOUNCE_MS } from '../../instruments/useInstrumentSearch';
+import { WatchlistSearch } from './WatchlistSearch';
 import { NIFTY_OCT_FUT, NIFTY_OPTION, SBIN, TCS } from '../../instruments/fixtures';
 
 let backend: MockBackend;
@@ -212,6 +213,7 @@ describe('WatchlistSearch', () => {
     vi.mocked(searchInstruments).mockResolvedValue([SBIN, TCS]);
     render(<WatchlistSearch />);
     expect(input()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
     expect(input()).toHaveAttribute('aria-autocomplete', 'list');
     await type('s');
     const listbox = screen.getByRole('listbox', { name: 'Search results' });
@@ -228,6 +230,9 @@ describe('WatchlistSearch', () => {
     expect(input()).toHaveAttribute('aria-expanded', 'false');
     expect(input()).not.toHaveAttribute('aria-activedescendant');
     expect(screen.getByRole('status')).toHaveTextContent('No instruments match');
+    // The region is always present and visually hidden; the visible copy is hidden from assistive tech.
+    expect(screen.getByRole('status')).toHaveClass('visually-hidden');
+    expect(screen.getByText('No instruments match', { selector: '.watchlist-search__message' })).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('NFR-15: an out-of-scope row is never offered nor cached; an added instrument is cached for later lookups', async () => {
