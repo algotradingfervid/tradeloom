@@ -160,7 +160,11 @@ func isKiteClient(t types.Type) bool {
 	return kitePkg.MatchString(named.Obj().Pkg().Path()) && named.Obj().Name() == "Client"
 }
 
-// requiresOrdersTag is true when the file's //go:build line is satisfied with "orders" but not without it.
+// requiresOrdersTag reports whether the file's //go:build expression links only in orders builds
+// (Ruling 79 I-1): it must be false for EVERY assignment of the tags it names in which orders is false
+// or noorders is true. Every other tag (go1.x, GOOS, cgo, custom) is a free variable, so a term such as
+// "|| go1.1" or "|| linux" that is true without the orders tag disqualifies the file. A file without a
+// //go:build line, an unparsable one, or one naming more than maxFreeTags tags is not orders-only.
 func requiresOrdersTag(f *ast.File) bool {
 	for _, cg := range f.Comments {
 		if cg.Pos() > f.Package {
@@ -174,14 +178,52 @@ func requiresOrdersTag(f *ast.File) bool {
 			if err != nil {
 				return false
 			}
-			with := expr.Eval(func(tag string) bool { return tag == "orders" })
-			without := expr.Eval(func(tag string) bool { return false })
-			// Must link only with orders and never when noorders is also set.
-			both := expr.Eval(func(tag string) bool { return tag == "orders" || tag == "noorders" })
-			return with && !without && !both
+			return ordersOnly(expr)
 		}
 	}
 	return false
+}
+
+const maxFreeTags = 16
+
+func ordersOnly(expr constraint.Expr) bool {
+	seen := map[string]bool{"orders": true, "noorders": true}
+	tags := []string{"orders", "noorders"}
+	var walk func(constraint.Expr)
+	walk = func(e constraint.Expr) {
+		switch e := e.(type) {
+		case *constraint.TagExpr:
+			if !seen[e.Tag] {
+				seen[e.Tag] = true
+				tags = append(tags, e.Tag)
+			}
+		case *constraint.NotExpr:
+			walk(e.X)
+		case *constraint.AndExpr:
+			walk(e.X)
+			walk(e.Y)
+		case *constraint.OrExpr:
+			walk(e.X)
+			walk(e.Y)
+		}
+	}
+	walk(expr)
+	if len(tags) > maxFreeTags {
+		return false
+	}
+	for mask := 0; mask < 1<<len(tags); mask++ {
+		val := map[string]bool{}
+		for i, tag := range tags {
+			val[tag] = mask&(1<<i) != 0
+		}
+		if val["orders"] && !val["noorders"] {
+			continue // an orders build: the file may link here
+		}
+		if expr.Eval(func(tag string) bool { return val[tag] }) {
+			return false // links in a build without orders, or with noorders
+		}
+	}
+	return true
 }
 
 func position(fset *token.FileSet, pos token.Pos) string {
@@ -433,6 +475,31 @@ func KiteRawWriteMissing(pkgs []*packages.Package) []string {
 			out = append(out, n)
 		}
 	}
+	// Ruling 79 M-5: every HTTPClient method must also have resolved on an implementing type
+	// (the unexported *httpClient), or a method value taken from GetClient() would go unreported.
+	for _, kp := range kitePackages(pkgs) {
+		tn, ok := kp.Scope().Lookup("HTTPClient").(*types.TypeName)
+		if !ok {
+			continue
+		}
+		iface, ok := tn.Type().Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		for i := 0; i < iface.NumMethods(); i++ {
+			name := iface.Method(i).Name()
+			hit := false
+			for n := range found {
+				if strings.HasPrefix(n, "(*") && strings.HasSuffix(n, ")."+name) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				out = append(out, "(*httpClient)."+name)
+			}
+		}
+	}
 	if len(kitePackages(pkgs)) == 0 {
 		out = append(out, "(gokiteconnect not loaded)")
 	}
@@ -507,7 +574,8 @@ func writePathPrefix(s string) string {
 		return ""
 	}
 	for _, w := range writePathPrefixes {
-		if strings.HasPrefix(p[1:], w) {
+		// A prefix ending in "/" also matches its bare form: "/mf" is "/mf/" without the slash (Ruling 79 M-1).
+		if strings.HasPrefix(p[1:], w) || (strings.HasSuffix(w, "/") && p[1:] == strings.TrimSuffix(w, "/")) {
 			return p[:1] + w
 		}
 	}

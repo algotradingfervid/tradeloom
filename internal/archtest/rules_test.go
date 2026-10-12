@@ -40,6 +40,27 @@ func TestCheckImports_Table(t *testing.T) {
 		{"kitex is not kite", Pkg{"tradeloom/internal/kitex", []string{"net/http"}}, "g0-http"},
 		{"cmd imports net/http", Pkg{"tradeloom/cmd/tradeloom", []string{"net/http"}}, "g0-http"},
 		{"orders imports net/url", Pkg{"tradeloom/internal/orders", []string{"net/url"}}, ""},
+		{"service imports x/net/http2", Pkg{"tradeloom/internal/service", []string{"golang.org/x/net/http2"}}, "g0-http"},
+		{"kite imports x/net/http2", Pkg{"tradeloom/internal/kite", []string{"golang.org/x/net/http2"}}, ""},
+		// g0-net (Ruling 79 I-2): net and crypto/tls only under internal/kite (exact paths: net/url and
+		// net/netip are fine), unsafe nowhere, os/exec only under internal/app.
+		{"service imports net", Pkg{"tradeloom/internal/service", []string{"net"}}, "g0-net"},
+		{"service imports net/netip", Pkg{"tradeloom/internal/service", []string{"net/netip"}}, ""},
+		{"kite imports net", Pkg{"tradeloom/internal/kite", []string{"net"}}, ""},
+		{"app imports crypto/tls", Pkg{"tradeloom/internal/app", []string{"crypto/tls"}}, "g0-net"},
+		{"kite imports crypto/tls", Pkg{"tradeloom/internal/kite", []string{"crypto/tls"}}, ""},
+		{"store imports crypto/tls/x", Pkg{"tradeloom/internal/store", []string{"crypto/tlsx"}}, ""},
+		{"kite imports unsafe", Pkg{"tradeloom/internal/kite", []string{"unsafe"}}, "g0-net"},
+		{"app imports unsafe", Pkg{"tradeloom/internal/app", []string{"unsafe"}}, "g0-net"},
+		{"app imports os/exec", Pkg{"tradeloom/internal/app", []string{"os/exec"}}, ""},
+		{"app/opener imports os/exec", Pkg{"tradeloom/internal/app/opener", []string{"os/exec"}}, ""},
+		{"service imports os/exec", Pkg{"tradeloom/internal/service", []string{"os/exec"}}, "g0-net"},
+		{"cmd imports os/exec", Pkg{"tradeloom/cmd/tradeloom", []string{"os/exec"}}, "g0-net"},
+		// g0-mock (Ruling 79 M-3): no non-test import of internal/kite/mock.
+		{"service imports kite/mock", Pkg{"tradeloom/internal/service", []string{"tradeloom/internal/kite/mock"}}, "g0-mock"},
+		{"kite imports kite/mock", Pkg{"tradeloom/internal/kite", []string{"tradeloom/internal/kite/mock"}}, "g0-mock"},
+		{"kite/mock/sub imports kite/mock", Pkg{"tradeloom/internal/kite/mock/sub", []string{"tradeloom/internal/kite/mock"}}, ""},
+		{"service imports kite/mockx", Pkg{"tradeloom/internal/service", []string{"tradeloom/internal/kite/mockx"}}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

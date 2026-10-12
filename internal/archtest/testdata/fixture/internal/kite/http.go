@@ -1,6 +1,10 @@
 package kite
 
-import "net/http"
+import (
+	_ "crypto/tls"
+	_ "net"
+	"net/http"
+)
 
-// Transport is allowed: net/http is imported under internal/kite (g0-http).
+// Transport is allowed: net/http, net and crypto/tls are imported under internal/kite (g0-http, g0-net).
 var Transport http.RoundTripper = http.DefaultTransport
