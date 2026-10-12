@@ -149,6 +149,11 @@ export const kiteSettingsCopy = {
   changeConfirmMessage: 'Changing the API key logs you out of Tradeloom; you will log in to Kite again.',
   changeConfirm: 'Log out and continue',
   changeLoginBusy: 'Finish or cancel the current login before changing credentials.',
+  // Same wording as Go's refusals (internal/kite/credentials.go, session.go), checked here before logging out.
+  invalidKey: 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.',
+  invalidSecret: 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.',
+  identical: 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.',
+  loggedOutKept: 'You are logged out; your previous credentials are still saved.',
   save: 'Save',
   saved: 'Kite credentials saved. Log in again to use them.',
   remove: 'Remove credentials',

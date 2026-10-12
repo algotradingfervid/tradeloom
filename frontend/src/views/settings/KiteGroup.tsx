@@ -13,6 +13,23 @@ import { useSessionStore } from '../../store/session';
 import { pushToast } from '../../store/toasts';
 import { Fact, NumberCommitField, SettingSection } from './SettingRow';
 
+// Go kite.NormalizeCredential + ValidateAPIKey / ValidateAPISecret (internal/kite/credentials.go).
+const CRED_RE = /^[A-Za-z0-9]{6,64}$/;
+const normalizeCredential = (v: string): string => v.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+
+interface FieldErrors { key?: string; secret?: string; form?: string }
+
+/** The checks Go's SaveCredentials makes before touching the session; run before logging out (fix round 2). */
+function validateCredentials(apiKey: string, apiSecret: string): FieldErrors | null {
+  const key = normalizeCredential(apiKey);
+  const secret = normalizeCredential(apiSecret);
+  const errors: FieldErrors = {};
+  if (!CRED_RE.test(key)) errors.key = copy.invalidKey;
+  if (!CRED_RE.test(secret)) errors.secret = copy.invalidSecret;
+  if (!errors.key && !errors.secret && key === secret) errors.form = copy.identical;
+  return errors.key || errors.secret || errors.form ? errors : null;
+}
+
 /**
  * The API secret lives only in this component's local state while the user types. It is cleared after every
  * submit (success or refusal) and discarded with the component when the dialog closes (it is mounted only while
@@ -29,21 +46,32 @@ function ChangeCredentialsDialog({ logoutFirst, onClose }: { logoutFirst: boolea
   const [secret, setSecret] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
     if (busy) return;
     setBusy(true);
     setError(null);
+    setFieldErrors({});
     let saved = false;
+    let loggedOut = false;
     try {
+      // Validate first: a refusal Go would give must not cost the user their session.
+      const invalid = validateCredentials(apiKey, secret);
+      if (invalid) {
+        setFieldErrors(invalid);
+        return;
+      }
       if (logoutFirst && useSessionStore.getState().session?.state === 'ready') {
         const res = await backend.session.logout();
+        loggedOut = true;
         if (res.message) pushToast({ level: 'warning', message: res.message });
       }
       await backend.session.saveCredentials({ apiKey: apiKey.trim(), apiSecret: secret });
       saved = true;
     } catch (err) {
-      setError(parseBackendError(err).reason);
+      const reason = parseBackendError(err).reason;
+      setError(loggedOut ? `${copy.loggedOutKept} ${reason}` : reason);
     } finally {
       setSecret('');
       setBusy(false);
@@ -53,7 +81,8 @@ function ChangeCredentialsDialog({ logoutFirst, onClose }: { logoutFirst: boolea
       onClose();
     }
   };
-  const describedBy = error ? errorId : undefined;
+  const formError = error ?? fieldErrors.form ?? null;
+  const describedBy = formError ? errorId : undefined;
   return (
     <Dialog
       open
@@ -74,8 +103,9 @@ function ChangeCredentialsDialog({ logoutFirst, onClose }: { logoutFirst: boolea
           onChange={(e) => setApiKey(e.target.value)}
           autoComplete="off"
           spellCheck={false}
-          aria-invalid={error ? true : undefined}
+          aria-invalid={formError || fieldErrors.key ? true : undefined}
           aria-describedby={describedBy}
+          error={fieldErrors.key}
         />
         <TextField
           label={copy.apiSecret}
@@ -84,10 +114,11 @@ function ChangeCredentialsDialog({ logoutFirst, onClose }: { logoutFirst: boolea
           onChange={(e) => setSecret(e.target.value)}
           autoComplete="new-password"
           spellCheck={false}
-          aria-invalid={error ? true : undefined}
+          aria-invalid={formError || fieldErrors.secret ? true : undefined}
           aria-describedby={describedBy}
+          error={fieldErrors.secret}
         />
-        {error && <p id={errorId} className="field__error" role="alert">{error}</p>}
+        {formError && <p id={errorId} className="field__error" role="alert">{formError}</p>}
       </form>
     </Dialog>
   );

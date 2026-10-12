@@ -58,6 +58,9 @@ const VALIDATORS: Record<string, (v: unknown) => string | null> = {
   'chart.default_timeframe': (v) => (typeof v === 'string' && TIMEFRAMES.includes(v) ? null : 'Unknown timeframe'),
 };
 
+const CRED_RE = /^[A-Za-z0-9]{6,64}$/;
+const normalizeCredential = (v: string): string => v.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+
 /** Go kite.CodeLoginBusy (internal/kite/session_types.go). */
 const LOGIN_BUSY = 'login_in_progress';
 const INVALID_PORT = 'Choose a port between 1024 and 65535. Then set the redirect URL of your app in the Kite developer console to http://127.0.0.1:<port>/kite/callback with that port.';
@@ -169,9 +172,12 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       status: () => copy(state.session),
       credentials: () => copy(state.session.credentials),
       saveCredentials: (input: CredentialsInput) => {
-        const key = input.apiKey.trim();
-        if (!key || !input.apiSecret.trim()) throw refusal('invalid_credentials', 'session', 'Enter both the API key and the API secret');
-        if (key === input.apiSecret.trim()) {
+        // As Go kite.NormalizeCredential + ValidateAPIKey / ValidateAPISecret (internal/kite/credentials.go).
+        const key = normalizeCredential(input.apiKey);
+        const secret = normalizeCredential(input.apiSecret);
+        if (!CRED_RE.test(key)) throw refusal('invalid_credentials', 'session', 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.');
+        if (!CRED_RE.test(secret)) throw refusal('invalid_credentials', 'session', 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.');
+        if (key === secret) {
           throw refusal('invalid_credentials', 'session', 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.');
         }
         // As Go kite.Session.SaveCredentials: refused while a login runs or a session is live.

@@ -21,6 +21,11 @@ const groupsNav = () => screen.findByRole('navigation', { name: 'Settings groups
 const GO_INVALID_PORT =
   'Choose a port between 1024 and 65535. Then set the redirect URL of your app in the Kite developer console to http://127.0.0.1:<port>/kite/callback with that port.';
 const LEFTOVER_WARNING = 'Old secrets file not removed';
+// Go texts (internal/kite/credentials.go, session.go).
+const GO_BAD_KEY = 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.';
+const GO_BAD_SECRET = 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.';
+const GO_IDENTICAL = 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.';
+const GO_SECRET_STORE = 'secret store not answering — unlock it and retry';
 
 function fileBackedSeed() {
   const seed = demoSeed();
@@ -180,11 +185,11 @@ describe('Settings → Kite connection (FR-ACCT-005/007/013)', () => {
     const dialog = screen.getByRole('dialog', { name: 'Change Kite credentials' });
     expect(backend.callsTo('session.logout')).toHaveLength(0);
     await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
-    await user.type(within(dialog).getByLabelText('API secret'), 'new-secret');
+    await user.type(within(dialog).getByLabelText('API secret'), 'newsecret42');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Kite credentials saved. Log in again to use them.')).toBeInTheDocument();
     expect(sessionCalls(backend)).toEqual(['session.logout', 'session.saveCredentials']);
-    expect(backend.callsTo('session.saveCredentials')[0].args).toEqual([{ apiKey: 'newkey77aa', apiSecret: 'new-secret' }]);
+    expect(backend.callsTo('session.saveCredentials')[0].args).toEqual([{ apiKey: 'newkey77aa', apiSecret: 'newsecret42' }]);
     await waitFor(() => expect(useSessionStore.getState().session?.state).toBe('logged_out'));
     expect(await screen.findByText('••••77aa')).toBeInTheDocument();
   });
@@ -203,7 +208,7 @@ describe('Settings → Kite connection (FR-ACCT-005/007/013)', () => {
     expect(screen.queryByRole('dialog', { name: 'Change Kite credentials?' })).toBeNull();
     const dialog = screen.getByRole('dialog', { name: 'Change Kite credentials' });
     await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
-    await user.type(within(dialog).getByLabelText('API secret'), 'new-secret');
+    await user.type(within(dialog).getByLabelText('API secret'), 'newsecret42');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Kite credentials saved. Log in again to use them.')).toBeInTheDocument();
     expect(sessionCalls(backend)).toEqual(['session.saveCredentials']);
@@ -311,8 +316,8 @@ describe('Settings → Kite connection: the API secret stays out of state (secur
     const secret = within(dialog).getByLabelText('API secret');
     expect(secret).toHaveAttribute('type', 'password');
     expect(['off', 'new-password']).toContain(secret.getAttribute('autocomplete'));
-    await user.type(secret, 'top-secret-value');
-    expect(document.body.textContent).not.toContain('top-secret-value');
+    await user.type(secret, 'topsecretvalue');
+    expect(document.body.textContent).not.toContain('topsecretvalue');
   });
   it('after a successful save the secret is in no store, no web storage, no URL and not in the mock persisted state; the field reopens empty', async () => {
     window.localStorage.clear();
@@ -320,54 +325,91 @@ describe('Settings → Kite connection: the API secret stays out of state (secur
     const { user, router } = renderApp({ route: '/settings/kite', backend });
     let dialog = await openChangeDialog(user);
     await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
-    await user.type(within(dialog).getByLabelText('API secret'), 'S3cr3t-xyz-123');
+    await user.type(within(dialog).getByLabelText('API secret'), 'S3cr3txyz123');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(backend.callsTo('session.saveCredentials')).toHaveLength(1);
-    expect(allStoreState()).not.toContain('S3cr3t-xyz-123');
-    expect(webStorage()).not.toContain('S3cr3t-xyz-123');
-    expect(JSON.stringify(backend.state)).not.toContain('S3cr3t-xyz-123');
+    expect(allStoreState()).not.toContain('S3cr3txyz123');
+    expect(webStorage()).not.toContain('S3cr3txyz123');
+    expect(JSON.stringify(backend.state)).not.toContain('S3cr3txyz123');
     expect(`${router.state.location.pathname}${router.state.location.search}${router.state.location.hash}`).not.toContain('S3cr3t');
-    expect(document.body.innerHTML).not.toContain('S3cr3t-xyz-123');
+    expect(document.body.innerHTML).not.toContain('S3cr3txyz123');
     dialog = await openChangeDialog(user);
     expect(within(dialog).getByLabelText('API secret')).toHaveValue('');
     window.localStorage.clear();
   });
   it('after a refused save the dialog stays open with a form-level alert describing both fields and an empty secret field; nothing kept anywhere', async () => {
     const backend = createMockBackend(loggedOutSeed());
-    backend.failNext('session.saveCredentials', 'Kite rejected the API key', 'invalid_credentials');
+    backend.failNext('session.saveCredentials', GO_SECRET_STORE, 'secret_store');
     const { user } = renderApp({ route: '/settings/kite', backend });
     const dialog = await openChangeDialog(user);
     await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
-    await user.type(within(dialog).getByLabelText('API secret'), 'S3cr3t-fail-9');
+    await user.type(within(dialog).getByLabelText('API secret'), 'S3cr3tfail9');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
     const alert = await within(dialog).findByRole('alert');
-    expect(alert).toHaveTextContent('Kite rejected the API key');
-    expect(within(dialog).getByLabelText('API key')).toHaveAccessibleDescription('Kite rejected the API key');
-    expect(within(dialog).getByLabelText('API secret')).toHaveAccessibleDescription('Kite rejected the API key');
+    expect(alert).toHaveTextContent(GO_SECRET_STORE);
+    expect(alert).not.toHaveTextContent('logged out');
+    expect(within(dialog).getByLabelText('API key')).toHaveAccessibleDescription(GO_SECRET_STORE);
+    expect(within(dialog).getByLabelText('API secret')).toHaveAccessibleDescription(GO_SECRET_STORE);
     expect(within(dialog).getByLabelText('API secret')).toHaveValue('');
     expect(within(dialog).getByLabelText('API key')).toHaveValue('newkey77aa');
-    expect(allStoreState()).not.toContain('S3cr3t-fail-9');
-    expect(webStorage()).not.toContain('S3cr3t-fail-9');
-    expect(JSON.stringify(backend.state)).not.toContain('S3cr3t-fail-9');
+    expect(allStoreState()).not.toContain('S3cr3tfail9');
+    expect(webStorage()).not.toContain('S3cr3tfail9');
+    expect(JSON.stringify(backend.state)).not.toContain('S3cr3tfail9');
   });
-  it('a Go refusal after the logout (already_logged_in path) also clears the secret', async () => {
+  it('fix round 2: an invalid secret is caught before the logout (Go format rules); nothing is called and the field is cleared', async () => {
+    const { user, backend } = renderApp({ route: '/settings/kite' });
+    const dialog = await openChangeDialog(user);
+    await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
+    await user.type(within(dialog).getByLabelText('API secret'), 'bad-secret');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    const secret = within(dialog).getByLabelText('API secret');
+    expect(await within(dialog).findByText(GO_BAD_SECRET)).toBeInTheDocument();
+    expect(secret).toHaveAccessibleDescription(GO_BAD_SECRET);
+    expect(secret).toBeInvalid();
+    expect(secret).toHaveValue('');
+    expect(sessionCalls(backend)).toEqual([]);
+    expect(useSessionStore.getState().session?.state).toBe('ready');
+  });
+  it('fix round 2: an invalid key, or a key equal to the secret, is caught before the logout', async () => {
+    const { user, backend } = renderApp({ route: '/settings/kite' });
+    const dialog = await openChangeDialog(user);
+    const key = within(dialog).getByLabelText('API key');
+    await user.type(key, 'abc');
+    await user.type(within(dialog).getByLabelText('API secret'), 'newsecret42');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await within(dialog).findByText(GO_BAD_KEY)).toBeInTheDocument();
+    expect(key).toHaveAccessibleDescription(GO_BAD_KEY);
+    await user.clear(key);
+    await user.type(key, 'same12345');
+    await user.type(within(dialog).getByLabelText('API secret'), ' "same12345" ');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await within(dialog).findByText(GO_IDENTICAL)).toBeInTheDocument();
+    expect(sessionCalls(backend)).toEqual([]);
+    expect(useSessionStore.getState().session?.state).toBe('ready');
+  });
+  it('fix round 2: a refusal after a successful logout says the user is logged out and the old credentials are kept; the secret is cleared', async () => {
     const backend = createMockBackend(demoSeed());
-    backend.failNext('session.saveCredentials', 'Log out before changing the Kite credentials.', 'already_logged_in');
+    backend.failNext('session.saveCredentials', GO_SECRET_STORE, 'secret_store');
     const { user } = renderApp({ route: '/settings/kite', backend });
     const dialog = await openChangeDialog(user);
     await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
-    await user.type(within(dialog).getByLabelText('API secret'), 'S3cr3t-race-1');
+    await user.type(within(dialog).getByLabelText('API secret'), 'S3cr3trace1');
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Log out before changing the Kite credentials.');
+    const alert = await within(dialog).findByRole('alert');
+    expect(alert).toHaveTextContent('You are logged out; your previous credentials are still saved.');
+    expect(alert).toHaveTextContent(GO_SECRET_STORE);
+    expect(sessionCalls(backend)).toEqual(['session.logout', 'session.saveCredentials']);
+    expect(useSessionStore.getState().session?.state).toBe('logged_out');
+    expect(backend.state.session.credentials.apiKeyMasked).toBe('••••9f2c');
     expect(within(dialog).getByLabelText('API secret')).toHaveValue('');
-    expect(allStoreState()).not.toContain('S3cr3t-race-1');
+    expect(allStoreState()).not.toContain('S3cr3trace1');
   });
   it('cancelling the dialog discards the typed secret', async () => {
     const backend = createMockBackend(loggedOutSeed());
     const { user } = renderApp({ route: '/settings/kite', backend });
     let dialog = await openChangeDialog(user);
-    await user.type(within(dialog).getByLabelText('API secret'), 'discard-me');
+    await user.type(within(dialog).getByLabelText('API secret'), 'discardme1');
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     dialog = await openChangeDialog(user);
     expect(within(dialog).getByLabelText('API secret')).toHaveValue('');
