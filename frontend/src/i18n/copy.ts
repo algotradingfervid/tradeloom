@@ -66,3 +66,74 @@ export const toastCopy = {
   region: 'Notifications',
   dismiss: 'Dismiss notification',
 } as const;
+
+// --- Settings (P0-4 Task 14)
+export const settingsViewCopy = {
+  nav: 'Settings groups',
+  groups: {
+    kite: 'Kite connection', trading: 'Trading', appearance: 'Appearance', chart: 'Chart', home: 'Home',
+    universes: 'Universes & baskets', calendar: 'Market calendar', data: 'Data', notifications: 'Notifications',
+    shortcuts: 'Shortcuts', limits: 'Limits', updates: 'Updates', diagnostics: 'Diagnostics', tours: 'Tours', about: 'About',
+  },
+  wholeNumber: 'Enter a whole number',
+} as const;
+
+export const kiteSettingsCopy = {
+  credentials: 'Credentials',
+  apiKey: 'API key',
+  apiSecret: 'API secret',
+  dataPlan: 'Data plan',
+  plan: { connect: 'Kite Connect (market data available)', none: 'Orders and portfolio only (no data plan)', unknown: 'Checked after the next login' },
+  secretStorage: 'Secret storage',
+  // Keys are P0-1 secrets backends as `CredentialsInfo.secretBackend` / `SecretStorageInfo.backend` report them.
+  backend: { keyring: 'System keyring', file: 'Encrypted file (secrets.enc)', locked: 'Encrypted file (locked)', none: 'Not stored' } as Record<string, string>,
+  change: 'Change',
+  changeTitle: 'Change Kite credentials',
+  save: 'Save',
+  saved: 'Kite credentials saved. Log in again to use them.',
+  remove: 'Remove credentials',
+  removeTitle: 'Remove Kite credentials?',
+  removeMessage: "The API key, the API secret and today's access token are deleted from this computer. You will need to set them up again before using Kite.",
+  migrate: 'Move secrets to the system keyring',
+  migrated: 'Secrets moved to the system keyring; the encrypted file was deleted.',
+  fileNotRemovedTitle: 'Old secrets file not removed',
+  fileNotRemoved: 'Your secrets are now in the system keyring, but the old encrypted file (secrets.enc) is still on disk.',
+  fileNotRemovedRetry: 'Try removing it again',
+  login: 'Login',
+  redirectUrl: 'Redirect URL',
+  port: 'Login callback port',
+  portHint: 'Register the matching redirect URL in the Kite developer console after changing this.',
+  portChangedTitle: 'Redirect URL changed',
+  portChanged: (url: string) => `Update the redirect URL of your app in the Kite developer console to ${url}, or the next login will fail.`,
+} as const;
+
+export const appearanceCopy = {
+  title: 'Theme and layout',
+  darkTheme: 'Dark theme',
+  followSystem: 'Follow system theme',
+  followSystemHint: 'Use the light or dark preference of your desktop.',
+  followingHint: 'Controlled by your desktop while "Follow system theme" is on.',
+  sidebarCollapsed: 'Collapse the sidebar to icons',
+} as const;
+
+export const chartSettingsCopy = {
+  title: 'Chart defaults',
+  timeframe: 'Default chart timeframe',
+  hint: 'Used the first time an instrument is charted; afterwards each chart remembers its own timeframe.',
+} as const;
+
+export const aboutCopy = {
+  app: 'Tradeloom',
+  version: 'Version',
+  versionValue: (v: string) => `v${v}`,
+  build: 'Build',
+  schema: 'Database schema',
+  legal: 'Legal',
+  terms: 'Terms of use',
+  privacy: 'Privacy notice',
+  risk: 'Risk disclosure',
+  licences: 'Third-party licences',
+  component: 'Component',
+  licenceVersion: 'Version',
+  licence: 'Licence',
+} as const;

@@ -214,7 +214,7 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
       refuseSecretStorage: () => setSession({ secrets: { ...state.session.secrets, mode: 'none', backend: 'none' } }),
       unlock: (passphrase: string) => {
-        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Wrong passphrase');
+        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Unlock failed: wrong passphrase or damaged file. Check the passphrase and try again.'); // Go msgBadPassphrase
         return setSession({
           state: state.session.credentials.configured ? 'logged_out' : 'no_credentials',
           secrets: { ...state.session.secrets, backend: 'file' },
