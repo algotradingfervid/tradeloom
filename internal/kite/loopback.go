@@ -74,7 +74,13 @@ func startLoopback(port int, h callbackHandler, log *slog.Logger) (*loopback, er
 	return l, nil
 }
 
-func (l *loopback) Close() { _ = l.srv.Close() }
+// Close stops the server and closes the socket itself: srv.Close only closes listeners Serve has
+// already registered, so a Close that races the serve goroutine's start would leave the port bound
+// and the next login could not listen on it.
+func (l *loopback) Close() {
+	_ = l.srv.Close()
+	_ = l.ln.Close()
+}
 
 func listenerHint(port int, err error) string {
 	return fmt.Sprintf("Tradeloom could not listen on 127.0.0.1:%d (%v). Finish the login in the browser, then paste the address from the browser's address bar below, or choose another port in Settings → Kite connection.", port, err)

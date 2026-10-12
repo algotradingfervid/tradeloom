@@ -137,3 +137,21 @@ func TestLoopback_RejectsForeignHostAndForbidsFraming(t *testing.T) {
 		t.Fatalf("CSP %q", csp)
 	}
 }
+
+// Close must free the port at once, even when Serve has not started yet (a login cancelled immediately
+// after it began); otherwise the next login cannot bind the same port.
+func TestLoopback_CloseFreesPortImmediately(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		lb, err := startLoopback(0, func(*http.Request) (int, string) { return 200, "" }, slog.Default())
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := lb.port
+		lb.Close()
+		lb2, err := startLoopback(port, func(*http.Request) (int, string) { return 200, "" }, slog.Default())
+		if err != nil {
+			t.Fatalf("iteration %d: port %d not free after Close: %v", i, port, err)
+		}
+		lb2.Close()
+	}
+}
