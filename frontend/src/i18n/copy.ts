@@ -24,3 +24,9 @@ export const homeCopy = {
   chartArea: 'Main chart',
   watchlistArea: 'Watchlists',
 } as const;
+
+export const componentCopy = {
+  close: 'Close',
+  cancel: 'Cancel',
+  typeToConfirm: (phrase: string) => `Type ${phrase} to confirm`,
+} as const;
