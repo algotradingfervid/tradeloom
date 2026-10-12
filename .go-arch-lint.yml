@@ -31,6 +31,7 @@ components:
   cmd:        { in: cmd/tradeloom }
   frontend:   { in: frontend }
   app:        { in: internal/app }
+  api:        { in: internal/app/api }                 # P0-3 Task 22: Wails-bound API structs (call service only)
   eventsgen:  { in: internal/app/eventsgen }           # P0-3 Task 21: go:generate tool for frontend/src/api/events.gen.ts
   bus:        { in: internal/bus }
   clock:      { in: internal/clock }
@@ -58,6 +59,7 @@ components:
   # P0-3 (local order/position cache; read-only until P4 wires orderwrite).
   orders:     { in: internal/orders }
   service:    { in: internal/service }                  # P0-3 Task 14: transport-neutral façade (§2.2, AD-09)
+  servicetest: { in: internal/service/servicetest }     # P0-3 Task 22 test helper: no production component may depend on it
   licences:   { in: internal/licences }                 # P0-3 Task 33: embedded THIRD_PARTY_NOTICES.md copy (leaf; wired by cmd in Task 23)
 
 commonComponents:
@@ -69,8 +71,10 @@ deps:
     mayDependOn: [frontend, app, store]
     canUse: [wails]
   app:
-    mayDependOn: [bus, settings, store, secrets]
+    mayDependOn: [bus, settings, store, secrets, service, api]   # P0-3 Task 22: lifecycle + event bridge over the façade
     canUse: [wails]
+  api:        # P0-3 Task 22: bound structs reach the engine only through service (rule 7)
+    mayDependOn: [service, settings]
   eventsgen:  # reads service.EventCatalogue() only (rule 7: app reaches the engine through service)
     mayDependOn: [service]
   clock:
@@ -117,6 +121,8 @@ deps:
     mayDependOn: [bus, kite, ratelimit, store, ticker]   # P0-3 Task 19 Sync: bus topics, poll priority, orders cache, ticker ticks; §2.3 also allows orderwrite (P4)
   storetest:
     mayDependOn: [store]
+  servicetest:
+    mayDependOn: [bus, calendar, kite, orders, secrets, service, settings, store, storetest]
   ratelimit:
     mayDependOn: [bus]
   kitemock:
