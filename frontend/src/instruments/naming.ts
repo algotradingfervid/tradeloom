@@ -49,8 +49,20 @@ export function itemIdentifier(item: { exchange: string; symbol: string }): stri
   return `${item.exchange}:${item.symbol}`;
 }
 
+/**
+ * Never throws and never drops the item (P0-3 Ruling 38, P0-5 Ruling 115 m3): an item outside the NFR-15 scope keeps
+ * its raw exchange as the tag, so InstrumentLabel shows it with the "View only" flag. A missing item (Go sends no
+ * exchange or symbol) gets an empty tag; callers check `item.missing` first.
+ */
 export function labelOfItem(item: { token: number; exchange: string; symbol: string; displayName: string; name: string; isIndex: boolean }): LabelInstrument {
-  return { token: item.token, tag: itemTag(item), displayName: item.displayName, tradingsymbol: item.symbol, name: item.name };
+  let tag: string;
+  try {
+    tag = itemTag(item);
+  } catch (e) {
+    if (!(e instanceof OutOfScopeError)) throw e;
+    tag = item.exchange;
+  }
+  return { token: item.token, tag, displayName: item.displayName, tradingsymbol: item.symbol, name: item.name };
 }
 
 /** FR-WATCH-013: Kite EXCHANGE:TRADINGSYMBOL form, used internally and in deep links. */

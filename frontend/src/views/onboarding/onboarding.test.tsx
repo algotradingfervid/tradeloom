@@ -235,9 +235,16 @@ describe('FR-SHELL-019 AC3 (frontend part): reopen on the last view', () => {
     const { router } = start(seed);
     await waitFor(() => expect(router.state.location.pathname).toBe('/home'));
   });
-  it('falls back to Home for an allow-listed view whose route is not in this build (Ruling 94 M4)', async () => {
+  it('restores the Profile view (Task 13 added the /profile shell route)', async () => {
     const seed = demoSeed();
     seed.settings = { 'ui.last_route': '"/profile"' };
+    const { router } = start(seed);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/profile'));
+  });
+  // Task 13: /profile now exists, so an allow-listed Settings group this build does not show stands in (Ruling 108 M7).
+  it('falls back to Home for an allow-listed view whose route is not in this build (Ruling 94 M4)', async () => {
+    const seed = demoSeed();
+    seed.settings = { 'ui.last_route': '"/settings/no-such-group"' };
     const { router } = start(seed);
     await waitFor(() => expect(router.state.location.pathname).toBe('/home'));
   });
