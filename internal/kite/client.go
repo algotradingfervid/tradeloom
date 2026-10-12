@@ -37,7 +37,7 @@ type Options struct {
 type Client struct {
 	o     Options
 	rec   *recorder
-	mu    sync.RWMutex // guards token
+	mu    sync.RWMutex // guards token and o.APIKey (SetAPIKey, P0-3)
 	token string
 	// dumpMu serialises Instruments calls: the recorder keeps one captured dump error, so two
 	// concurrent dumps could otherwise take each other's error.
@@ -74,14 +74,15 @@ func (c *Client) attempt(ctx context.Context, class ratelimit.Class) *kiteconnec
 	if class == ratelimit.ClassHistorical {
 		timeout = 30 * time.Second
 	}
-	kc := kiteconnect.New(c.o.APIKey)
+	c.mu.RLock()
+	key, token := c.o.APIKey, c.token
+	c.mu.RUnlock()
+	kc := kiteconnect.New(key)
 	kc.SetHTTPClient(&http.Client{Timeout: timeout, Transport: ctxTransport{ctx: ctx, next: c.rec}})
 	if c.o.BaseURI != "" {
 		kc.SetBaseURI(c.o.BaseURI)
 	}
-	c.mu.RLock()
-	kc.SetAccessToken(c.token)
-	c.mu.RUnlock()
+	kc.SetAccessToken(token)
 	return kc
 }
 
@@ -95,7 +96,11 @@ func (c *Client) SetAccessToken(token string) {
 }
 
 // APIKey returns the configured key.
-func (c *Client) APIKey() string { return c.o.APIKey }
+func (c *Client) APIKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.o.APIKey
+}
 
 // Call runs fn against a raw gokiteconnect client under the limiter and retry policy. It exists
 // for kite.Session (GenerateSession, InvalidateAccessToken) in this package. Rule 3 stops other
