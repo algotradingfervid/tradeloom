@@ -16,7 +16,7 @@ type Pkg struct {
 
 // Violation is one broken rule.
 type Violation struct {
-	Rule   string // "rule1" … "rule8", "g0-import", "g0-call"
+	Rule   string // "rule1" … "rule8", "g0-import", "g0-http", "g0-call", "g0-kitehttp", …
 	Pkg    string // package import path (or file for AST rules)
 	Detail string
 }
@@ -58,6 +58,11 @@ var importRules = []importRule{
 	{"rule5", []string{"github.com/go-telegram/bot"}, []string{"internal/telegram"}},
 	{"rule6", []string{"github.com/zalando/go-keyring", "golang.org/x/crypto"}, []string{"internal/secrets"}},
 	{"g0-import", []string{"internal/kite/orderwrite"}, []string{"internal/orders", "internal/kite/orderwrite"}},
+	// g0-http (Ruling 69): only packages under internal/kite may speak HTTP, so a hand-rolled order
+	// POST cannot be written elsewhere (the nm check sees only gokiteconnect's write methods). It
+	// covers net/http's sub-packages (httptest, httputil, …) too. Test files are exempt: Load does
+	// not load them (packages.Config.Tests is false), and they are not linked into the binary.
+	{"g0-http", []string{"net/http"}, []string{"internal/kite"}},
 }
 
 // CheckImports applies rules 1–7 and the G-0 import rule to pkgs. module is the module path ("tradeloom").

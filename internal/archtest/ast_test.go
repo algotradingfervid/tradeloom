@@ -20,7 +20,8 @@ func loadFixture(t *testing.T, tags string) []string {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, v := range append(append(CheckOrderWrite("fixture", pkgs), CheckClock("fixture", pkgs)...), CheckKiteIndirect("fixture", pkgs)...) {
+	vs := append(append(CheckOrderWrite("fixture", pkgs), CheckClock("fixture", pkgs)...), CheckKiteIndirect("fixture", pkgs)...)
+	for _, v := range append(vs, CheckKiteRawWrite("fixture", pkgs)...) {
 		got = append(got, v.Rule+" "+strings.SplitN(v.Pkg, ":", 2)[0])
 	}
 	sort.Strings(got)
@@ -40,6 +41,14 @@ func TestASTChecks_Fixture(t *testing.T) {
 	for i := 0; i < 9; i++ {
 		indirect = append(indirect, "g0-call bad/alertsmf.go")
 	}
+	// Raw HTTP writes through gokiteconnect's HTTP client or write URI constants (Ruling 69): qualified,
+	// aliased, method-value and dot-imported references, and an untagged orderwrite file. writer.go's
+	// references (orders-tagged) are allowed; the test file kitehttp_test.go is not loaded.
+	for i := 0; i < 8; i++ {
+		indirect = append(indirect, "g0-kitehttp rawhttp/kitehttp.go")
+	}
+	indirect = append(indirect, "g0-kitehttp rawhttp/dotkite.go", "g0-kitehttp rawhttp/dotkite.go", "g0-kitehttp rawhttp/dotkite.go",
+		"g0-kitehttp orderwrite/uri.go")
 	with := func(vs ...string) []string {
 		out := append(append([]string{}, vs...), indirect...)
 		sort.Strings(out)
@@ -80,5 +89,43 @@ func TestKitePkg_AnyMajorVersion(t *testing.T) {
 		if got := kitePkg.MatchString(path); got != want {
 			t.Errorf("kitePkg(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+// g0-http (Ruling 69) on the fixture module: rawhttp imports net/http and is flagged; internal/kite may
+// import it; test files (rawhttp/kitehttp_test.go) are not loaded, so they are exempt.
+func TestImportRules_FixtureNetHTTP(t *testing.T) {
+	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOPROXY=off")
+	pkgs, err := Load(dir, env, "noorders", "./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, v := range CheckImports("fixture", Graph(pkgs)) {
+		if v.Rule == "g0-http" {
+			got = append(got, v.Pkg)
+		}
+	}
+	if want := "fixture/internal/rawhttp"; len(got) != 1 || got[0] != want {
+		t.Fatalf("g0-http violations %v, want [%s]", got, want)
+	}
+}
+
+// Every Ruling 69 identifier must resolve in the real gokiteconnect; a module bump that renames one
+// would otherwise disable that part of the rule silently.
+func TestKiteRawWrite_NamesResolve(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads and type-checks the whole module")
+	}
+	pkgs, err := Load(moduleRoot(t), nil, "webkit2_41,noorders", "./internal/kite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing := KiteRawWriteMissing(pkgs); len(missing) != 0 {
+		t.Fatalf("Ruling 69 identifiers not found in gokiteconnect: %v", missing)
 	}
 }

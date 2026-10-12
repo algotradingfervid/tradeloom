@@ -344,3 +344,130 @@ func mentionsKiteClient(t types.Type, seen map[types.Type]bool) bool {
 	}
 	return false
 }
+
+// kiteRawWriteNames are the gokiteconnect identifiers that send a request without one of its
+// order-write methods (Ruling 69): the raw HTTP client (NewHTTPClient, the HTTPClient type and its
+// methods) and the write endpoint paths. A write sent through them links no (*Client).PlaceOrder etc.,
+// so the nm check cannot see it. The names are verified against gokiteconnect v4.4.3 (connect.go,
+// alerts.go, http.go); TestKiteRawWrite_NamesResolve fails if a module bump drops one.
+var kiteRawWriteNames = []string{"NewHTTPClient", "HTTPClient",
+	"URIPlaceOrder", "URIModifyOrder", "URICancelOrder", "URIConvertPosition", "URIInitHoldingsAuth",
+	"URIPlaceGTT", "URIModifyGTT", "URIDeleteGTT", "URIAlerts", "URIAlert",
+	"URIPlaceMFOrder", "URICancelMFOrder", "URIPlaceMFSIP", "URIModifyMFSIP", "URICancelMFSIP"}
+
+// kitePackages returns every loaded gokiteconnect package (any major version), deduplicated.
+func kitePackages(pkgs []*packages.Package) []*types.Package {
+	seen := map[*types.Package]bool{}
+	var out []*types.Package
+	for _, p := range pkgs {
+		if p.Types == nil {
+			continue
+		}
+		cands := append([]*types.Package{p.Types}, p.Types.Imports()...)
+		for _, tp := range cands {
+			if !seen[tp] && kitePkg.MatchString(tp.Path()) {
+				seen[tp] = true
+				out = append(out, tp)
+			}
+		}
+	}
+	return out
+}
+
+// kiteRawWriteObjects resolves kiteRawWriteNames to their types.Objects in the loaded gokiteconnect
+// packages, adding every method of the HTTPClient interface and the same-named methods of each
+// package type that implements it (the unexported *httpClient that NewHTTPClient returns).
+func kiteRawWriteObjects(pkgs []*packages.Package) map[types.Object]string {
+	banned := map[types.Object]string{}
+	for _, kp := range kitePackages(pkgs) {
+		scope := kp.Scope()
+		for _, name := range kiteRawWriteNames {
+			if obj := scope.Lookup(name); obj != nil {
+				banned[obj] = name
+			}
+		}
+		tn, ok := scope.Lookup("HTTPClient").(*types.TypeName)
+		if !ok {
+			continue
+		}
+		iface, ok := tn.Type().Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		methods := map[string]bool{}
+		for i := 0; i < iface.NumMethods(); i++ {
+			m := iface.Method(i)
+			banned[m] = "HTTPClient." + m.Name()
+			methods[m.Name()] = true
+		}
+		for _, n := range scope.Names() {
+			impl, ok := scope.Lookup(n).(*types.TypeName)
+			if !ok || impl == tn {
+				continue
+			}
+			named, ok := impl.Type().(*types.Named)
+			if !ok || types.IsInterface(named) || !types.Implements(types.NewPointer(named), iface) {
+				continue
+			}
+			for i := 0; i < named.NumMethods(); i++ {
+				if m := named.Method(i); methods[m.Name()] {
+					banned[m] = "(*" + impl.Name() + ")." + m.Name()
+				}
+			}
+		}
+	}
+	return banned
+}
+
+// KiteRawWriteMissing lists the kiteRawWriteNames that no loaded gokiteconnect package declares.
+func KiteRawWriteMissing(pkgs []*packages.Package) []string {
+	found := map[string]bool{}
+	for _, name := range kiteRawWriteObjects(pkgs) {
+		found[name] = true
+	}
+	var out []string
+	for _, n := range kiteRawWriteNames {
+		if !found[n] {
+			out = append(out, n)
+		}
+	}
+	if len(kitePackages(pkgs)) == 0 {
+		out = append(out, "(gokiteconnect not loaded)")
+	}
+	return out
+}
+
+// CheckKiteRawWrite reports every reference to a kiteRawWriteObjects identifier outside files of
+// internal/kite/orderwrite whose build constraint requires the orders tag (g0-kitehttp, Ruling 69;
+// the same file rule as g0-call). It matches types.Object identity through TypesInfo.Uses, so qualified,
+// renamed-import, dot-import, method-value, promoted and alias-declaration references are all caught;
+// a later use of a local alias resolves to the alias, but declaring the alias is itself flagged.
+// Test files are not loaded and are exempt. Residual: a hand-written path string ("/orders/regular")
+// sent through net/http under internal/kite is not visible here; g0-http confines net/http to
+// internal/kite and the mock-Kite recording suite is the dynamic backstop.
+func CheckKiteRawWrite(module string, pkgs []*packages.Package) []Violation {
+	banned := kiteRawWriteObjects(pkgs)
+	if len(banned) == 0 {
+		return nil
+	}
+	var out []Violation
+	for _, p := range pkgs {
+		inPkg := relPkg(module, p.PkgPath) == "internal/kite/orderwrite"
+		allowedFile := map[*token.File]bool{}
+		for _, f := range p.Syntax {
+			if inPkg && requiresOrdersTag(f) {
+				allowedFile[p.Fset.File(f.Pos())] = true
+			}
+		}
+		for id, obj := range p.TypesInfo.Uses {
+			name, ok := banned[obj]
+			if !ok || allowedFile[p.Fset.File(id.Pos())] {
+				continue
+			}
+			out = append(out, Violation{"g0-kitehttp", position(p.Fset, id.Pos()),
+				"kiteconnect." + name + " is only allowed in internal/kite/orderwrite files built with the orders tag"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
