@@ -6,8 +6,11 @@ import { FakeAdapter } from './testing/FakeAdapter';
 import type { Bar } from './types';
 import type { BackfillProgress, CandleEvent, CandlesPage } from '../api/chart';
 import { BindingError } from '../api/call';
-import { readySession } from '../api/mock/fixtures';
-import { NIFTY50, RELIANCE, SBIN } from '../instruments/fixtures';
+import * as chartApi from '../api/chart';
+import { setBackend } from '../api/current';
+import { demoSeed, readySession } from '../api/mock/fixtures';
+import { createMockBackend } from '../api/mock/index';
+import { NIFTY50, RELIANCE, SBIN, TCS } from '../instruments/fixtures';
 import { resetOnLogout } from '../store/reset';
 import { useSessionStore } from '../store/session';
 
@@ -211,9 +214,11 @@ describe('ChartDataController', () => {
     api.openLive.mockRejectedValueOnce(new BindingError('no_data_plan', 'no market-data permission'));
     api.fetchHistory.mockResolvedValue(ok(bars(T0, 2)));
     await ctl.load(RELIANCE, '1h');
-    ctl.dispose();
     await flush();
     expect(states.at(-1)!.status).toBe('ready');
+    expect(states.at(-1)!.liveMessage).toBe('no market-data permission');
+    ctl.dispose();
+    await flush();
     expect(api.closeLive).not.toHaveBeenCalled();
   });
 
@@ -346,5 +351,217 @@ describe('ChartDataController', () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(api.fetchHistory).toHaveBeenCalledTimes(1);
     expect(states.at(-1)!.status).toBe('loading');
+  });
+
+  // ---- Fix round 1 (Ruling 109) ----
+
+  it('C1: Go answers every Candles(toMs=0) with a fresh job id: one wait, one re-fetch, bars drawn at once and merged', async () => {
+    let job = 0;
+    api.fetchHistory.mockImplementation(async () => ok(bars(T0, 3 + job), { complete: false, backfillJobId: `bf-${++job}` }));
+    const p = ctl.load(RELIANCE, '5m');
+    await flush();
+    expect(adapter.bars()).toHaveLength(3); // the first answer's bars are drawn without waiting
+    expect(states.at(-1)!.status).toBe('ready');
+    emitProgress([progress('bf-1', 'done')]);
+    await p;
+    await flush();
+    expect(api.fetchHistory).toHaveBeenCalledTimes(2);
+    expect(adapter.bars()).toHaveLength(4);
+    expect(adapter.setCandlesOpts.at(-1)).toEqual({ keepView: true });
+    expect(states.map((s) => s.status)).toEqual(['loading', 'ready']);
+  });
+
+  it('C1: with a job that never reports and bars present, the chart is ready at once and asks exactly twice', async () => {
+    vi.useFakeTimers();
+    let job = 0;
+    api.fetchHistory.mockImplementation(async () => ok(bars(T0, 3), { complete: false, backfillJobId: `bf-${++job}` }));
+    const p = ctl.load(RELIANCE, '5m');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states.at(-1)!.status).toBe('ready');
+    await vi.advanceTimersByTimeAsync(60_000);
+    await p;
+    expect(api.fetchHistory).toHaveBeenCalledTimes(2);
+    expect(states.at(-1)!.status).toBe('ready');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('C1: an instrument with no candles whose job finished shows the empty state, not the timeout error', async () => {
+    let job = 0;
+    api.fetchHistory.mockImplementation(async () => ok([], { complete: false, backfillJobId: `bf-${++job}` }));
+    const p = ctl.load(RELIANCE, '5m');
+    await flush();
+    emitProgress([progress('bf-1', 'done')]);
+    await p;
+    expect(api.fetchHistory).toHaveBeenCalledTimes(2);
+    expect(states.at(-1)).toMatchObject({ status: 'empty', message: EMPTY_MESSAGE });
+  });
+
+  it('C1: a live bar applied while waiting survives the merge of the second answer', async () => {
+    api.fetchHistory
+      .mockResolvedValueOnce(ok(bars(T0, 3), { complete: false, backfillJobId: 'bf-1' }))
+      .mockResolvedValueOnce(ok(bars(T0, 3), { complete: false, backfillJobId: 'bf-2' }));
+    const p = ctl.load(RELIANCE, '5m');
+    await flush();
+    emit({ token: RELIANCE.token, interval: '5minute', closed: false, bar: { ...bars(T0 + 2 * STEP, 1)[0], close: 777 } });
+    emitProgress([progress('bf-1', 'done')]);
+    await p;
+    expect(adapter.bars().at(-1)!.close).toBe(777);
+  });
+
+  it('I1: an intraday partial candle never takes Go\'s volume (cumulative day volume): loaded volume kept, else 0', async () => {
+    api.fetchHistory.mockResolvedValue(ok(bars(T0, 3)));
+    await ctl.load(RELIANCE, '5m');
+    const t = T0 + 2 * STEP;
+    emit({ token: RELIANCE.token, interval: '5minute', closed: false, partial: true, bar: { time: t, open: 105, high: 106, low: 98, close: 104, volume: 9_000_000 } });
+    expect(adapter.bars()[2].volume).toBe(10);
+    emit({ token: RELIANCE.token, interval: '5minute', closed: false, partial: true, bar: { time: t + STEP, open: 104, high: 104, low: 104, close: 104, volume: 9_000_000 } });
+    expect(adapter.bars().at(-1)!.volume).toBe(0);
+  });
+
+  it('I1: a partial day candle is drawn as Go sends it (day OHLC and volume come from the quote)', async () => {
+    const D = 86_400_000;
+    api.fetchHistory.mockResolvedValue(ok(bars(T0, 3).map((b, i) => ({ ...b, time: T0 + i * D }))));
+    await ctl.load(RELIANCE, '1d');
+    const bar = { time: T0 + 2 * D, open: 95, high: 110, low: 90, close: 104, volume: 9_000_000 };
+    emit({ token: RELIANCE.token, interval: 'day', closed: false, partial: true, bar });
+    expect(adapter.bars().at(-1)).toEqual(bar);
+  });
+
+  it('I2: refresh is clamped to Go\'s per-request span (30 minute: 100 days)', async () => {
+    vi.useFakeTimers();
+    const NOW = Date.UTC(2026, 9, 9, 6, 0);
+    vi.setSystemTime(NOW);
+    const DAY = 86_400_000;
+    api.fetchHistory.mockResolvedValue(ok(bars(NOW - 170 * DAY, 3)));
+    await ctl.load(RELIANCE, '30m');
+    adapter.view = { from: NOW - 170 * DAY, to: NOW };
+    api.refreshRange.mockResolvedValue(ok([]));
+    await ctl.refresh();
+    expect(api.refreshRange).toHaveBeenCalledWith(RELIANCE.token, '30minute', NOW - 100 * DAY + 60_000, NOW);
+    adapter.view = { from: NOW - DAY, to: NOW };
+    await ctl.refresh();
+    expect(api.refreshRange).toHaveBeenLastCalledWith(RELIANCE.token, '30minute', NOW - DAY, NOW);
+  });
+
+  it('I3: logout resets to idle with a new resetEpoch; after login retry() reloads and opens live again', async () => {
+    useSessionStore.getState().setSession(readySession());
+    api.fetchHistory.mockResolvedValue(ok(bars(T0, 4)));
+    await ctl.load(RELIANCE, '5m');
+    const before = ctl.current.resetEpoch;
+    resetOnLogout();
+    useSessionStore.getState().setSession(readySession({ state: 'logged_out', userId: '' }));
+    expect(ctl.current).toMatchObject({ status: 'idle', resetEpoch: before + 1 });
+    useSessionStore.getState().setSession(readySession({ userId: 'ZX9999' }));
+    await ctl.retry();
+    expect(ctl.current).toMatchObject({ status: 'ready', resetEpoch: before + 1 });
+    expect(adapter.bars()).toHaveLength(4);
+    expect(api.openLive).toHaveBeenCalledTimes(2);
+  });
+
+  it('m1: a refused OpenLive (budget / unknown token) is surfaced as liveMessage; history still shows', async () => {
+    api.openLive.mockRejectedValueOnce(new BindingError('subscription_budget', 'Live subscription budget exhausted'));
+    api.fetchHistory.mockResolvedValue(ok(bars(T0, 2)));
+    await ctl.load(RELIANCE, '1h');
+    await flush();
+    expect(ctl.current).toMatchObject({ status: 'ready', liveMessage: 'Live subscription budget exhausted' });
+    api.fetchHistory.mockResolvedValue(ok(bars(T0, 2)));
+    await ctl.load(SBIN, '1h');
+    await flush();
+    expect(ctl.current.liveMessage).toBeNull();
+  });
+
+  it('m2: the backfill-timeout error releases live', async () => {
+    vi.useFakeTimers();
+    api.fetchHistory.mockResolvedValue(ok([], { complete: false, backfillJobId: 'bf-9' }));
+    const p = ctl.load(RELIANCE, '5m');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await p;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states.at(-1)!.status).toBe('error');
+    expect(api.closeLive).toHaveBeenCalledWith('live-1');
+  });
+
+  it('m4: events buffered during load keep only the last one per bar time', async () => {
+    const h = deferred<CandlesPage>();
+    api.fetchHistory.mockReturnValue(h.promise);
+    const p = ctl.load(RELIANCE, '5m');
+    for (let i = 0; i < 50; i++) emit({ token: RELIANCE.token, interval: '5minute', closed: false, bar: { ...bars(T0 + 3 * STEP, 1)[0], close: 300 + i } });
+    h.resolve(ok(bars(T0, 3)));
+    await p;
+    expect(adapter.calls.filter((c) => c === 'updateLastBar')).toHaveLength(1);
+    expect(adapter.bars().at(-1)!.close).toBe(349);
+  });
+
+  it('m5: finished backfill jobs are remembered up to a cap (oldest forgotten first)', async () => {
+    vi.useFakeTimers();
+    const first = deferred<CandlesPage>();
+    api.fetchHistory.mockReturnValueOnce(first.promise).mockResolvedValueOnce(ok(bars(T0, 2)));
+    const p = ctl.load(RELIANCE, '5m');
+    emitProgress(Array.from({ length: 300 }, (_, i) => progress(`bf-${i}`, 'done')));
+    first.resolve(ok([], { complete: false, backfillJobId: 'bf-0' })); // forgotten → waited for
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await p;
+    const second = deferred<CandlesPage>();
+    api.fetchHistory.mockReturnValueOnce(second.promise).mockResolvedValueOnce(ok(bars(T0, 2)));
+    const p2 = ctl.load(RELIANCE, '5m');
+    emitProgress(Array.from({ length: 300 }, (_, i) => progress(`bf-${i}`, 'done')));
+    second.resolve(ok([], { complete: false, backfillJobId: 'bf-299' })); // remembered → no wait
+    await p2;
+    expect(api.fetchHistory).toHaveBeenCalledTimes(4);
+  });
+
+  it('m6: an older window still downloading backs off OLDER_RETRY_MS; bars that add nothing mean the start was reached', async () => {
+    vi.useFakeTimers();
+    api.fetchHistory.mockResolvedValueOnce(ok(bars(T0, 20)));
+    await ctl.load(RELIANCE, '5m');
+    api.fetchHistory.mockResolvedValueOnce(ok([], { complete: false }));
+    adapter.emitRange(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchHistory).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(4_000);
+    adapter.emitRange(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchHistory).toHaveBeenCalledTimes(2); // still backing off
+    await vi.advanceTimersByTimeAsync(1_000);
+    api.fetchHistory.mockResolvedValueOnce(ok(bars(T0, 5), { complete: false })); // only bars already loaded
+    adapter.emitRange(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchHistory).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(10_000);
+    adapter.emitRange(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchHistory).toHaveBeenCalledTimes(3); // reachedStart
+    expect(adapter.bars()).toHaveLength(20);
+  });
+});
+
+describe('ChartDataController against the mock backend (m3: no leaks)', () => {
+  it('rapid loads, a reset, retry and dispose leave no open live ids and no listeners', async () => {
+    const backend = createMockBackend(demoSeed());
+    setBackend(backend);
+    try {
+      const a = new FakeAdapter();
+      const c = new ChartDataController(a, chartApi, () => undefined);
+      expect(backend.listenerCount('candle.forming')).toBe(1);
+      const loads = [c.load(RELIANCE, '5m'), c.load(SBIN, '15m'), c.load(TCS, '1h'), c.load(RELIANCE, '1d')];
+      await Promise.all(loads);
+      await flush();
+      expect(backend.state.openLiveIds).toHaveLength(1);
+      resetOnLogout();
+      await flush();
+      expect(backend.state.openLiveIds).toHaveLength(0);
+      await c.retry();
+      await flush();
+      expect(backend.state.openLiveIds).toHaveLength(1);
+      expect(c.current.status).toBe('ready');
+      c.dispose();
+      await flush();
+      expect(backend.state.openLiveIds).toEqual([]);
+      for (const ev of ['candle.forming', 'candle.closed', 'backfill.progress'] as const) expect(backend.listenerCount(ev)).toBe(0);
+    } finally {
+      setBackend(null);
+    }
   });
 });
