@@ -43,12 +43,15 @@ func startLoopback(port int, h callbackHandler, log *slog.Logger) (*loopback, er
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
 	})
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    8 << 10,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
 	l := &loopback{port: ln.Addr().(*net.TCPAddr).Port, ln: ln, srv: srv}

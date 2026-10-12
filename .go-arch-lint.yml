@@ -52,6 +52,7 @@ components:
   kite:       { in: internal/kite }
   ratelimit:  { in: internal/kite/ratelimit }
   ticker:     { in: internal/kite/ticker }
+  feed:       { in: internal/kite/feed }                # P0-3: one ticker.Manager per login
   kitemock:   { in: internal/kite/mock }                # test double: no production component may depend on it
   # P0-3 (local order/position cache; read-only until P4 wires orderwrite).
   orders:     { in: internal/orders }
@@ -91,8 +92,8 @@ deps:
     mayDependOn: [candles, calendar, store]
     canUse: [sqlite]
   kite:
-    mayDependOn: [bus, ratelimit, settings]   # settings: registers kite.* keys (settings is a §2.3 leaf)
-    canUse: [kite]
+    mayDependOn: [bus, ratelimit, settings, secrets, store]   # settings/secrets/store are §2.3 leaves (P0-3 Session: keys, token, sessions row)
+    canUse: [kite, uuid]
   candles_backfill:
     mayDependOn: [bus, calendar, candles, kite, ratelimit]
     canUse: [uuid]
@@ -103,6 +104,8 @@ deps:
   ticker:
     mayDependOn: [bus, kite]
     canUse: [kite]
+  feed:
+    mayDependOn: [ticker]
   orders:
     mayDependOn: [kite]   # §2.3 also allows orderwrite; added when P4 wires it
   storetest:
