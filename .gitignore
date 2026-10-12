@@ -1,5 +1,12 @@
 .DS_Store
-build/bin/
-node_modules/
-frontend/dist/
 *.log
+node_modules/
+/dist/
+build/bin/
+build/darwin/
+build/windows/
+build/appimage/AppDir/
+frontend/dist/*
+!frontend/dist/.gitkeep
+frontend/package.json.md5
+go.work.sum
