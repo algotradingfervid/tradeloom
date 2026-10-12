@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -35,7 +36,8 @@ type WindowGeometry struct {
 // Runtime abstracts the Wails runtime so the lifecycle is testable without a window.
 type Runtime struct {
 	Emit                func(name string, payload any)
-	OpenURL             func(url string)
+	OpenURL             func(url string)        // https URLs only (the Kite login page)
+	OpenPath            func(path string) error // desktop file opener (open / xdg-open); paths are checked by App.openPath
 	Focus               func()
 	Quit                func()
 	OpenDirectoryDialog func(title string) (string, error)
@@ -61,6 +63,7 @@ type App struct {
 	rt        Runtime
 	lastState string
 	restart   atomic.Bool
+	wg        sync.WaitGroup // the service goroutines started by start; Shutdown waits for them
 
 	session     *api.Session
 	portfolio   *api.Portfolio
@@ -78,6 +81,7 @@ type App struct {
 func noopRuntime() Runtime {
 	return Runtime{
 		Emit: func(string, any) {}, OpenURL: func(string) {}, Focus: func() {}, Quit: func() {},
+		OpenPath:            func(string) error { return errNoWindow },
 		OpenDirectoryDialog: func(string) (string, error) { return "", nil },
 		OpenFileDialog:      func(string, []string) (string, error) { return "", nil },
 		WindowGeometry:      func() (int, int, int, int, bool) { return 0, 0, 0, 0, false },
@@ -105,7 +109,7 @@ func New(d Deps) *App {
 	a.watchlists = api.NewWatchlists(d.Service, a.context)
 	a.data = api.NewData(d.Service, a.context, dialogs)
 	a.calendar = api.NewCalendar(d.Service, a.context, dialogs)
-	a.diagnostics = api.NewDiagnostics(d.Service, a.context, a.openURL)
+	a.diagnostics = api.NewDiagnostics(d.Service, a.context, a.openPath)
 	a.system = api.NewSystem(d.Service, a.context)
 	return a
 }
@@ -121,8 +125,6 @@ func (a *App) runtime() Runtime {
 	defer a.mu.Unlock()
 	return a.rt
 }
-
-func (a *App) openURL(u string) { a.runtime().OpenURL(u) }
 
 // Bind lists the structs Wails exposes to the frontend (ARCH §8.4), in the canonical order of contract §C.
 func (a *App) Bind() []any {
@@ -147,11 +149,20 @@ func (a *App) start(parent context.Context, rt Runtime) {
 	for _, src := range a.d.Service.EventSources() {
 		src.Start(ctx, emit)
 	}
-	logging.Go("service.session", func() { a.d.Service.RunSession(ctx) })
-	logging.Go("service.run", func() { a.d.Service.Run(ctx) })
-	logging.Go("service.quotes", func() { a.d.Service.RunQuotes(ctx) })
-	logging.Go("service.backups", func() { a.d.Service.RunBackups(ctx) })
-	logging.Go("service.restore", func() { a.d.Service.Restore(ctx) })
+	a.goTracked("service.session", func() { a.d.Service.RunSession(ctx) })
+	a.goTracked("service.run", func() { a.d.Service.Run(ctx) })
+	a.goTracked("service.quotes", func() { a.d.Service.RunQuotes(ctx) })
+	a.goTracked("service.backups", func() { a.d.Service.RunBackups(ctx) })
+	a.goTracked("service.restore", func() { a.d.Service.Restore(ctx) })
+}
+
+// goTracked starts fn through logging.Go and counts it in a.wg so Shutdown can wait for it.
+func (a *App) goTracked(name string, fn func()) {
+	a.wg.Add(1)
+	logging.Go(name, func() {
+		defer a.wg.Done()
+		fn()
+	})
 }
 
 // restoreGeometry applies the geometry saved by BeforeClose (ignored when absent or unparsable).
@@ -160,12 +171,40 @@ func (a *App) restoreGeometry(ctx context.Context, rt Runtime) {
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return
 	}
-	var g WindowGeometry
-	if err := json.Unmarshal([]byte(raw), &g); err != nil || g.W <= 0 || g.H <= 0 {
+	g, ok := parseGeometry(raw)
+	if !ok {
 		a.d.Log.Warn("ignoring saved window geometry", "value", raw)
 		return
 	}
+	g = clampGeometry(g)
 	rt.SetWindowGeometry(g.W, g.H, g.X, g.Y, g.Maximised)
+}
+
+// Window limits for a restored geometry (Ruling 82 M2): at least P0-1's minimum window, at most a sane
+// maximum, and a position no further than maxWindowCoord from the origin.
+const (
+	minWindowW     = 1280
+	minWindowH     = 720
+	maxWindowSize  = 16384
+	maxWindowCoord = 16384
+)
+
+func clampInt(v, lo, hi int) int { return max(lo, min(v, hi)) }
+
+func clampGeometry(g WindowGeometry) WindowGeometry {
+	g.W = clampInt(g.W, minWindowW, maxWindowSize)
+	g.H = clampInt(g.H, minWindowH, maxWindowSize)
+	g.X = clampInt(g.X, -maxWindowCoord, maxWindowCoord)
+	g.Y = clampInt(g.Y, -maxWindowCoord, maxWindowCoord)
+	return g
+}
+
+func parseGeometry(raw string) (WindowGeometry, bool) {
+	var g WindowGeometry
+	if strings.TrimSpace(raw) == "" || json.Unmarshal([]byte(raw), &g) != nil || g.W <= 0 || g.H <= 0 {
+		return WindowGeometry{}, false
+	}
+	return g, true
 }
 
 // emitter forwards events to the UI, focuses the window when a login completes and quits for a restart
@@ -179,7 +218,7 @@ func (a *App) emitter(rt Runtime) service.Emit {
 				prev := a.lastState
 				a.lastState = st.State
 				a.mu.Unlock()
-				if prev == "logging_in" && st.State == "ready" {
+				if prev == service.SessionStateLoggingIn && st.State == service.SessionStateReady {
 					rt.Focus()
 				}
 			}
@@ -198,6 +237,12 @@ func (a *App) emitter(rt Runtime) service.Emit {
 	}
 }
 
+// shutdownWait bounds how long Shutdown waits for the service goroutines (tests shorten it).
+var shutdownWait = 5 * time.Second
+
+// Shutdown is options.App.OnShutdown: it cancels the service goroutines, waits for them (bounded by
+// shutdownWait, Warn on timeout) and then stops the platform; boot.Shutdown (DB.Close) runs after it in
+// cmd/tradeloom.run (Ruling 82 I2).
 func (a *App) Shutdown(ctx context.Context) {
 	a.mu.Lock()
 	cancel := a.cancel
@@ -205,6 +250,18 @@ func (a *App) Shutdown(ctx context.Context) {
 	if cancel != nil {
 		cancel()
 	}
+	done := make(chan struct{})
+	logging.Go("app.shutdown.wait", func() {
+		a.wg.Wait()
+		close(done)
+	})
+	wait, stop := context.WithTimeout(context.Background(), shutdownWait)
+	select {
+	case <-done:
+	case <-wait.Done():
+		a.d.Log.Warn("shutdown: service goroutines still running; stopping the platform anyway", "waited", shutdownWait.String())
+	}
+	stop()
 	if a.d.StopPlatform != nil {
 		a.d.StopPlatform(ctx)
 	}
@@ -213,10 +270,24 @@ func (a *App) Shutdown(ctx context.Context) {
 // BeforeClose saves the window geometry (the key is backend-owned, so through SaveWindowGeometry) and runs the scheduled backup when it is due (FR-DATA-005 "on quit").
 // It never prevents closing in P0; P4 adds the active-deployments prompt (FR-DEP-020).
 func (a *App) BeforeClose(ctx context.Context) bool {
+	// After a restore asked for the relaunch app.db is closed (or about to be replaced): write nothing (M3).
+	if a.RestartRequested() {
+		return false
+	}
 	rt := a.runtime()
-	w, h, x, y, max := rt.WindowGeometry()
+	w, h, x, y, maximised := rt.WindowGeometry()
 	if w > 0 && h > 0 {
-		b, _ := json.Marshal(WindowGeometry{W: w, H: h, X: x, Y: y, Maximised: max})
+		g := WindowGeometry{W: w, H: h, X: x, Y: y, Maximised: maximised}
+		// Wails v2 reports the maximised size only; keep the saved normal size and position so the
+		// window un-maximises to them after the next start (M2).
+		if maximised {
+			if raw, err := a.d.Service.GetUiState(ctx, UiStateWindowGeometry); err == nil {
+				if prev, ok := parseGeometry(raw); ok {
+					g.W, g.H, g.X, g.Y = prev.W, prev.H, prev.X, prev.Y
+				}
+			}
+		}
+		b, _ := json.Marshal(g)
 		if err := a.d.Service.SaveWindowGeometry(ctx, string(b)); err != nil {
 			a.d.Log.Warn("saving the window geometry failed", "err", err)
 		}
@@ -234,10 +305,11 @@ func (a *App) RestartRequested() bool { return a.restart.Load() }
 
 func wailsRuntime(ctx context.Context) Runtime {
 	return Runtime{
-		Emit:    func(n string, p any) { runtime.EventsEmit(ctx, n, p) },
-		OpenURL: func(u string) { runtime.BrowserOpenURL(ctx, u) },
-		Focus:   func() { runtime.WindowUnminimise(ctx); runtime.WindowShow(ctx) },
-		Quit:    func() { runtime.Quit(ctx) },
+		Emit:     func(n string, p any) { runtime.EventsEmit(ctx, n, p) },
+		OpenURL:  func(u string) { runtime.BrowserOpenURL(ctx, u) },
+		OpenPath: execOpenPath,
+		Focus:    func() { runtime.WindowUnminimise(ctx); runtime.WindowShow(ctx) },
+		Quit:     func() { runtime.Quit(ctx) },
 		OpenDirectoryDialog: func(title string) (string, error) {
 			return runtime.OpenDirectoryDialog(ctx, runtime.OpenDialogOptions{Title: title})
 		},

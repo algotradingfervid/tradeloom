@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -136,10 +137,33 @@ func (s *Service) SaveWindowGeometry(ctx context.Context, value string) error {
 	if !utf8.ValidString(value) {
 		return refused(uiStateStage, "invalid_value", "UI state values must be valid UTF-8.")
 	}
+	if !validGeometry(value) {
+		return refused(uiStateStage, "invalid_value", `The window geometry must be {"w","h","x","y","maximised"} with a positive size.`)
+	}
 	if s.d.UiState == nil {
 		return refused(uiStateStage, "unavailable", "UI state storage is not configured.")
 	}
 	return s.refuse(uiStateStage, s.d.UiState.Set(ctx, UiStateWindowGeometry, value))
+}
+
+// validGeometry reports whether value is exactly one JSON object of the geometry shape (Ruling 82 M2).
+func validGeometry(value string) bool {
+	var g struct {
+		W         *int  `json:"w"`
+		H         *int  `json:"h"`
+		X         *int  `json:"x"`
+		Y         *int  `json:"y"`
+		Maximised *bool `json:"maximised"`
+	}
+	dec := json.NewDecoder(strings.NewReader(value))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&g); err != nil || dec.More() {
+		return false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return false
+	}
+	return g.W != nil && g.H != nil && g.X != nil && g.Y != nil && g.Maximised != nil && *g.W > 0 && *g.H > 0
 }
 
 func validUiKey(k string) bool {

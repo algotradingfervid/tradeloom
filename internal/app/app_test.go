@@ -23,6 +23,8 @@ type fakeRuntime struct {
 	focuses  int
 	quits    int
 	opened   []string
+	paths    []string
+	pathErr  error
 	geom     WindowGeometry
 	setGeom  []WindowGeometry
 }
@@ -35,7 +37,13 @@ func (f *fakeRuntime) rt() Runtime {
 			f.payloads[n] = p
 			f.mu.Unlock()
 		},
-		OpenURL:             func(u string) { f.mu.Lock(); f.opened = append(f.opened, u); f.mu.Unlock() },
+		OpenURL: func(u string) { f.mu.Lock(); f.opened = append(f.opened, u); f.mu.Unlock() },
+		OpenPath: func(p string) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.paths = append(f.paths, p)
+			return f.pathErr
+		},
 		Focus:               func() { f.mu.Lock(); f.focuses++; f.mu.Unlock() },
 		Quit:                func() { f.mu.Lock(); f.quits++; f.mu.Unlock() },
 		OpenDirectoryDialog: func(string) (string, error) { return "", nil },
@@ -177,7 +185,7 @@ func TestApp_RestoresAndSavesWindowGeometry(t *testing.T) {
 	a.start(ctx, fr.rt())
 	fr.mu.Lock()
 	restored := append([]WindowGeometry(nil), fr.setGeom...)
-	fr.geom = WindowGeometry{W: 1600, H: 1000, X: 5, Y: 6, Maximised: true}
+	fr.geom = WindowGeometry{W: 1600, H: 1000, X: 5, Y: 6, Maximised: false} // the maximised case keeps the normal size: TestBeforeClose_MaximisedKeepsNormalSize
 	fr.mu.Unlock()
 	if len(restored) != 1 || restored[0] != (WindowGeometry{W: 1500, H: 950, X: 10, Y: 20}) {
 		t.Fatalf("restored %+v", restored)
@@ -186,7 +194,7 @@ func TestApp_RestoresAndSavesWindowGeometry(t *testing.T) {
 		t.Fatal("P0 never prevents closing")
 	}
 	saved, err := svc.GetUiState(ctx, UiStateWindowGeometry)
-	if err != nil || saved != `{"w":1600,"h":1000,"x":5,"y":6,"maximised":true}` {
+	if err != nil || saved != `{"w":1600,"h":1000,"x":5,"y":6,"maximised":false}` {
 		t.Fatalf("saved %q %v", saved, err)
 	}
 }
