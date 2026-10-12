@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router-dom';
@@ -9,8 +9,10 @@ import { startEventBridge } from '../api/events';
 import { demoSeed, readySession } from '../api/mock/fixtures';
 import { createMockBackend } from '../api/mock/index';
 import { ToastRegion } from '../components/ToastRegion';
+import { useAppStore } from '../store/app';
 import { resetOnLogout } from '../store/reset';
 import { useSettingsStore } from '../store/settings';
+import { renderApp } from '../test/render';
 import { pushToast } from '../store/toasts';
 import { GlobalShortcuts } from './GlobalShortcuts';
 import { reloadShortcuts, ShortcutProvider, useShortcut } from './ShortcutProvider';
@@ -137,5 +139,62 @@ describe('shortcut list sync with Go', () => {
     resetOnLogout();
     expect(useShortcutStore.getState().actions).toHaveLength(demoSeed().shortcuts.length);
     stop();
+  });
+});
+
+// Ruling 94 (Task 6 fix round 1).
+describe('shortcut dispatch guards and load failures', () => {
+  it('I2: IME composition keystrokes never fire shortcuts (isComposing or keyCode 229)', async () => {
+    setup();
+    await loaded();
+    fireEvent.keyDown(document.body, { key: '1', code: 'Digit1', altKey: true, isComposing: true });
+    expect(where()).toHaveTextContent('/orders');
+    fireEvent.keyDown(document.body, { key: 'Process', code: 'Digit1', altKey: true, keyCode: 229 });
+    expect(where()).toHaveTextContent('/orders');
+    fireEvent.keyDown(document.body, { key: '1', code: 'Digit1', altKey: true });
+    expect(where()).toHaveTextContent('/home');
+  });
+  it('M3: shortcuts are skipped inside a modal dialog (keys stay with the dialog)', async () => {
+    const { user } = setup(<div role="dialog" aria-modal="true"><button type="button">Cancel</button></div>);
+    await loaded();
+    screen.getByRole('button', { name: 'Cancel' }).focus();
+    await user.keyboard('{Alt>}1{/Alt}');
+    await user.keyboard('{F1}');
+    expect(where()).toHaveTextContent('/orders');
+    act(() => { (document.activeElement as HTMLElement).blur(); });
+    await user.keyboard('{Alt>}1{/Alt}');
+    expect(where()).toHaveTextContent('/home');
+  });
+  it('M6: a plain-key chart binding (Shift+T) fires when focus is on the chart, outside text fields', async () => {
+    const fire = vi.fn();
+    const { user } = setup(<div data-shortcut-scope="chart" tabIndex={0} data-testid="chart"><Probe id="order.new" onFire={fire} /></div>);
+    await loaded();
+    screen.getByTestId('chart').focus();
+    await user.keyboard('{Shift>}t{/Shift}');
+    expect(fire).toHaveBeenCalledTimes(1);
+  });
+  it('I3: a shortcut-load failure shows in the boot notice; Retry reloads the shortcuts and clears it', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.failNext('settings.shortcuts', 'database is locked');
+    const { user } = renderApp({ backend });
+    expect(await screen.findByRole('alert')).toHaveTextContent('database is locked');
+    expect(useAppStore.getState().bootError?.failed).toEqual(['shortcuts']);
+    expect(useShortcutStore.getState().actions).toEqual([]);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await loaded();
+    await waitFor(() => expect(useAppStore.getState().bootError).toBeNull());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+  it('I3: a successful bootstrap does not hide a shortcut-load failure; a shortcuts event recovers it', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.failNext('settings.shortcuts', 'database is locked');
+    renderApp({ backend });
+    await waitFor(() => expect(useAppStore.getState().bootError?.failed).toEqual(['shortcuts']));
+    await waitFor(() => expect(backend.callsTo('system.info')).toHaveLength(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(useAppStore.getState().bootError?.failed).toEqual(['shortcuts']);
+    await act(async () => { await backend.settings.rebind('kill.switch', 'Ctrl+Shift+X'); });
+    expect(useShortcutStore.getState().actions.length).toBeGreaterThan(0);
+    expect(useAppStore.getState().bootError).toBeNull();
   });
 });

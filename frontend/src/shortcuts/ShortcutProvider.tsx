@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { Backend } from '../api/backend';
 import { useBackend } from '../api/BackendContext';
+import { parseBackendError } from '../api/errors';
+import { useAppStore } from '../store/app';
 import { isTypingTarget, resolveAction, scopeStackFor } from './registry';
 import { useShortcutStore } from './store';
 
@@ -10,26 +12,39 @@ const ShortcutContext = createContext<ShortcutContextValue | null>(null);
 
 /**
  * The registry lives in Go (ARCHITECTURE §8.8); the UI only mirrors it. A `shortcuts` event that arrives while the
- * fetch is in flight is newer, so the fetched list is then dropped.
+ * fetch is in flight is newer, so the fetched list is then dropped. A failure is reported as the `shortcuts` boot
+ * slice (boot notice with Retry, Ruling 94 I3) unless an event has delivered the list meanwhile; it rejects too.
  */
 export async function reloadShortcuts(backend: Backend): Promise<void> {
   const before = useShortcutStore.getState().version;
-  const actions = await backend.settings.shortcuts();
+  let actions;
+  try {
+    actions = await backend.settings.shortcuts();
+  } catch (e) {
+    if (useShortcutStore.getState().version === before) useAppStore.getState().reportBoot({ shortcuts: parseBackendError(e).reason });
+    throw e;
+  }
   if (useShortcutStore.getState().version === before) useShortcutStore.getState().setActions(actions);
+  useAppStore.getState().reportBoot({ shortcuts: null });
 }
 
 export function ShortcutProvider({ children }: { children: ReactNode }) {
   const backend = useBackend();
   const handlers = useRef(new Map<string, () => void>());
+  // The boot notice's Retry bumps bootAttempt; a rebind/reset event also delivers the list (applyShortcutsEvent).
+  const bootAttempt = useAppStore((s) => s.bootAttempt);
 
   useEffect(() => {
-    // On failure keep whatever list is present (empty, or one a shortcuts event delivered).
+    // The failure is in the boot notice; keep whatever list is present (empty, or one a shortcuts event delivered).
     reloadShortcuts(backend).catch(() => undefined);
-  }, [backend]);
+  }, [backend, bootAttempt]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.repeat) return;
+      // IME composition keystrokes belong to the input method (keyCode 229 where isComposing is unreliable).
+      if (e.defaultPrevented || e.repeat || e.isComposing || e.keyCode === 229) return;
+      // A modal dialog keeps its keys (Escape, Tab, typing); no app shortcut fires behind it.
+      if (e.target instanceof Element && e.target.closest('[aria-modal="true"]')) return;
       const typing = isTypingTarget(e.target);
       if (typing && !e.ctrlKey && !e.altKey && !e.metaKey && !/^F\d{1,2}$/.test(e.key)) return;
       const action = resolveAction(useShortcutStore.getState().actions, scopeStackFor(document.activeElement), e, (id) => handlers.current.has(id));

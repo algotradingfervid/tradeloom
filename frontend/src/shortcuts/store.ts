@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { ShortcutAction } from '../api/backend';
+import { useAppStore } from '../store/app';
 import { registerReset } from '../store/reset';
 
 /** settings.changed key under which Go publishes the full action list after a rebind or reset (service/shortcuts.go). */
@@ -18,9 +19,13 @@ export const useShortcutStore = create<ShortcutStore>()((set) => ({
   setActions: (actions) => set((st) => ({ actions, version: st.version + 1 })),
 }));
 
-/** The `shortcuts` settings.changed value is the whole list: replace, never merge (null → []). */
+/**
+ * The `shortcuts` settings.changed value is the whole list: replace, never merge (null → []). Go publishes it after
+ * every rebind or reset, so such an event also recovers from a failed start-up load (clears the boot notice slice).
+ */
 export function applyShortcutsEvent(value: unknown): void {
   useShortcutStore.getState().setActions(Array.isArray(value) ? (value as ShortcutAction[]) : []);
+  useAppStore.getState().reportBoot({ shortcuts: null });
 }
 
 // Not account data: signing out keeps the list (Ruling 85).

@@ -40,10 +40,21 @@ export function formatBinding(text: string): string {
   return [b.ctrl && 'Ctrl', b.alt && 'Alt', b.shift && 'Shift', b.meta && 'Meta', b.key].filter(Boolean).join('+');
 }
 
-/** Physical key for letters and digits (Alt+letter differs per layout), logical key otherwise. */
+// Unshifted character of each punctuation key Go allows (internal/settings punctuationKeys), by KeyboardEvent.code.
+const PUNCTUATION_CODES: Record<string, string> = {
+  Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\',
+  Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+};
+
+/**
+ * Physical key for letters, digits and punctuation (Alt+letter and Shift+punctuation change e.key per layout, e.g.
+ * Shift+/ reports "?"), logical key otherwise. The result is always a key Go's ParseBinding accepts for these keys.
+ */
 export function keyOfEvent(e: KeyLike): string {
   if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
   if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
+  const punct = PUNCTUATION_CODES[e.code];
+  if (punct) return punct;
   if (e.key === ' ') return 'Space';
   return e.key.length === 1 ? e.key.toUpperCase() : e.key;
 }
@@ -92,5 +103,8 @@ export function resolveAction(
 export function isTypingTarget(t: EventTarget | null): boolean {
   if (!(t instanceof HTMLElement)) return false;
   if (t.isContentEditable || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return true;
+  // isContentEditable is not implemented everywhere (jsdom); the nearest contenteditable attribute decides.
+  const editable = t.closest('[contenteditable]')?.getAttribute('contenteditable');
+  if (editable != null && editable.toLowerCase() !== 'false') return true;
   return t instanceof HTMLInputElement && !['checkbox', 'radio', 'button', 'submit', 'reset'].includes(t.type);
 }
