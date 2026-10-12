@@ -11,9 +11,11 @@ const flagTitle = (flag: string, hint: string) => `${flag} — ${hint}`;
  * InstrumentName form "name · flag — hint" (Ruling 96 I2). An out-of-scope instrument is never silently dropped
  * (P0-3 Ruling 38): it shows its name, raw tag and the shared "View only" flag.
  */
-export function InstrumentLabel({ instrument, showName = false }: {
+export function InstrumentLabel({ instrument, showName = false, withTitle = true }: {
   instrument: LabelInstrument & { alsoOnNse?: boolean };
   showName?: boolean;
+  /** false inside a control with its own tooltip (chart header symbol button), so this title does not override it. */
+  withTitle?: boolean;
 }) {
   const name = displayName(instrument);
   if (!isInScope(instrument)) {
@@ -22,7 +24,7 @@ export function InstrumentLabel({ instrument, showName = false }: {
         className="instrument-label"
         data-instrument-token={instrument.token}
         data-out-of-scope="true"
-        title={[name, instrument.tag, flagTitle(copy.outOfScope, copy.outOfScopeHint)].join(' · ')}
+        title={withTitle ? [name, instrument.tag, flagTitle(copy.outOfScope, copy.outOfScopeHint)].join(' · ') : undefined}
       >
         <span className="instrument-label__symbol" data-instrument-name>{name}</span>
         <span className="chip">{instrument.tag}</span>
@@ -37,7 +39,7 @@ export function InstrumentLabel({ instrument, showName = false }: {
     .filter(Boolean)
     .join(' · ');
   return (
-    <span className="instrument-label" data-instrument-token={instrument.token} data-exchange-tag={tag} title={title}>
+    <span className="instrument-label" data-instrument-token={instrument.token} data-exchange-tag={tag} title={withTitle ? title : undefined}>
       <span className="instrument-label__symbol" data-instrument-name>{name}</span>
       {future && <span className="instrument-label__badge" role="img" aria-label={copy.future}>F</span>}
       <span className="chip">{tag}</span>

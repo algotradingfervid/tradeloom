@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { QuoteConsumer } from '../../api/quotes';
 
@@ -23,6 +24,7 @@ vi.mock('../../market/hooks', async (importOriginal) => {
 import { ChartHeader, type ChartHeaderProps } from './ChartHeader';
 import { useTicksStore } from '../../store/ticks';
 import { subscriptions } from '../../market/index';
+import { runStartedMs } from '../../market/quotes';
 import { tick } from '../../market/testing';
 import { NIFTY_OPTION, RELIANCE, SBIN } from '../../instruments/fixtures';
 
@@ -67,10 +69,68 @@ describe('ChartHeader', () => {
     const onRefresh = vi.fn();
     render(<ChartHeader {...props({ refreshing: true, onRefresh })} />);
     const btn = screen.getByRole('button', { name: 'Refresh chart data' });
-    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('aria-disabled', 'true'); // Ruling 111 I1: not native disabled, so focus stays
     expect(btn.className).toContain('is-spinning');
     fireEvent.click(btn);
     expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('Ruling 111 I1: Enter and Space while refreshing do not call onRefresh', async () => {
+    const user = userEvent.setup();
+    const onRefresh = vi.fn();
+    render(<ChartHeader {...props({ refreshing: true, onRefresh })} />);
+    const btn = screen.getByRole('button', { name: 'Refresh chart data' });
+    btn.focus();
+    expect(btn).toHaveFocus();
+    expect(btn).toHaveAttribute('aria-busy', 'true');
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
+    await user.click(btn);
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('Ruling 111 I1: focus stays on Refresh when refreshing flips to true, and it works again afterwards', async () => {
+    const user = userEvent.setup();
+    const onRefresh = vi.fn();
+    const { rerender } = render(<ChartHeader {...props({ onRefresh })} />);
+    const btn = screen.getByRole('button', { name: 'Refresh chart data' });
+    btn.focus();
+    await user.keyboard('{Enter}');
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    rerender(<ChartHeader {...props({ onRefresh, refreshing: true })} />);
+    // Browsers blur a natively disabled focused button (jsdom does not), so the busy button must stay enabled.
+    expect(btn).not.toBeDisabled();
+    expect(btn).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Refresh chart data' })).toHaveFocus();
+    expect(document.activeElement).not.toBe(document.body);
+    rerender(<ChartHeader {...props({ onRefresh, refreshing: false })} />);
+    expect(btn).toHaveFocus();
+    expect(btn).not.toHaveAttribute('aria-disabled');
+    await user.keyboard(' ');
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('stale quote (tsMs before this run): price still shown, data-stale set, stale text in the button description', () => {
+    useTicksStore.getState().applyBatch([tick(RELIANCE.token, 1000, 990, { tsMs: runStartedMs() - 1 })]);
+    render(<ChartHeader {...props()} />);
+    const symbol = screen.getByRole('button', { name: 'Change symbol' });
+    expect(within(symbol).getByText('1,000.00')).toBeInTheDocument();
+    expect(symbol.querySelector('.price-change')).toHaveAttribute('data-stale', 'true');
+    expect(symbol).toHaveAccessibleDescription(expect.stringContaining('Last known price, not live yet'));
+  });
+
+  it('price decimals follow the tick size: 0.25 paise → 4 decimals', () => {
+    const fine = { ...RELIANCE, tickSizePaise: 0.25 };
+    useTicksStore.getState().applyBatch([tick(fine.token, 1000.5, 990)]);
+    render(<ChartHeader {...props({ instrument: fine })} />);
+    expect(within(screen.getByRole('button', { name: 'Change symbol' })).getByText('1,000.5000')).toBeInTheDocument();
+  });
+
+  it('Ruling 111 m4: no inner title overrides the symbol button tooltip "Search instruments"', () => {
+    render(<ChartHeader {...props()} />);
+    const symbol = screen.getByRole('button', { name: 'Change symbol' });
+    expect(symbol).toHaveAttribute('title', 'Search instruments');
+    expect(symbol.querySelector('.instrument-label')).not.toHaveAttribute('title');
   });
 
   it('FR-CHART-017: ⋯ menu offers "Open in full view"', () => {
@@ -115,6 +175,12 @@ describe('ChartHeader', () => {
 });
 
 describe('ChartHeader subscription lifecycle', () => {
+  /** The coordinator's registered chart-header sources as [contextId, consumer, tokens] (private map, read for leak checks). */
+  const headerSources = () => {
+    const sources = (subscriptions as unknown as { sources: Map<string, { consumer: QuoteConsumer; tokens: Set<number> }> }).sources;
+    return [...sources].filter(([id]) => id.startsWith('chart-header:'))
+      .map(([id, s]) => [id.slice('chart-header:'.length).split('#')[0], s.consumer, [...s.tokens]]);
+  };
   const settle = async () => {
     await new Promise((r) => setTimeout(r, 0));
     await subscriptions.idle();
@@ -131,13 +197,17 @@ describe('ChartHeader subscription lifecycle', () => {
     await settle();
     expect(watch).toHaveBeenLastCalledWith('chart', [SBIN.token]);
 
+    expect(headerSources()).toEqual([['dashboard', 'chart', [SBIN.token]]]);
     rerender(<ChartHeader {...props({ instrument: SBIN, contextId: 'full' })} />);
     await settle();
     expect(useSubscription).toHaveBeenLastCalledWith('chart-header:full', 'chart', [SBIN.token]);
+    // Stands alone (Ruling 111 m5): the old context's source is gone and only the new one holds the token.
+    expect(headerSources()).toEqual([['full', 'chart', [SBIN.token]]]);
     expect(watch).toHaveBeenLastCalledWith('chart', [SBIN.token]);
 
     unmount();
     await settle();
+    expect(headerSources()).toEqual([]);
     expect(watch).toHaveBeenLastCalledWith('chart', []);
     expect(watch.mock.calls.every(([c]) => c === 'chart')).toBe(true);
   });

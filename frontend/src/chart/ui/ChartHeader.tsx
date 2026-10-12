@@ -43,14 +43,18 @@ export function ChartHeader(p: ChartHeaderProps) {
         <span id={summaryId} className="chart-header__summary">
           {p.instrument ? (
             <>
-              <InstrumentLabel instrument={p.instrument} />
+              <InstrumentLabel instrument={p.instrument} withTitle={false} />
               <PriceChange token={p.instrument.token} decimals={precisionForTick(tickRupees(p.instrument))} />
             </>
           ) : <span>—</span>}
         </span>
       </button>
+      {/* Ruling 111 I1: while refreshing the button stays focusable (aria-disabled, not native disabled) so keyboard
+          focus is not dropped to <body>; the click guard makes it inert. */}
       <IconButton label={copy.refresh} icon="refresh" className={p.refreshing ? 'is-spinning' : undefined}
-        aria-busy={p.refreshing || undefined} disabled={p.refreshing || p.refreshDisabled} onClick={p.onRefresh} />
+        aria-busy={p.refreshing || undefined} aria-disabled={p.refreshing || undefined}
+        disabled={p.refreshDisabled && !p.refreshing}
+        onClick={() => { if (!p.refreshing && !p.refreshDisabled) p.onRefresh(); }} />
       <TimeframeSelect value={p.timeframe} onChange={p.onTimeframe} />
       {p.onOpenFullView && (
         <div className="chart-header__menu">
