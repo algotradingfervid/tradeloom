@@ -275,3 +275,30 @@ func TestIncompleteHistoricalDoesNotDowngradeComplete(t *testing.T) {
 		}
 	}
 }
+
+func TestIncompleteOnlyWriteSkipsChecksumRecompute(t *testing.T) { // Ruling 44 (e)
+	ctx := context.Background()
+	s, fc := openTest(t, ist(2026, 10, 12, 16, 0))
+	if err := s.Upsert(ctx, 1, candles.Minute, []candles.Candle{minute(ist(2026, 10, 1, 9, 15), 0, 100, true)}, candles.SourceHistorical); err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := func(month int) (int64, int) {
+		var at int64
+		var n int
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(updated_at), 0) FROM checksums WHERE token=1 AND interval=? AND month=?`,
+			string(candles.Minute), month).Scan(&n, &at)
+		return at, n
+	}
+	at0, _ := updatedAt(202610)
+	fc.Advance(time.Hour)
+	tickBuilt := []candles.Candle{minute(ist(2026, 10, 1, 9, 15), 5, 1, false), minute(ist(2026, 11, 2, 9, 15), 0, 1, false)}
+	if err := s.Upsert(ctx, 1, candles.Minute, tickBuilt, candles.SourceTick); err != nil {
+		t.Fatal(err)
+	}
+	if at1, _ := updatedAt(202610); at1 != at0 {
+		t.Fatalf("incomplete-only write recomputed the October checksum (updated_at %d -> %d)", at0, at1)
+	}
+	if _, n := updatedAt(202611); n != 0 {
+		t.Fatalf("incomplete-only write created a November checksum row")
+	}
+}
