@@ -336,7 +336,19 @@ func (s *Session) SaveCredentials(ctx context.Context, apiKey, apiSecret string)
 }
 
 // Restore resumes a still-valid session at startup without asking for a login (FR-ACCT-006 AC4).
+//
+// Ruling 59 (1): Restore holds exMu for its whole run (its Kite call included), so a Logout or a paste
+// login waits for it and then wins. Its commit (s.rec → ready) runs under feedMu and is abandoned when a
+// login attempt began meanwhile (gen changed) or another session is current; the paste login that is
+// waiting on exMu then commits on its own. Ruling 59 (2): a stored token whose session row already ended
+// (a logout that could not delete it) is deleted, never resumed, and Kite is not called.
 func (s *Session) Restore(ctx context.Context) SessionState {
+	s.exMu.Lock()
+	defer s.exMu.Unlock()
+	s.mu.Lock()
+	gen := s.gen
+	s.mu.Unlock()
+
 	configured, err := s.configured()
 	if err != nil || !configured {
 		if err != nil {
@@ -365,6 +377,16 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		return s.set(idle(true, nil, "", ""))
 	}
 	logging.RegisterSecret(rec.AccessToken)
+	row, rowErr := s.d.Repo.Get(ctx, rec.SessionID)
+	if rowErr == nil && row.EndedAtMs != 0 {
+		s.d.Log.Warn("restore: the stored token belongs to an ended session; deleting it", "session_id", rec.SessionID, "end_reason", row.EndReason)
+		s.d.Limiter.PauseAll("logged out")
+		derr := s.deleteToken()
+		if derr != nil {
+			s.storeFailed("delete ended session's access token", derr)
+		}
+		return s.set(idle(true, derr, "", ""))
+	}
 	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
 		return s.endSession(rec, CodeSessionExpired)
 	}
@@ -379,13 +401,13 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		s.d.Log.Warn("Kite unreachable at startup; continuing with cached data", "kind", errKind(err))
 	}
 	plan, ackRequired := PlanUnknown, true
-	switch row, err := s.d.Repo.Get(ctx, rec.SessionID); {
-	case err == nil:
+	switch {
+	case rowErr == nil:
 		if row.DataPlan != "" {
 			plan = DataPlan(row.DataPlan)
 		}
 		ackRequired = row.RiskAckAtMs == 0
-	case errors.Is(err, store.ErrNoRow):
+	case errors.Is(rowErr, store.ErrNoRow):
 		// The token outlived its row (e.g. app.db restored from a backup): recreate it so the risk
 		// acknowledgement and the data plan of this session can be persisted.
 		s.d.Log.Warn("restore: session row missing; recreating it", "session_id", rec.SessionID)
@@ -393,12 +415,29 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 			s.d.Log.Warn("recreating the session row failed", "session_id", rec.SessionID, "err", ierr)
 		}
 	default:
-		s.d.Log.Warn("reading the session row failed", "err", err)
+		s.d.Log.Warn("reading the session row failed", "err", rowErr)
 	}
+	s.feedMu.Lock()
 	s.mu.Lock()
+	if s.gen != gen || s.supersededLocked(rec.SessionID) || s.st.State == StateLoggingIn {
+		// A login began during Restore: it owns the session state now.
+		if s.st.State == StateLoggingIn && s.prior == StateNoCredentials {
+			s.prior = StateLoggedOut // credentials exist; a cancelled login falls back to logged_out
+		}
+		cur := s.st
+		s.mu.Unlock()
+		s.d.Tokens.SetAccessToken("")
+		s.d.Limiter.PauseAll("logged out")
+		s.feedMu.Unlock()
+		s.d.Log.Info("restore abandoned: a login began meanwhile", "session_id", rec.SessionID)
+		return cur
+	}
+	st := readyState(rec, plan, ackRequired, offline)
 	s.rec = &rec
+	s.st = st
 	s.mu.Unlock()
-	st := s.set(readyState(rec, plan, ackRequired, offline))
+	s.feedMu.Unlock()
+	bus.Publish(s.d.Bus, TopicSessionState, st)
 	s.afterReady(apiKey, rec)
 	return st
 }

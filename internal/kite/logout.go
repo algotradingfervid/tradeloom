@@ -45,7 +45,7 @@ func (s *Session) Logout(ctx context.Context) (LogoutResult, error) {
 	gen := s.gen
 	s.done = map[string]bool{}
 	s.nonces = map[string]nonceBinding{}
-	s.st = SessionState{State: StateLoggedOut, DataPlan: PlanUnknown} // not ready any more; published below
+	s.st = SessionState{State: StateLoggedOut, DataPlan: PlanUnknown} // not ready any more; published once feedMu is released
 	s.mu.Unlock()
 	if lb != nil {
 		lb.Close()
@@ -57,6 +57,8 @@ func (s *Session) Logout(ctx context.Context) (LogoutResult, error) {
 		s.d.Tokens.SetAccessToken("")
 	}
 	s.feedMu.Unlock()
+	// Ruling 59 (4): announce logged_out before the Kite call, which can take up to the HTTP timeout.
+	bus.Publish(s.d.Bus, TopicSessionState, SessionState{State: StateLoggedOut, DataPlan: PlanUnknown})
 
 	res := LogoutResult{}
 	if rec != nil {

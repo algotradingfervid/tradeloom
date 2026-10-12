@@ -259,6 +259,7 @@ func (s *Session) exchange(ctx context.Context, requestToken, nonce string) (Ses
 	logging.RegisterSecret(requestToken)
 
 	s.mu.Lock()
+	gen := s.gen // Ruling 59 (3): the attempt this exchange was accepted for
 	if nonce != "" && !s.nonceAcceptsLocked(nonce, requestToken) {
 		st := s.st
 		s.mu.Unlock()
@@ -326,8 +327,10 @@ func (s *Session) exchange(ctx context.Context, requestToken, nonce string) (Ses
 	st := readyState(rec, PlanUnknown, true, false)
 	s.mu.Lock()
 	s.done[requestToken] = true
-	if nonce != "" {
-		s.nonces[nonce] = nonceBinding{gen: s.gen, token: requestToken}
+	if nonce != "" && s.gen == gen {
+		// Bind only while the nonce's attempt is still current; a nonce retired during the exchange
+		// (cancel or restart) stays retired.
+		s.nonces[nonce] = nonceBinding{gen: gen, token: requestToken}
 	}
 	s.rec = &rec
 	s.st = st
