@@ -138,6 +138,7 @@ func (s *Service) Run(ctx context.Context) {
 		c, cn := context.WithCancel(ctx)
 		d := make(chan struct{})
 		cancel, done, session = cn, d, st.SessionID
+		s.triggerInstrumentRefresh() // new login: fetch today's instrument list if due (P0-2 Ruling 49, Task 30)
 		logging.Go("orders.sync", func() {
 			defer close(d)
 			s.d.Orders.Run(c)
