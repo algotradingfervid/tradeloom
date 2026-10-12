@@ -515,3 +515,32 @@ export const profileCopy = {
   expired: 'Your Kite session has ended. Log in again to see your profile.',
   logIn: 'Log in',
 } as const;
+
+/** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
+export const symbolSearchCopy = {
+  title: 'Search instruments',
+  inputLabel: 'Search instruments',
+  placeholder: 'Search, e.g. SBIN, TCS',
+  quickChips: 'Quick picks',
+  results: 'Results',
+  colInstrument: 'Instrument',
+  colCompany: 'Company name',
+} as const;
+
+/** Shared by every instrument search box (useInstrumentSearch): the polite result-count announcement. */
+export const instrumentSearchCopy = {
+  noMatch: 'No instruments match',
+  count: (n: number) => (n === 1 ? '1 result' : `${n} results`),
+} as const;
+
+/** Watchlist inline search-and-add (FR-WATCH-004, P0-5 Task 15). Count and no-match text: instrumentSearchCopy. */
+export const watchlistSearchCopy = {
+  label: 'Search instruments to add',
+  placeholder: 'Search to add, e.g. SBIN',
+  results: 'Search results',
+  alreadyIn: (list: string) => `Already in ${list}`,
+  addTo: (list: string) => `Add to ${list}`,
+  added: (symbol: string, list: string) => `Added ${symbol} to ${list}`,
+  searchFailed: 'Search failed. Try again.',
+  addFailed: (symbol: string, reason: string) => `Could not add ${symbol}: ${reason}`,
+} as const;
