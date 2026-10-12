@@ -27,6 +27,9 @@ import { resetOnLogout } from '../../store/reset';
 import { useSessionStore } from '../../store/session';
 import { useTicksStore } from '../../store/ticks';
 import { NIFTY50, RELIANCE, SBIN } from '../../instruments/fixtures';
+import { instrumentByIdentifier } from '../../api/instruments';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const DAY = 86_400_000;
 const YESTERDAY_1515 = Date.UTC(2026, 9, 8, 9, 45);
@@ -35,6 +38,7 @@ const bars = (n: number, end = YESTERDAY_1515, step = 3_600_000): Bar[] =>
 const page = (b: Bar[], extra: Partial<CandlesPage> = {}): CandlesPage =>
   ({ bars: b, complete: true, backfillJobId: '', needsDataPlan: false, offline: false, ...extra });
 
+const realLookup = vi.mocked(instrumentByIdentifier).getMockImplementation()!;
 let adapter: FakeAdapter;
 let api: { [K in keyof ChartDataApi]: ReturnType<typeof vi.fn> };
 const view = (over: Partial<ChartViewProps> = {}, theme: ThemeName = 'light') => (
@@ -46,6 +50,7 @@ const view = (over: Partial<ChartViewProps> = {}, theme: ThemeName = 'light') =>
 const renderView = (over: Partial<ChartViewProps> = {}) => render(view(over));
 
 beforeEach(() => {
+  vi.mocked(instrumentByIdentifier).mockImplementation(realLookup);
   adapter = new FakeAdapter();
   api = {
     fetchHistory: vi.fn(async () => page(bars(5))),
@@ -188,6 +193,9 @@ describe('ChartView', () => {
     act(() => push({ token: RELIANCE.token, interval: '60minute', bar: { ...last, close: 107.5, high: 108 }, closed: false }));
     expect(screen.getByTestId('chart-legend')).toHaveTextContent('C 107.50');
     expect(screen.getByTestId('chart-legend')).toHaveTextContent('H 108.00');
+    // Fix round 1 I1: a live candle with a NEW time after the pointer left moves the legend to that candle.
+    act(() => push({ token: RELIANCE.token, interval: '60minute', bar: { ...last, time: last.time + 3_600_000, close: 222, high: 230 }, closed: false }));
+    expect(screen.getByTestId('chart-legend')).toHaveTextContent('C 222.00');
     // Hovering an older candle keeps it in the legend while live candles arrive.
     const older = adapter.bars()[1];
     act(() => adapter.emitCrosshair({ bar: older, previousClose: adapter.bars()[0].close }));
@@ -236,6 +244,51 @@ describe('ChartView', () => {
     await waitFor(() => expect(api.fetchHistory).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(adapter.bars()).toHaveLength(5));
     expect(screen.getByTestId('chart-legend')).toHaveTextContent('C 105.00');
+  });
+});
+
+describe('ChartView fix round 1', () => {
+  it('m1: hover from before a reset (answer dropped for a user change) is not shown over the reloaded chart', async () => {
+    renderView();
+    await waitFor(() => expect(screen.getByTestId('chart-legend')).toHaveTextContent('C 105.00'));
+    const older = adapter.bars()[1];
+    act(() => adapter.emitCrosshair({ bar: older, previousClose: adapter.bars()[0].close }));
+    expect(screen.getByTestId('chart-legend')).toHaveTextContent(`C ${older.close}.00`);
+    let answer!: (p: CandlesPage) => void;
+    api.refreshRange.mockImplementationOnce(() => new Promise<CandlesPage>((r) => { answer = r; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh chart data' }));
+    await waitFor(() => expect(api.refreshRange).toHaveBeenCalledTimes(1));
+    act(() => useSessionStore.setState({ session: readySession({ userId: 'ZZ9999', sessionId: 'sess-2' }) }));
+    await act(async () => { answer(page(bars(5))); });
+    await waitFor(() => expect(api.fetchHistory).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId('chart-legend')).toHaveTextContent('C 105.00'));
+  });
+
+  it('m2: the A/L toggles follow the adapter when the price scale changes outside them (axis drag)', async () => {
+    const { rerender } = renderView();
+    await waitFor(() => expect(adapter.bars()).toHaveLength(5));
+    expect(screen.getByRole('button', { name: 'A' })).toHaveAttribute('aria-pressed', 'true');
+    adapter.scale = { log: true, auto: false };
+    rerender(view());
+    expect(screen.getByRole('button', { name: 'A' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'L' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('m3: an identifier that does not resolve replaces the load overlays instead of stacking on them', async () => {
+    api.fetchHistory.mockReturnValue(new Promise(() => undefined));
+    const { rerender } = renderView();
+    expect(await screen.findByTestId('chart-loading')).toBeInTheDocument();
+    vi.mocked(instrumentByIdentifier).mockRejectedValue(new BindingError('not_found', 'No instrument NSE:NOPE in the instrument list.'));
+    rerender(view({ identifier: 'NSE:NOPE' }));
+    expect(await screen.findByText('No instrument NSE:NOPE in the instrument list.')).toBeInTheDocument();
+    expect(screen.queryByTestId('chart-loading')).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+  });
+
+  it('m6: chart badges have the chart background so they stay legible over candles', () => {
+    const css = readFileSync(join(__dirname, 'chart.css'), 'utf8');
+    const rule = css.match(/\.chart-view__badge \{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toContain('background: var(--chart-bg, var(--bg))');
   });
 });
 

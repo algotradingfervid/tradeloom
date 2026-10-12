@@ -8,7 +8,8 @@ import { installMatchMedia, resetMatchMedia } from './matchMedia';
 
 // jsdom has no canvas: lightweight-charts throws on its first paint. Every test that mounts the real
 // LightweightChartsAdapter (Home renders the dashboard chart, P0-5 Task 10) draws into the fake library instead.
-// Adapter tests inject their own fake through AdapterOptions.lib.
+// Adapter tests inject their own fake through AdapterOptions.lib. A test that needs the real library opts out with
+// vi.unmock('../chart/lwc') (path relative to that test file). Guarded by src/chart/lwc.test.ts.
 vi.mock('../chart/lwc', async () => ({ realLwc: (await import('../chart/testing/fakeLwc')).makeFakeLwc().lib }));
 
 // Guarded for `// @vitest-environment node` files (prodBuild.test.ts), which have no window.

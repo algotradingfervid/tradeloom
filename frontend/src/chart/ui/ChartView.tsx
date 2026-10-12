@@ -42,7 +42,6 @@ export function ChartView(props: ChartViewProps) {
   const [controller, setController] = useState<ChartDataController | null>(null);
   const [state, setState] = useState<ChartLoadState>(INITIAL_CHART_STATE);
   const [hover, setHover] = useState<LegendData | null>(null);
-  const [scale, setScale] = useState({ log: false, auto: true });
   const [searchOpen, setSearchOpen] = useState(false);
   const [, bump] = useReducer((x: number) => x + 1, 0);
   const { instrument, error: resolveError } = useResolvedInstrument(identifier);
@@ -58,7 +57,10 @@ export function ChartView(props: ChartViewProps) {
     const el = hostRef.current!;
     const a = props.adapterFactory ? props.adapterFactory(el) : new LightweightChartsAdapter(el, { maxStudies: props.maxStudies });
     const c = new ChartDataController(a, props.dataApi ?? defaultDataApi, setState, bump);
-    const offCross = a.onCrosshairMove(setHover);
+    // The adapter reports the last bar when the pointer is on it or has left the chart. Storing that report would
+    // freeze the legend on it while live candles replace or follow it (Task 4 review I1), so it is never stored:
+    // the legend then reads the live last bar.
+    const offCross = a.onCrosshairMove((d) => setHover(d && d.bar.time === a.bars().at(-1)?.time ? null : d));
     setAdapter(a);
     setController(c);
     return () => { offCross(); c.dispose(); a.destroy(); };
@@ -80,16 +82,19 @@ export function ChartView(props: ChartViewProps) {
     if (controller.current.status === 'idle') void controller.retry();
   }, [controller, state.resetEpoch, signedIn, userId, noPlan]);
 
+  // A reset cleared the chart: a hover from before it (previous user's candles) must not show over the reload.
+  useEffect(() => { setHover(null); }, [state.resetEpoch]);
+
   const bars = adapter?.bars() ?? [];
   const last = bars.length > 0 ? bars[bars.length - 1] : undefined;
   const lastLegend: LegendData | null = last ? { bar: last, previousClose: bars.length > 1 ? bars[bars.length - 2].close : null } : null;
-  // When the pointer leaves the chart the adapter reports a copy of the last bar; showing that copy would freeze the
-  // legend while live candles update the last bar, so the last bar is always read live (Task 4 review I1).
-  const legend = hover && !(last && hover.bar.time === last.time) ? hover : lastLegend;
+  const legend = hover ?? lastLegend;
   const decimals = instrument ? precisionForTick(tickRupees(instrument)) : 2;
 
-  const toggleAuto = () => { if (!adapter) return; adapter.setPriceScale({ auto: true }); setScale(adapter.priceScaleState()); };
-  const toggleLog = () => { if (!adapter) return; adapter.setPriceScale({ log: !adapter.priceScaleState().log }); setScale(adapter.priceScaleState()); };
+  // Read on every render: a drag on the price axis turns auto-scale off inside the chart, without a callback.
+  const scale = adapter?.priceScaleState() ?? { log: false, auto: true };
+  const toggleAuto = () => { if (!adapter) return; adapter.setPriceScale({ auto: true }); bump(); };
+  const toggleLog = () => { if (!adapter) return; adapter.setPriceScale({ log: !adapter.priceScaleState().log }); bump(); };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!adapter || e.altKey || e.ctrlKey || e.metaKey) return;
@@ -107,6 +112,8 @@ export function ChartView(props: ChartViewProps) {
   };
 
   const status = noPlan ? 'no_data_plan' : state.status;
+  // An identifier that does not resolve replaces the load overlays (they belong to the previous instrument).
+  const overlays = !resolveError;
   const showsCandles = status === 'ready' || status === 'empty';
   return (
     <div className="chart-view" data-context={contextId} data-shortcut-scope="chart">
@@ -126,12 +133,12 @@ export function ChartView(props: ChartViewProps) {
           )}
           {status === 'ready' && state.message && <span className="chart-view__badge" role="alert">{state.message}</span>}
         </div>
-        {status === 'loading' && (
+        {overlays && status === 'loading' && (
           <div className="chart-view__overlay" data-testid="chart-loading"><Skeleton rows={6} label={copy.loadingCandles} /></div>
         )}
-        {status === 'no_data_plan' && <div className="chart-view__overlay" role="status">{NO_DATA_PLAN_MESSAGE}</div>}
-        {status === 'empty' && <div className="chart-view__overlay" role="status">{state.message}</div>}
-        {status === 'error' && (
+        {overlays && status === 'no_data_plan' && <div className="chart-view__overlay" role="status">{NO_DATA_PLAN_MESSAGE}</div>}
+        {overlays && status === 'empty' && <div className="chart-view__overlay" role="status">{state.message}</div>}
+        {overlays && status === 'error' && (
           <div className="chart-view__overlay" role="alert">
             <span>{state.message}</span>
             <Button onClick={() => void controller?.retry()}>{copy.retry}</Button>
