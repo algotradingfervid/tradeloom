@@ -36,8 +36,8 @@ func TestASTChecks_Fixture(t *testing.T) {
 		"g0-typearg bad/generic.go", "g0-typearg bad/genericvalue.go", "g0-typearg bad/genericvalue.go",
 		"g0-typearg bad/ifacecall.go", "g0-typearg bad/ifacecall.go",
 	}
-	// Alert-triggered and mutual-fund order writes (Ruling 47): one g0-call per write selector.
-	for i := 0; i < 8; i++ {
+	// Alert-triggered and mutual-fund order writes (Ruling 47) and InitiateHoldingsAuth (Ruling 48): one g0-call per write selector.
+	for i := 0; i < 9; i++ {
 		indirect = append(indirect, "g0-call bad/alertsmf.go")
 	}
 	with := func(vs ...string) []string {

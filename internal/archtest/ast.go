@@ -19,12 +19,14 @@ var bannedTime = map[string]bool{"Now": true, "Since": true, "Until": true, "Sle
 	"AfterFunc": true, "Tick": true, "NewTimer": true, "NewTicker": true}
 
 // orderWriteMethods are the Kite order-write methods gated by G-0: regular/GTT orders, alerts (an
-// alert can carry an ATO order basket) and mutual-fund orders/SIPs (Ruling 47). Keep this list in
+// alert can carry an ATO order basket) and mutual-fund orders/SIPs (Ruling 47) and
+// InitiateHoldingsAuth (CDSL authorisation that enables selling holdings, Ruling 48). Keep this list in
 // sync with scripts/g0-nm-check.sh.
 var orderWriteMethods = map[string]bool{"PlaceOrder": true, "ModifyOrder": true, "CancelOrder": true, "ExitOrder": true,
 	"ConvertPosition": true, "PlaceGTT": true, "ModifyGTT": true, "DeleteGTT": true,
 	"CreateAlert": true, "ModifyAlert": true, "DeleteAlerts": true,
-	"PlaceMFOrder": true, "CancelMFOrder": true, "PlaceMFSIP": true, "ModifyMFSIP": true, "CancelMFSIP": true}
+	"PlaceMFOrder": true, "CancelMFOrder": true, "PlaceMFSIP": true, "ModifyMFSIP": true, "CancelMFSIP": true,
+	"InitiateHoldingsAuth": true}
 
 // kitePkg matches every major version of gokiteconnect, so a module bump cannot silently disable G-0.
 var kitePkg = regexp.MustCompile(`^github\.com/zerodha/gokiteconnect/v[0-9]+$`)

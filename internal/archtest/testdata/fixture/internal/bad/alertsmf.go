@@ -12,5 +12,6 @@ func AlertsAndMF(c *kiteconnect.Client) {
 	c.PlaceMFSIP(kiteconnect.OrderParams{})
 	c.ModifyMFSIP("s", kiteconnect.OrderParams{})
 	c.CancelMFSIP("s")
+	c.InitiateHoldingsAuth(kiteconnect.OrderParams{})
 	c.GetAlerts()
 }

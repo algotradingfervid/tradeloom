@@ -21,3 +21,5 @@ func (c *Client) CancelMFOrder(id string) (string, error)                { retur
 func (c *Client) PlaceMFSIP(p OrderParams) (string, error)               { return "", nil }
 func (c *Client) ModifyMFSIP(id string, p OrderParams) (string, error)   { return "", nil }
 func (c *Client) CancelMFSIP(id string) (string, error)                  { return "", nil }
+
+func (c *Client) InitiateHoldingsAuth(p OrderParams) (string, error) { return "", nil }
