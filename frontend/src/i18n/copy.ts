@@ -221,3 +221,45 @@ export const aboutCopy = {
   licenceVersion: 'Version',
   licence: 'Licence',
 } as const;
+
+export const shortcutsCopy = {
+  title: 'Keyboard shortcuts',
+  intro: 'Every shortcut can be changed. A key combination can be used only once within overlapping areas of the app.',
+  action: 'Action',
+  scope: 'Where',
+  binding: 'Shortcut',
+  scopes: { global: 'Everywhere', view: 'Current view', chart: 'Chart', builder: 'Builder' },
+  unbound: 'Not set',
+  change: 'Change',
+  changeFor: (label: string) => `Change shortcut for ${label}`,
+  dialogTitle: (label: string) => `Change shortcut: ${label}`,
+  capture: 'New shortcut',
+  pressKeys: 'Press the new key combination',
+  // Keys Go's ParseBinding accepts (internal/settings/shortcuts.go normaliseKey); Task 6 carry-forward.
+  unsupportedKey: 'This key cannot be used in a shortcut. Use a letter, a digit, F1–F24, an arrow or navigation key, Space, or one of ` - = [ ] \\ ; \' , . /',
+  save: 'Save',
+  saved: 'Shortcut saved',
+  conflict: (label: string) => `Already used by ${label}`,
+  reset: 'Reset to defaults',
+  resetTitle: 'Reset to defaults',
+  resetMessage: 'All shortcuts return to their original keys.',
+  resetDone: 'Shortcuts reset to defaults',
+} as const;
+
+export const diagnosticsCopy = {
+  title: 'Logs and support',
+  level: 'Log detail',
+  // Values are the Go `log.level` setting (P0-1): lower-case "info" | "debug".
+  levels: [{ value: 'info', label: 'Normal (info)' }, { value: 'debug', label: 'Detailed (debug)' }],
+  levelHint: 'Changes apply immediately. Secrets are always removed from logs.',
+  openLogs: 'Open logs folder',
+  bundle: 'Create support bundle',
+  bundleHint: 'The bundle contains logs, settings without secrets, version information, the market calendar version, the last 200 order-journal rows and recent deployment log excerpts.',
+  bundleSaved: (path: string) => `Support bundle saved to ${path}`,
+} as const;
+
+export const crashCopy = {
+  message: (when: string) => `The app crashed last time (${when}).`,
+  view: 'View report',
+  dismiss: 'Dismiss crash notice',
+} as const;

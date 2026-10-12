@@ -3,6 +3,7 @@ import { GlobalShortcuts } from '../shortcuts/GlobalShortcuts';
 import { useSetting } from '../store/settings';
 import { AppShell } from './AppShell';
 import { BootNotice } from './BootNotice';
+import { CrashNotice } from './CrashNotice';
 import { visibleNavEntries } from './features';
 import { ProfileMenu } from './ProfileMenu';
 import { QuickLinks } from './QuickLinks';
@@ -17,7 +18,7 @@ export function ShellLayout() {
   return (
     <AppShell
       topBar={<TopBar ticker={null} status={<StatusIndicator />} links={<QuickLinks />} profile={<ProfileMenu />} />}
-      banner={<BootNotice />}
+      banner={<><CrashNotice /><BootNotice /></>}
       sidebar={<Sidebar entries={visibleNavEntries()} collapsed={collapsed} onToggleCollapsed={() => void setCollapsed(!collapsed)} />}
     >
       <GlobalShortcuts />
