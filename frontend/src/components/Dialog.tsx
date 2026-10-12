@@ -12,7 +12,7 @@ export interface DialogProps {
   onClose: () => void;
   children?: ReactNode;
   footer?: ReactNode;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'side';
   initialFocus?: RefObject<HTMLElement | null>;
   closeLabel?: string;
   /** id of an element inside the dialog that describes it (used when `description` is not given). */

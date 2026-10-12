@@ -504,6 +504,40 @@ export const tickerCopy = {
   flat: 'unchanged',
 } as const;
 
+export const profileCopy = {
+  title: 'Profile',
+  description: 'Your Zerodha account details as returned by Kite.',
+  loading: 'Loading profile',
+  fields: { name: 'Name', email: 'Email', clientId: 'Client ID', broker: 'Broker', exchanges: 'Exchanges', products: 'Products', orderTypes: 'Order types' },
+  session: 'Session',
+  loggedInAt: (t: string) => `Logged in at ${t}`,
+  expires: (t: string) => `Expires ${t}`,
+  logOut: 'Log out',
+  confirmTitle: 'Log out of Kite?',
+  confirmMessage: 'Live prices and the order book stop updating until you log in again. Your watchlists, settings and cached candles stay on this computer.',
+  // Task 13 adaptations: a failed load (Ruling 90 M1) and an expired session are said in text, never an endless skeleton.
+  loadFailed: 'Your profile could not be loaded from Kite.',
+  retry: 'Retry',
+  expired: 'Your Kite session has ended. Log in again to see your profile.',
+  logIn: 'Log in',
+} as const;
+
+export const helpCopy = {
+  title: 'Help',
+  description: 'Guides and answers that work offline.',
+  searchPlaceholder: 'Search help articles',
+  results: 'Search results',
+  topics: 'Help topics',
+  tree: 'Help articles',
+  articles: (n: number) => (n === 1 ? '1 article' : `${n} articles`),
+  updatedFor: (v: string) => `Updated for v${v}`,
+  support: 'Support',
+  supportHint: 'If something goes wrong, the logs folder and a support bundle help explain what happened.',
+  shortcutsTitle: 'Keyboard shortcuts',
+  shortcutsIntro: 'Every shortcut can be changed in Settings → Shortcuts. This list always shows the current keys.',
+  unbound: 'not set',
+} as const;
+
 /** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
 export const symbolSearchCopy = {
   title: 'Search instruments',
@@ -572,4 +606,32 @@ export const watchlistPanelCopy = {
   deleteMessage: (list: string, count: number) => `Delete watchlist ${list} and its ${count} ${count === 1 ? 'instrument' : 'instruments'}?`,
   deleteConfirm: 'Delete',
   deleteFailed: (list: string, reason: string) => `Could not delete ${list}: ${reason}`,
+  addInstruments: 'Add instruments…',
+  addTitle: (list: string) => `Add to ${list}`,
+  addedMany: (n: number, list: string) => `Added ${n} ${n === 1 ? 'instrument' : 'instruments'} to ${list}`,
+  addFailed: (list: string, reason: string) => `Could not add to ${list}: ${reason}`,
+} as const;
+
+/** Shared multi-select instrument picker (FR-WATCH-007, P0-5 Task 17). Count and no-match text: instrumentSearchCopy. */
+export const instrumentPickerCopy = {
+  title: 'Add instruments',
+  search: 'Search instruments',
+  placeholder: 'Search, e.g. SBIN, TCS',
+  typeToSearch: 'Type to search',
+  lists: 'Lists',
+  results: 'Instruments',
+  selectAll: 'Select all',
+  select: (name: string) => `Select ${name}`,
+  remove: (name: string) => `Remove ${name}`,
+  selected: (n: number, max?: number) => (max === undefined ? `Selected (${n})` : `Selected (${n} / ${max})`),
+  selectedList: 'Selected instruments',
+  noneSelected: 'Nothing selected yet',
+  limit: (max: number) => `Up to ${max} instruments`,
+  emptyList: 'This list has no instruments to offer here',
+  saveAs: 'Save as watchlist',
+  name: 'Watchlist name',
+  save: 'Save',
+  cancel: 'Cancel',
+  created: (name: string) => `Watchlist ${name} created`,
+  done: 'Done',
 } as const;
