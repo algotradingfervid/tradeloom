@@ -121,7 +121,25 @@ func (s *Service) ResetShortcuts(ctx context.Context) ([]settings.ShortcutAction
 // backendUiKey reports keys owned by backend code (window geometry, last-quote cache, scheduled-backup marker);
 // the UI may read them but not write them.
 func backendUiKey(k string) bool {
-	return k == "quotes.last" || k == "window.geometry" || strings.HasPrefix(k, "backup.")
+	return k == "quotes.last" || k == UiStateWindowGeometry || strings.HasPrefix(k, "backup.")
+}
+
+// UiStateWindowGeometry is the backend-owned window_state key of the saved window geometry (FR-SHELL-019, A6).
+const UiStateWindowGeometry = "window.geometry"
+
+// SaveWindowGeometry stores the window geometry JSON under UiStateWindowGeometry. It is for internal/app's
+// BeforeClose only (the key is backend-owned, Ruling 64) and is never bound to the UI.
+func (s *Service) SaveWindowGeometry(ctx context.Context, value string) error {
+	if len(value) > maxUiValueBytes {
+		return refused(uiStateStage, "too_large", "UI state values are limited to 64 KiB.")
+	}
+	if !utf8.ValidString(value) {
+		return refused(uiStateStage, "invalid_value", "UI state values must be valid UTF-8.")
+	}
+	if s.d.UiState == nil {
+		return refused(uiStateStage, "unavailable", "UI state storage is not configured.")
+	}
+	return s.refuse(uiStateStage, s.d.UiState.Set(ctx, UiStateWindowGeometry, value))
 }
 
 func validUiKey(k string) bool {
