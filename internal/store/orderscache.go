@@ -37,6 +37,10 @@ func (r *OrdersCacheRepo) ReplaceOrders(ctx context.Context, rows []CachedOrder,
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO cache_sync(name, synced_at) VALUES(?, ?)
+		ON CONFLICT(name) DO UPDATE SET synced_at = excluded.synced_at`, "orders", atMs); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -49,7 +53,7 @@ func (r *OrdersCacheRepo) UpsertOrder(ctx context.Context, o CachedOrder, atMs i
 }
 
 func (r *OrdersCacheRepo) ListOrders(ctx context.Context) ([]CachedOrder, error) {
-	rows, err := r.db.R.QueryContext(ctx, `SELECT kite_order_id, COALESCE(tag, ''), body, COALESCE(status, '') FROM orders_cache`)
+	rows, err := r.db.R.QueryContext(ctx, `SELECT kite_order_id, COALESCE(tag, ''), body, COALESCE(status, '') FROM orders_cache ORDER BY kite_order_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -81,6 +85,10 @@ func (r *OrdersCacheRepo) ReplacePositions(ctx context.Context, rows []CachedPos
 			return err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO cache_sync(name, synced_at) VALUES(?, ?)
+		ON CONFLICT(name) DO UPDATE SET synced_at = excluded.synced_at`, "positions", atMs); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -103,13 +111,14 @@ func (r *OrdersCacheRepo) ListPositions(ctx context.Context) ([]CachedPosition, 
 	return out, rows.Err()
 }
 
+// LastUpdated returns when orders and positions were last replaced (0 = never synced).
 func (r *OrdersCacheRepo) LastUpdated(ctx context.Context) (int64, int64, error) {
-	var o, p sql.NullInt64
-	if err := r.db.R.QueryRowContext(ctx, `SELECT MAX(updated_at) FROM orders_cache`).Scan(&o); err != nil {
-		return 0, 0, err
+	var o, p int64
+	for name, dst := range map[string]*int64{"orders": &o, "positions": &p} {
+		err := r.db.R.QueryRowContext(ctx, `SELECT synced_at FROM cache_sync WHERE name = ?`, name).Scan(dst)
+		if err != nil && err != sql.ErrNoRows {
+			return 0, 0, err
+		}
 	}
-	if err := r.db.R.QueryRowContext(ctx, `SELECT MAX(updated_at) FROM positions_cache`).Scan(&p); err != nil {
-		return 0, 0, err
-	}
-	return o.Int64, p.Int64, nil
+	return o, p, nil
 }
