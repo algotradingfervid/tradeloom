@@ -8,8 +8,8 @@ Date: 2026-10-12.
 | v1 (DRAFT) | 2026-10-11 | First complete pass: 293 FRs generated from `docs/research/FEATURES.md` (part files in `requirements/fr/`, now history). |
 | v2 | 2026-10-12 | Product named **Tradeloom**. Scope set to equity + futures (options, MCX, currency out of scope → §10). All 49 findings of `REVIEW-1-completeness.md` and all items of `REVIEW-2-live-sweep.md` applied. New module DATA; new FRs for update, logging, shortcuts, backup, calendar, clock, candle store, Kite client, scanner schema, capital used, post-closing orders, live square-off, secret fallback, Telegram alerts, legal pages, risk disclosure, price alerts. Scalper rewritten for equity/futures. §7–§9 regenerated; §10 added. Change log: `CHANGELOG-v2.md`. |
 
-| v2.2 | 2026-10-12 | User approved v2.1 + ROADMAP; closed OQ-09 (Kite rejections only) and OQ-45 (kill switch keeps stops). |
-| v2.1 | 2026-10-12 | Added FR module TG (42 FRs, two-way Telegram bot modelled on freqtrade; research `areas/08-freqtrade-telegram.md`); FR-ACCT-014 reduced to an entry point; FR-EQB-038 amended: TA-Lib-covered indicators via `markcheno/go-talib` (MIT), others in-house, no AGPL/GPL libs; OQ-45…49 added. |
+| v2.2 | 2026-10-12 | Indicator source switched from go-talib to the in-house verified TA-Lib v0.8.1 port `tradeloom/ta` (user decision). User approved v2.1 + ROADMAP; closed OQ-09 (Kite rejections only) and OQ-45 (kill switch keeps stops). |
+| v2.1 | 2026-10-12 | Added FR module TG (42 FRs, two-way Telegram bot modelled on freqtrade; research `areas/08-freqtrade-telegram.md`); FR-ACCT-014 reduced to an entry point; FR-EQB-038 amended: indicators via TA-Lib port (see v2.2); OQ-45…49 added. |
 
 This file is the single source of truth. The `fr/*.md` part files are v1 history and are not maintained.
 
@@ -2602,22 +2602,26 @@ it cites the FR here instead (REVIEW-1 RV-003/004/005/013).
   Wilder vs simple seed — OQ-13); CI fails if any output differs
   by more than max(1e-6 absolute, 1e-6 relative) after the declared warm-up; (7) computation is incremental-capable (append one candle
   without full recompute) and produces identical results to full recompute.
-  (8) **Implementation source (user decision 2026-10-12):** every operand that exists in TA-Lib shall be computed with
-  `github.com/markcheno/go-talib` (MIT, pure-Go TA-Lib port; pinned commit in go.mod) — e.g. SMA/EMA/WMA/DEMA/TEMA/T3/KAMA/
-  TRIMA/MAMA, RSI, Stochastic, Stochastic RSI, CCI, Williams %R, MFI, CMO, Ultimate Oscillator, Momentum, ROC, ADX, ±DI, Aroon,
-  MACD, Parabolic SAR, Bollinger Bands, ATR, True Range, Standard Deviation, OBV, Chaikin A/D, Linear Regression/TSF, Median/
-  Typical price, Min/Max; only operands absent from TA-Lib (e.g. Supertrend, VWAP, Ichimoku, Keltner, Donchian, Alligator,
-  Awesome Oscillator, Choppiness, Vortex, Chaikin Money Flow, Elder Force, Fractal Chaos Bands, Pivot Points, CPR, Opening Range,
-  Nth Candle, Previous N, Trend Intensity Index, Twiggs MF, Ehler Fisher, Coppock, Hull/VIDYA MAs, ATR Bands, Swing Index) are
-  implemented in-house in package `indicators`, reusing go-talib primitives where possible; `docs/spec/indicators.md` records the
-  source (go-talib function or in-house) per operand. No AGPL/GPL indicator library shall be linked (e.g. `cinar/indicator` is excluded).
+  (8) **Implementation source (user decision 2026-10-12, revised):** every operand that has a TA-Lib v0.8.1 function shall be
+  computed with Tradeloom's own pure-Go port, module `tradeloom/ta` (repo `ta/`; 201 functions incl. 61 candlestick patterns,
+  each verified against the C library through the cgo oracle — `go test -tags oracle`, 1,824 tests, 0 failures on 2026-10-12;
+  runtime builds with `CGO_ENABLED=0`). This covers e.g. SMA/EMA/WMA/DEMA/TEMA/T3/KAMA/TRIMA/MAMA/HMA/ZLEMA/VWMA, RSI, Stochastic,
+  Stochastic RSI, SMI, CCI, Williams %R, MFI, CMO, Ultimate Oscillator, Momentum, ROC, ADX, ±DI, Aroon, MACD, Parabolic SAR,
+  Supertrend, VWAP, Bollinger Bands, Keltner, Donchian, ATR, True Range, Standard Deviation, OBV, Chaikin A/D, Chaikin Money
+  Flow, Elder Force, Vortex, Awesome Oscillator, Coppock, Fractal, NVI/PVI, IMI, Linear Regression/TSF, Median/Typical price,
+  Min/Max. Only operands absent from TA-Lib v0.8.1 (e.g. Ichimoku, Pivot Points, CPR, Opening Range, Nth Candle, Previous N,
+  Trend Intensity Index, Twiggs MF, Ehler Fisher, Choppiness, VIDYA, ATR Bands, Swing Index, Alligator composition) are
+  implemented in package `indicators`, built on `ta` primitives and following `ta/CONVENTIONS.md`; `docs/spec/indicators.md`
+  records the source (`ta.<FUNC>` or in-house) per operand. The external `markcheno/go-talib` is NOT used (superseded); no
+  AGPL/GPL indicator library shall be linked (e.g. `cinar/indicator` is excluded). Golden vectors for `ta`-backed operands come
+  from the C oracle; in-house operands follow clause (6).
 - **Acceptance criteria:**
   1. Given the fixture set, when the golden-vector suite runs in CI, then 100% of operand × option cases pass within tolerance, and the suite fails if any Appendix A/B operand lacks a vector (coverage check against the catalogue).
   2. Given SMA(close, 9) on fixture F1 daily, then values match the reference at every index ≥ 8 within tolerance.
   3. Given VWAP on 1m fixture spanning two sessions, then VWAP resets at the first candle of the second session.
   4. Given incremental append of 500 candles one by one, then outputs equal the full-recompute outputs exactly (bitwise for deterministic float order).
   5. Given Candle Time(day of week) on a Wednesday candle, then 3.
-  6. Given the operand catalogue, when the build's licence check runs, then every indicator dependency is MIT/BSD/Apache-compatible and each TA-Lib-covered operand calls go-talib (asserted by a registry test).
+  6. Given the operand catalogue, when the build's licence check runs, then every indicator dependency is MIT/BSD/Apache-compatible and each TA-Lib-covered operand calls `tradeloom/ta` (asserted by a registry test).
 - **Data/Kite dependency:** OHLCV(+OI) candles from the local store fed by `GET /instruments/historical/:token/:interval?oi=1`.
 - **Deviation from Streak:** Values may differ slightly from Streak's where its formulas are undocumented; ours are documented and tested.
 - **Priority hint:** Core

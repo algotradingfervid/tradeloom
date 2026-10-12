@@ -168,7 +168,7 @@ Hard edges (solid): P1 needs the P0 chart component, instrument master, candle s
 
 ### P1 — Strategy builder, indicator engine and condition engine (61 FRs)
 
-**Goal.** The user builds, validates, saves, exports and imports equity/futures strategies in Basic and Advanced mode with the complete operand catalogue and per-condition timeframes; every operand and all 107 chart studies are computed by the Go indicator engine (go-talib where TA-Lib covers it, in-house otherwise) and proven by golden vectors; the shared condition evaluation engine with the single MTF definition exists and exposes condition traces; the Technicals tab works; My Strategies manages the library of own strategies. There is no backtest or deployment yet.
+**Goal.** The user builds, validates, saves, exports and imports equity/futures strategies in Basic and Advanced mode with the complete operand catalogue and per-condition timeframes; every operand and all 107 chart studies are computed by the Go indicator engine (`tradeloom/ta` where TA-Lib covers it, in-house otherwise) and proven by golden vectors; the shared condition evaluation engine with the single MTF definition exists and exposes condition traces; the Technicals tab works; My Strategies manages the library of own strategies. There is no backtest or deployment yet.
 
 **FRs by module**
 **SHELL** (1)
@@ -272,7 +272,7 @@ Hard edges (solid): P1 needs the P0 chart component, instrument master, candle s
 **Technical spikes**
 | Id | Spike | Timebox |
 |---|---|---|
-| S1-1 | go-talib coverage audit: map every Appendix A/B operand to a `markcheno/go-talib` function or "in-house"; compare go-talib seeding (EMA/RSI Wilder, MAMA) with pinned Python TA-Lib; build the golden-vector generator and the CI diff with the max(1e-6 abs, 1e-6 rel) rule (FR-EQB-038, OQ-13/16) | 3 d |
+| S1-1 | `ta` coverage audit: map every Appendix A/B operand to a `tradeloom/ta` function (TA-Lib v0.8.1 port, already oracle-verified: 1,824 tests) or "in-house"; record in `docs/spec/indicators.md`; build the golden-vector generator for in-house operands. | 1 day |
 | S1-2 | Studies on the chosen chart library: oscillator pane with band shading, overlay bands with fill, legend overlay with hover/focus actions, per-timeframe visibility, 20 studies at once performance (FR-CHART-008/009) | 2 d |
 | S1-3 | DSL: EBNF grammar, parser + canonical formatter, property test `parse(format(doc)) == doc` over 1,000 generated docs, migration hook (FR-EQB-002 AC2/3) | 2 d |
 | S1-4 | Historical `oi=1` for NFO/BFO futures and the `continuous` flag; confirm OI columns for FR-EQB-038 (5) | 0.5 d |
@@ -284,7 +284,7 @@ Hard edges (solid): P1 needs the P0 chart component, instrument master, candle s
 - *NFRs:* NFR-06 (golden vectors in CI), NFR-07 (input latency < 100 ms while studies recompute; engine off the UI thread), NFR-11 (FR-EQB-042 AC3 accessibility scan), NFR-14 (builder and chart studies work offline on cached candles), NFR-13 (no instrument/condition caps).
 - *Deferrable (Nice-to-have):* FR-EQB-014, FR-EQB-035, FR-ANLY-002, FR-ANLY-005, FR-DISC-019.
 
-**Risks.** Largest phase by effort (≈ 100 operands × enumerations, 107 studies, 600 suggestions). go-talib may differ from TA-Lib C on seeding or edge cases → pin the commit and record the reference per operand; exotic operands have no public reference → independent Python implementation reviewed against the formula spec (FR-EQB-038 (6)). Custom study panes may stress the open chart library (S1-2 decides the OQ-01 fallback). Suggestion and catalogue content is authoring work that should not sit on the engineering critical path.
+**Risks.** Largest phase by effort (≈ 100 operands × enumerations, 107 studies, 600 suggestions). TA-Lib-backed operands are already bit-exact against C (oracle); remaining risk sits in the in-house operands whose formulas are undocumented (OQ-16). Custom study panes may stress the open chart library (S1-2 decides the OQ-01 fallback). Suggestion and catalogue content is authoring work that should not sit on the engineering critical path.
 
 ---
 

@@ -34,6 +34,8 @@ Safety: read-only exploration — never save/copy/deploy/order/delete/change set
   covers; only non-TA-Lib indicators (Supertrend, VWAP, Ichimoku, pivots/CPR, …) are written in-house. Avoid cinar/indicator (AGPL).
 - [x] REQUIREMENTS v2.1: + FR module TG (42), FR-ACCT-014 → pointer, FR-EQB-038 go-talib clause, NFR-05 Telegram confirmation,
   OQ-45…49. 307 FRs in §6, 72 in §10. verify-v2.py: 0 FAIL.
-- [~] Phase roadmap agent → docs/plan/ROADMAP.md (every FR → one phase, exit criteria, spikes)
-- [ ] User review: REQUIREMENTS v2.1 + ROADMAP + user OQs (OQ-09 static-IP check, OQ-45 kill-switch default, OQ-47 legal)
+- [x] ROADMAP docs/plan/ROADMAP.md: P0 55 · P1 61 · P2 58 · P3 35 · P4 36 · P5 44 · P6 18 = 307 (verify_roadmap.py PASS)
+- [x] USER APPROVED 2026-10-12: REQUIREMENTS v2.2 + ROADMAP. OQ-09 → Kite rejections only; OQ-45 → kill switch keeps GTT/SL.
+- [x] Indicator engine = in-house `ta/` (TA-Lib v0.8.1 port made in another session; verified here: 1,824 oracle tests pass);
+  go-talib superseded. Git repo initialised (local main): commits docs baseline + ta + TA-Lib submodule (v0.8.1).
 - [ ] After approval: architecture spec, then Phase-0 implementation plan (writing-plans)
