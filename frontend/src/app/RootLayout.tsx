@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from 'react';
 import { Outlet, useNavigate } from 'react-router-dom';
 import { useBackend } from '../api/BackendContext';
 import { bootstrap, startEventBridge } from '../api/events';
+import { useTrackHistoryDepth } from '../store/nav';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -15,5 +16,6 @@ export function RootLayout() {
     void bootstrap(backend);
     return stop;
   }, [backend]);
+  useTrackHistoryDepth();
   return <Outlet />;
 }
