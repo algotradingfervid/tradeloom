@@ -39,6 +39,10 @@ Safety: read-only exploration — never save/copy/deploy/order/delete/change set
 - [x] Indicator engine = in-house `ta/` (TA-Lib v0.8.1 port made in another session; verified here: 1,824 oracle tests pass);
   go-talib superseded. Git repo initialised (local main): commits docs baseline + ta + TA-Lib submodule (v0.8.1).
 - [x] Architecture spec docs/architecture/ARCHITECTURE.md (committed; versions verified on registries; Q-A1..3 decided by lead)
-- [~] Phase-0 plans (writing-plans): index docs/superpowers/plans/2026-10-12-p0-index.md; 5 sub-plans being written in
-  parallel (p0-1 platform core, p0-2 market data, p0-3 session/service, p0-4 frontend shell, p0-5 chart/watchlists+exit demo)
-- [ ] Cross-plan consistency review (interfaces Produces/Consumes) → fix → user review + execution method choice
+- [x] Phase-0 plans written: 5 sub-plans (P0-1 18 tasks, P0-2 22, P0-3 33, P0-4 19, P0-5 19 = 111 tasks); index
+  docs/superpowers/plans/2026-10-12-p0-index.md.
+- [x] Cross-plan consistency review → 2026-10-12-p0-consistency.md; check_p0_interfaces.py PASS (0 missing/drift/placeholders);
+  ARCHITECTURE pins fixed (sqlite v1.59.0, x/crypto v0.55.0); P0-3 gained Tasks 27–33 (bindings P0-4/P0-5 need).
+- [x] Plans split per task (context budget): plans/<plan>/MANIFEST.md + tasks/NN-*.md + APPENDIX.md; plan_split.py join
+  reassembles byte-exactly; checker reads the split form.
+- [ ] USER: review plans + choose execution method (subagent-driven recommended) → start P0-1

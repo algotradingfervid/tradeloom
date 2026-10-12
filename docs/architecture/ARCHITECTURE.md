@@ -331,10 +331,17 @@ Topics (Go structs, one per event type, mirrored 1:1 to Wails event names):
 | `deployment.changed` | `{DeploymentID, DI, From, To, Event}` | live | app bridge, telegram |
 | `order.update` | `kite.Order` | ticker (order updates) + orders.Sync | orders, live, app bridge |
 | `limits.usage` | counters snapshot (1 Hz) | ratelimit, throttle, ticker | app bridge |
+| `orders.changed` / `positions.changed` / `holdings.changed` | `orders.BookSnapshot` / `PositionsSnapshot` / `HoldingsSnapshot` (coalesced) | orders.Sync | app bridge |
+| `watchlists.changed` | `service.WatchlistsState` | service | app bridge |
+| `settings.changed` | `settings.Changed{Key, Value}` | settings | app bridge, logging (level) |
+| `instruments.status` | `instruments.Status` | instruments.Refresher | app bridge (Settings → Data) |
+| `market.status` | `service.MarketStatus{Exchange, Phase, DayType, Label, Tooltip, AtMs}` (on phase change) | service (from calendar + app clock) | app bridge (status indicator) |
+| `job.progress` | `service.JobProgress{JobID, Kind, Stage, Done, Total, Finished, Error, ResultPath}` | service jobs (backup, restore, support bundle) | app bridge |
+| `app.navigate` | `service.Navigate{Route}` | app (second-instance `--view`), notifications (P3) | app bridge → router |
 
 Back-pressure: each subscriber owns a bounded channel (`Buffer`, default 256; `tick.batch` 16 with coalescing by token). When full, non-critical subscribers drop the oldest message and increment `bus_drops{subscriber}` (visible in Settings → Limits and `/health`); subscribers marked `Critical` (inbox persistence, deployment FSM) use a larger buffer (4 096) and, if ever full, the publisher logs ERROR and blocks up to 50 ms — this is an invariant violation surfaced in tests, not a steady-state mode.
 
-UI bridge: `internal/app/bridge.go` subscribes with coalescing and calls `runtime.EventsEmit(ctx, "tick.batch", payload)` at most every 100 ms per topic; the frontend subscribes with `EventsOn`. Payloads are JSON-serialisable structs shared with the generated TS models (§8.4).
+UI bridge: the coalescing sources live in `internal/service/events.go` (`service.EventCatalogue()` / `(*Service).EventSources()`, transport-neutral so P5 Telegram reuses them; placing them in `internal/app` would make `app` import `ticker`, `candles/builder`, `backfill`, `orders` and break rule 7). `internal/app` supplies only the `Emit` function that calls `runtime.EventsEmit(ctx, name, payload)` at most every 100 ms per coalesced topic (immediate topics: `session.state`, `candle.closed`, `watchlists.changed`, `settings.changed`, `order.update`, `market.status`, `job.progress`, `app.navigate`); the frontend subscribes with `EventsOn`. `session.ready` / `session.loggedOut` of §3.2 are `session.state` with `state = ready` / `logged_out`. Payloads are JSON-serialisable structs shared with the generated TS models (§8.4).
 
 ### 3.5 Notifier pipeline (FR-TG-031)
 
@@ -378,7 +385,7 @@ If (2) is unavailable (no session bus) the second process fails on (1) and print
 
 ### 4.1 Overview
 
-Two SQLite databases (driver `modernc.org/sqlite` v1.60.1, BSD-3, CGO-free, SQLite 3.53.x — verified):
+Two SQLite databases (driver `modernc.org/sqlite` v1.59.0, BSD-3, CGO-free, SQLite 3.53.x — verified; v1.60.1 is the latest but its `go.mod` declares `go 1.26.0` (proxy.golang.org, checked 2026-10-12) and this project builds with Go 1.25, so v1.59.0 — the last release declaring `go 1.25.0` — is pinned; P0-1 verified `applyQueryParams` pragmas against it):
 
 - `app.db` — everything except candles (small, backed up always).
 - `candles/candles.db` — the candle store (large, optional in backups, purgeable).
@@ -854,9 +861,9 @@ frontend/
 
 ### 8.4 Wails bindings contract
 
-- Bound Go structs (`internal/app/api/*.go`), one per domain, methods `func (a *Session) Login(ctx…)`-style without `ctx` (Wails binds exported methods; the struct holds the app context from `OnStartup`). Methods take/return JSON-friendly structs only (no `time.Time` — use ms epoch `int64`; no interfaces; enums as string constants). `wails generate module` / `wails build` emits `frontend/wailsjs/go/api/<Struct>.d.ts` + `models.ts` (verified: the Wails CLI has `generate` and the project config exposes `wailsjsdir`).
+- Bound Go structs (`internal/app/api/*.go`), one per domain — P0: `Session`, `Portfolio`, `Settings`, `Chart`, `Instruments`, `Quotes`, `Watchlists`, `Data`, `Calendar`, `Diagnostics`, `System` (method lists in `docs/superpowers/plans/2026-10-12-p0-3-session-service/MANIFEST.md` "Produces (for P0-4 / P0-5)" and the consistency ledger `2026-10-12-p0-consistency.md`) — methods `func (a *Session) Login(ctx…)`-style without `ctx` (Wails binds exported methods; the struct holds the app context from `OnStartup`). Methods take/return JSON-friendly structs only (no `time.Time` — use ms epoch `int64`; no interfaces; enums as string constants). `wails generate module` / `wails build` emits `frontend/wailsjs/go/api/<Struct>.d.ts` + `models.ts` (verified: the Wails CLI has `generate` and the project config exposes `wailsjsdir`).
 - Errors: Go returns `error`; the binding layer converts `service.ErrRefused{Stage, Reason, Code}` to a JSON string `{"code":…,"stage":…,"reason":…}` so the UI can show the stage (FR-ORD-005 "shows the stage and reason").
-- Events: names and payloads are declared once in `internal/app/events.go` with a `//go:generate` that writes `frontend/src/api/events.gen.ts` (names + TS types) — the same structs as the bus topics in §3.4.
+- Events: names and payloads are declared once in `internal/service/events.go` (`EventCatalogue()`); `internal/app/events.go` holds the `//go:generate` that runs `internal/app/eventsgen` to write `frontend/src/api/events.gen.ts` (names + TS types) — the same structs as the bus topics in §3.4.
 - Long operations (backtest, backfill, restore) are started by a binding call returning an id and progress via events; cancellation is a binding call with the id.
 - `BindingsAllowedOrigins` is left default (Wails asset origin only); `EnableDefaultContextMenu=false` in production.
 
@@ -899,7 +906,7 @@ const (KeyAPISecret Key = "kite.api_secret"; KeyAccessToken = "kite.access_token
 ```
 
 - `secrets/keyring`: service `tradeloom`, user = key; `keyring.Get/Set/Delete` (verified signatures) ; probe at start = `Get` of a sentinel key distinguishing `ErrNotFound` (daemon present) from a D-Bus error (no daemon).
-- `secrets/encfile`: `secrets.enc` = header `TLSEC1` + Argon2id params + 16-byte salt + 24-byte XChaCha20 nonce + ciphertext of a JSON map; key = `argon2.IDKey(passphrase, salt, t=3, m=64 MiB, p=4, 32)`; AEAD `chacha20poly1305.NewX` (both from `golang.org/x/crypto` v0.58.0, BSD-3, verified packages `argon2`, `chacha20poly1305`). Passphrase ≥ 8 chars, asked once per start, held only in memory (zeroed on shutdown); file mode 0600; atomic write (temp + rename).
+- `secrets/encfile`: `secrets.enc` = header `TLSEC1` + Argon2id params + 16-byte salt + 24-byte XChaCha20 nonce + ciphertext of a JSON map; key = `argon2.IDKey(passphrase, salt, t=3, m=64 MiB, p=4, 32)`; AEAD `chacha20poly1305.NewX` (both from `golang.org/x/crypto` v0.55.0, BSD-3, verified packages `argon2`, `chacha20poly1305`; v0.58.0 declares `go 1.26.0` on proxy.golang.org (checked 2026-10-12) and the project is on Go 1.25, so the last Go-1.25 release v0.55.0 is pinned). Passphrase ≥ 8 chars, asked once per start, held only in memory (zeroed on shutdown); file mode 0600; atomic write (temp + rename).
 - No-daemon flow (FR-ACCT-013): exactly two choices; migration keyring ⇄ file copies the three keys and deletes the source.
 - The API key (not secret) and non-secret settings live in `settings`; the secret, access token and bot token never touch `app.db`, logs, events or Telegram messages (redaction §3.8; `telegram` formatter masks user ids).
 
