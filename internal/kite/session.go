@@ -34,6 +34,10 @@ const (
 // A variable only so tests can shorten it.
 var secretsTimeout = secrets.ProbeTimeout
 
+// endedInvalidateTimeout bounds the best-effort Kite invalidation of an ended session's token at startup
+// (Ruling 63). A variable only so tests can shorten it.
+var endedInvalidateTimeout = 5 * time.Second
+
 // msgSecretStore is the fixed, user-facing text for any secret-store failure (the cause is only logged).
 const msgSecretStore = "secret store not answering — unlock it and retry"
 
@@ -378,6 +382,13 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	}
 	logging.RegisterSecret(rec.AccessToken)
 	row, rowErr := s.d.Repo.Get(ctx, rec.SessionID)
+	if rowErr != nil && !errors.Is(rowErr, store.ErrNoRow) {
+		// Ruling 63 (3): without the row we cannot tell whether this session was logged out; fail closed.
+		// The token is kept (the read error may be transient); a new login replaces it.
+		s.d.Log.Warn("restore: reading the session row failed; not resuming", "session_id", rec.SessionID, "err", rowErr)
+		s.d.Limiter.PauseAll("logged out")
+		return s.restoreIdle(gen, idle(true, nil, "", ""))
+	}
 	if rowErr == nil && row.EndedAtMs != 0 {
 		s.d.Log.Warn("restore: the stored token belongs to an ended session; deleting it", "session_id", rec.SessionID, "end_reason", row.EndReason)
 		s.d.Limiter.PauseAll("logged out")
@@ -385,7 +396,10 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 		if derr != nil {
 			s.storeFailed("delete ended session's access token", derr)
 		}
-		return s.set(idle(true, derr, "", ""))
+		if row.EndReason == endReasonLogout && s.d.Clock.Now().UnixMilli() < rec.ExpiresAtMs {
+			s.invalidateEnded(apiKey, rec)
+		}
+		return s.restoreIdle(gen, idle(true, derr, "", ""))
 	}
 	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
 		return s.endSession(rec, CodeSessionExpired)
@@ -407,28 +421,26 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 			plan = DataPlan(row.DataPlan)
 		}
 		ackRequired = row.RiskAckAtMs == 0
-	case errors.Is(rowErr, store.ErrNoRow):
+	default: // store.ErrNoRow; any other read error returned above (Ruling 63 (3))
 		// The token outlived its row (e.g. app.db restored from a backup): recreate it so the risk
 		// acknowledgement and the data plan of this session can be persisted.
 		s.d.Log.Warn("restore: session row missing; recreating it", "session_id", rec.SessionID)
 		if ierr := s.insertRow(ctx, rec, plan); ierr != nil {
 			s.d.Log.Warn("recreating the session row failed", "session_id", rec.SessionID, "err", ierr)
 		}
-	default:
-		s.d.Log.Warn("reading the session row failed", "err", rowErr)
 	}
 	s.feedMu.Lock()
 	s.mu.Lock()
 	if s.gen != gen || s.supersededLocked(rec.SessionID) || s.st.State == StateLoggingIn {
 		// A login began during Restore: it owns the session state now.
-		if s.st.State == StateLoggingIn && s.prior == StateNoCredentials {
-			s.prior = StateLoggedOut // credentials exist; a cancelled login falls back to logged_out
-		}
-		cur := s.st
+		cur, corrected := s.correctNoCredentialsLocked()
 		s.mu.Unlock()
 		s.d.Tokens.SetAccessToken("")
 		s.d.Limiter.PauseAll("logged out")
 		s.feedMu.Unlock()
+		if corrected {
+			bus.Publish(s.d.Bus, TopicSessionState, cur)
+		}
 		s.d.Log.Info("restore abandoned: a login began meanwhile", "session_id", rec.SessionID)
 		return cur
 	}
@@ -440,6 +452,72 @@ func (s *Session) Restore(ctx context.Context) SessionState {
 	bus.Publish(s.d.Bus, TopicSessionState, st)
 	s.afterReady(apiKey, rec)
 	return st
+}
+
+// endReasonLogout is the session-row end reason Logout records.
+const endReasonLogout = "logout"
+
+// correctNoCredentialsLocked (mu held) fixes the state after Restore saw configured credentials while a
+// login attempt began meanwhile: BeginLogin's fallback may be the initial no_credentials state, which is
+// wrong once credentials are known to exist (Ruling 63 (1)). It reports whether the visible state changed.
+func (s *Session) correctNoCredentialsLocked() (SessionState, bool) {
+	if s.prior == StateNoCredentials {
+		s.prior = StateLoggedOut // a cancelled or failed login falls back to logged_out
+	}
+	if s.st.State != StateNoCredentials {
+		return s.st, false
+	}
+	s.st.State = StateLoggedOut
+	return s.st, true
+}
+
+// restoreIdle commits Restore's idle result st only while no login attempt began since Restore started
+// (gen unchanged); otherwise that attempt owns the state and Restore only corrects a stale
+// no_credentials fallback (Ruling 63 (2)). Restore's callers know the credentials are configured.
+func (s *Session) restoreIdle(gen int, st SessionState) SessionState {
+	s.mu.Lock()
+	if s.gen == gen {
+		s.st = st
+		s.mu.Unlock()
+		bus.Publish(s.d.Bus, TopicSessionState, st)
+		return st
+	}
+	cur, corrected := s.correctNoCredentialsLocked()
+	s.mu.Unlock()
+	if corrected {
+		bus.Publish(s.d.Bus, TopicSessionState, cur)
+	}
+	return cur
+}
+
+// invalidateEnded asks Kite to invalidate the unexpired token of a session that was logged out but whose
+// token survived (Ruling 63 (4)). It is best effort, runs off the startup path on the run context and is
+// bounded by endedInvalidateTimeout (the Kite client ignores ctx, so the wait is bounded, not the call).
+// The outcome is logged at Warn with the error kind only; the token never reaches a log line.
+func (s *Session) invalidateEnded(apiKey string, rec TokenRecord) {
+	ctx, cancel := context.WithTimeout(s.ctx(), endedInvalidateTimeout)
+	auth := s.d.Auth(apiKey)
+	logging.Go("kite.restore.invalidate", func() {
+		defer cancel()
+		res := make(chan error, 1)
+		logging.Go("kite.restore.invalidate.call", func() { res <- auth.Invalidate(ctx, rec.AccessToken) })
+		var err error
+		kind := ""
+		select {
+		case err = <-res:
+			if err != nil {
+				kind = errKind(err)
+			}
+		case <-ctx.Done():
+			err = ctx.Err()
+			kind = "canceled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				kind = "timeout"
+			}
+		}
+		s.d.Log.Warn("restore: invalidating the ended session's token", "session_id", rec.SessionID,
+			"invalidated", err == nil, "kind", kind)
+	})
 }
 
 // AckRisk records the FR-SHELL-020 acknowledgement for the current session id.
