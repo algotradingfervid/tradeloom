@@ -1,14 +1,11 @@
-import type { ChartDataSink } from '../ChartDataController';
+import type { ChartAdapter } from '../ChartAdapter';
 import { dedupeSorted } from '../bars';
 import type {
   Bar, ChartTheme, Handle, InstrumentSpec, LegendData, PriceBandSpec, RangeInfo, StudySpec, TimeRange, UpdateOutcome,
 } from '../types';
 
-/**
- * In-memory chart adapter for controller and view tests. It has every member of the plan's ChartAdapter (Tasks 3–4);
- * it declares only ChartDataSink because ChartAdapter.ts lands with Task 3 (switch to `implements ChartAdapter` then).
- */
-export class FakeAdapter implements ChartDataSink {
+/** In-memory chart adapter for controller and view tests. */
+export class FakeAdapter implements ChartAdapter {
   data: Bar[] = [];
   spec: InstrumentSpec | null = null;
   theme: ChartTheme | null = null;

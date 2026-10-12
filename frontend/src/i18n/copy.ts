@@ -475,6 +475,12 @@ export const instrumentCopy = {
   // P0-3 Ruling 38: the same "View only" flag and hint as the portfolio views.
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
+  // InstrumentRow (P0-5 Task 14; reused by P3 scanners): row actions and the polled/stale text hints.
+  showOnChart: (name: string) => `Show ${name} on chart`,
+  remove: (name: string) => `Remove ${name}`,
+  polled: 'polled',
+  polledHint: 'Live subscription limit reached — updates every 5 s',
+  stale: 'last known',
 } as const;
 
 export const chartHeaderCopy = {
@@ -498,6 +504,24 @@ export const tickerCopy = {
   flat: 'unchanged',
 } as const;
 
+export const profileCopy = {
+  title: 'Profile',
+  description: 'Your Zerodha account details as returned by Kite.',
+  loading: 'Loading profile',
+  fields: { name: 'Name', email: 'Email', clientId: 'Client ID', broker: 'Broker', exchanges: 'Exchanges', products: 'Products', orderTypes: 'Order types' },
+  session: 'Session',
+  loggedInAt: (t: string) => `Logged in at ${t}`,
+  expires: (t: string) => `Expires ${t}`,
+  logOut: 'Log out',
+  confirmTitle: 'Log out of Kite?',
+  confirmMessage: 'Live prices and the order book stop updating until you log in again. Your watchlists, settings and cached candles stay on this computer.',
+  // Task 13 adaptations: a failed load (Ruling 90 M1) and an expired session are said in text, never an endless skeleton.
+  loadFailed: 'Your profile could not be loaded from Kite.',
+  retry: 'Retry',
+  expired: 'Your Kite session has ended. Log in again to see your profile.',
+  logIn: 'Log in',
+} as const;
+
 /** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
 export const symbolSearchCopy = {
   title: 'Search instruments',
@@ -513,4 +537,35 @@ export const symbolSearchCopy = {
 export const instrumentSearchCopy = {
   noMatch: 'No instruments match',
   count: (n: number) => (n === 1 ? '1 result' : `${n} results`),
+} as const;
+
+/** Watchlist inline search-and-add (FR-WATCH-004, P0-5 Task 15). Count and no-match text: instrumentSearchCopy. */
+export const watchlistSearchCopy = {
+  label: 'Search instruments to add',
+  placeholder: 'Search to add, e.g. SBIN',
+  results: 'Search results',
+  alreadyIn: (list: string) => `Already in ${list}`,
+  addTo: (list: string) => `Add to ${list}`,
+  added: (symbol: string, list: string) => `Added ${symbol} to ${list}`,
+  searchFailed: 'Search failed. Try again.',
+  addFailed: (symbol: string, reason: string) => `Could not add ${symbol}: ${reason}`,
+} as const;
+
+/** P0-5 Task 14: watchlist rows (FR-WATCH-001/005/006). */
+export const watchlistRowsCopy = {
+  empty: 'Search to add instruments',
+  symbolColumn: 'Symbol',
+  priceColumn: 'LTP / Change',
+  actionsColumn: 'Actions',
+  tableLabel: (list: string) => `${list} instruments`,
+  removed: (name: string, list: string) => `Removed ${name} from ${list}`,
+  undo: 'Undo',
+  missing: 'Instrument no longer available',
+  removeMissing: (row: number) => `Remove unavailable instrument in row ${row}`,
+  missingName: 'unavailable instrument',
+  removeFailed: (reason: string) => `Could not remove the instrument: ${reason}`,
+  undoFailed: (reason: string) => `Could not restore the instrument: ${reason}`,
+  moveFailed: (reason: string) => `Could not reorder the watchlist: ${reason}`,
+  moved: (name: string, position: number, count: number) => `${name} moved to ${position} of ${count}`,
+  readOnlyMisuse: 'WatchlistRows: the list is not the active watchlist; rendering it read-only (store actions act on the active list)',
 } as const;
