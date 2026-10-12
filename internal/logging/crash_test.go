@@ -2,8 +2,10 @@ package logging
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +16,7 @@ func TestGo_PanicWritesCrashReport(t *testing.T) {
 	dir := t.TempDir()
 	r := NewRedactor()
 	r.Register(tAccess)
+	t.Cleanup(resetCrash)
 	InstallCrashReporter(CrashOptions{
 		Dir: dir, AppVersion: "v0.1.0", Redactor: r,
 		SchemaVersion: func() int { return 1 },
@@ -28,8 +31,12 @@ func TestGo_PanicWritesCrashReport(t *testing.T) {
 	Go("backfill.worker", func() { panic("boom with " + tAccess) })
 	select {
 	case v := <-got:
-		if !strings.Contains(v.(string), "boom") {
-			t.Fatalf("rethrown value %v", v)
+		out := fmt.Sprint(v)
+		if !strings.Contains(out, "boom") || strings.Contains(out, tAccess) {
+			t.Fatalf("rethrown value must print redacted, got %q", out)
+		}
+		if _, ok := v.(error); !ok {
+			t.Fatalf("rethrown value should be an error wrapper, got %T", v)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("panic was not recovered")
@@ -60,5 +67,59 @@ func TestGo_PanicWritesCrashReport(t *testing.T) {
 	}
 	if reps, _ := UnseenCrashReports(dir); len(reps) != 0 {
 		t.Fatalf("seen report still listed: %v", reps)
+	}
+}
+
+func resetCrash() {
+	crashMu.Lock()
+	crashCfg = nil
+	crashMu.Unlock()
+}
+
+func TestWriteCrashReport_SameMillisecondNoOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(resetCrash)
+	InstallCrashReporter(CrashOptions{Dir: dir, Redactor: NewRedactor(),
+		Now: func() time.Time { return time.Date(2026, 10, 12, 4, 30, 0, 0, time.UTC) }})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := WriteCrashReport("g", "p", []byte("s")); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	reps, err := UnseenCrashReports(dir)
+	if err != nil || len(reps) != 8 {
+		t.Fatalf("want 8 reports, got %d (%v)", len(reps), err)
+	}
+	if err := MarkCrashSeen(reps[0]); err != nil {
+		t.Fatal(err)
+	}
+	if reps, _ = UnseenCrashReports(dir); len(reps) != 7 {
+		t.Fatalf("want 7 unseen, got %d", len(reps))
+	}
+}
+
+func TestRecover_ReporterFailureStillRethrowsOriginal(t *testing.T) {
+	dir := t.TempDir()
+	t.Cleanup(resetCrash)
+	InstallCrashReporter(CrashOptions{Dir: dir, Redactor: NewRedactor(),
+		State: func() map[string]any { panic("state broke") }}) // nil Now defaults to clock.SystemNow
+	got := make(chan any, 1)
+	old := rethrow
+	rethrow = func(v any) { got <- v }
+	t.Cleanup(func() { rethrow = old })
+	Go("w", func() { panic("original") })
+	select {
+	case v := <-got:
+		if !strings.Contains(fmt.Sprint(v), "original") {
+			t.Fatalf("original panic lost: %v", v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("original panic not re-raised")
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tradeloom/internal/clock"
 )
 
 // CrashOptions configures the crash reporter installed by InstallCrashReporter.
@@ -45,6 +47,9 @@ func InstallCrashReporter(o CrashOptions) {
 	if o.Redactor == nil {
 		o.Redactor = Default
 	}
+	if o.Now == nil {
+		o.Now = clock.SystemNow
+	}
 	crashMu.Lock()
 	crashCfg = &o
 	crashMu.Unlock()
@@ -69,11 +74,47 @@ func Recover(name string) {
 	if _, err := WriteCrashReport(name, v, stack); err != nil {
 		fmt.Fprintf(os.Stderr, "tradeloom: crash report failed: %v\n", err)
 	}
-	rethrow(v)
+	rethrow(redactedPanic(v))
+}
+
+// redactedPanic wraps v so the runtime's "panic: ..." output shows redacted text; Unwrap keeps the original error.
+type redactedPanicValue struct {
+	text string
+	orig any
+}
+
+func (p *redactedPanicValue) Error() string  { return p.text }
+func (p *redactedPanicValue) String() string { return p.text }
+func (p *redactedPanicValue) Unwrap() error {
+	if e, ok := p.orig.(error); ok {
+		return e
+	}
+	return nil
+}
+
+func redactedPanic(v any) (out any) {
+	crashMu.RLock()
+	cfg := crashCfg
+	crashMu.RUnlock()
+	r := Default
+	if cfg != nil {
+		r = cfg.Redactor
+	}
+	defer func() {
+		if recover() != nil {
+			out = &redactedPanicValue{text: "panic value unprintable", orig: v}
+		}
+	}()
+	return &redactedPanicValue{text: r.RedactString(fmt.Sprint(v)), orig: v}
 }
 
 // WriteCrashReport writes logs/crash-<UTC yyyymmddThhmmss.mmmZ>.json and returns its path.
-func WriteCrashReport(goroutine string, v any, stack []byte) (string, error) {
+func WriteCrashReport(goroutine string, v any, stack []byte) (path string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			path, err = "", fmt.Errorf("logging: crash report panicked: %v", r)
+		}
+	}()
 	crashMu.RLock()
 	cfg := crashCfg
 	crashMu.RUnlock()
@@ -102,11 +143,29 @@ func WriteCrashReport(goroutine string, v any, stack []byte) (string, error) {
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(cfg.Dir, "crash-"+now.Format("20060102T150405.000Z")+".json")
-	if err := os.WriteFile(path, b, 0o600); err != nil {
-		return "", err
+	base := "crash-" + now.Format("20060102T150405.000Z")
+	for i := 0; ; i++ {
+		path = filepath.Join(cfg.Dir, base+".json")
+		if i > 0 {
+			path = filepath.Join(cfg.Dir, fmt.Sprintf("%s-%d.json", base, i))
+		}
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := f.Write(b)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			os.Remove(path)
+			return "", werr
+		}
+		return path, nil
 	}
-	return path, nil
 }
 
 // UnseenCrashReports lists crash reports not yet shown to the user, newest first.
