@@ -245,7 +245,10 @@ func (s *Service) AddToWatchlist(ctx context.Context, id string, token uint32, p
 
 func (s *Service) RemoveFromWatchlist(ctx context.Context, id string, token uint32) (RemovedItem, error) {
 	var removed RemovedItem
-	_, err := s.mutate(ctx, func([]store.WatchlistRow) error {
+	_, err := s.mutate(ctx, func(rows []store.WatchlistRow) error {
+		if findList(rows, id) < 0 {
+			return notFound()
+		}
 		pos, err := s.d.Watchlists.RemoveItem(ctx, id, token)
 		if errors.Is(err, store.ErrNoRow) {
 			return refused(wlStage, "not_found", "That instrument is not in the list.")
