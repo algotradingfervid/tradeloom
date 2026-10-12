@@ -346,17 +346,20 @@ func (s *Service) scheduledBackupDue(ctx context.Context) (string, bool) {
 	return today, true
 }
 
-// runScheduledBackup writes the day's backup. A failure is published on job.progress (kind backup, redacted
-// Error, Ruling 74) and leaves the day's marker unset, so the next 16:00 or quit retries.
 // sweepBackupTemps removes temp archives (.backup-*.tar.zst.tmp, store.Backup's CreateTemp pattern) that a
 // backup interrupted by a crash or power loss left in dir (Ruling 89 M4). It runs only while this process
 // holds the job slot, so no backup of this process is writing one; failures are logged and ignored.
 func (s *Service) sweepBackupTemps(dir string) {
-	stale, err := filepath.Glob(filepath.Join(dir, ".backup-*.tar.zst.tmp"))
+	// ReadDir + Match on base names, not Glob: a user-chosen folder name may contain glob metacharacters.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	for _, p := range stale {
+	for _, e := range entries {
+		if ok, _ := filepath.Match(".backup-*.tar.zst.tmp", e.Name()); !ok || !e.Type().IsRegular() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
 		if err := os.Remove(p); err != nil {
 			s.d.Log.Warn("stale backup temp not removed", "file", filepath.Base(p), "err", err)
 			continue

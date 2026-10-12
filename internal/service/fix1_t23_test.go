@@ -52,3 +52,36 @@ func TestBackupNow_SweepsStaleTemps(t *testing.T) {
 		t.Fatal("stale temp archive kept")
 	}
 }
+
+// A user-chosen backup folder whose name holds glob metacharacters is swept literally: its own stale temp
+// goes, and a sibling folder that the name would match as a pattern is untouched.
+func TestBackupNow_SweepsLiteralFolderName(t *testing.T) {
+	e := newSvcEnv(t)
+	withData(t, e)
+	ch := startEvents(t, e)
+	root := t.TempDir()
+	odd := filepath.Join(root, "Backup[1]")
+	sibling := filepath.Join(root, "Backup1")
+	for _, d := range []string{odd, sibling} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mine := filepath.Join(odd, ".backup-1.tar.zst.tmp")
+	other := filepath.Join(sibling, ".backup-2.tar.zst.tmp")
+	writeFile(t, mine)
+	writeFile(t, other)
+	id, err := e.svc.BackupNow(context.Background(), odd, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, last := waitJob(t, ch, id); last.Error != "" {
+		t.Fatalf("%+v", last)
+	}
+	if exists(mine) {
+		t.Fatal("stale temp in the chosen folder kept")
+	}
+	if !exists(other) {
+		t.Fatal("temp in a sibling folder removed")
+	}
+}
