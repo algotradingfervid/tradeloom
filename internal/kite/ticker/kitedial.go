@@ -11,18 +11,13 @@ import (
 	kt "github.com/zerodha/gokiteconnect/v4/ticker"
 
 	"tradeloom/internal/clock"
+	"tradeloom/internal/kite"
 )
 
 // writeTimeout bounds every Subscribe/Unsubscribe/SetMode frame (Conn's bounded-write contract).
 const writeTimeout = 5 * time.Second
 
 var errNotConnected = errors.New("ticker: not connected")
-
-// dialLock serialises the library's dial phase across every kiteConn: ServeWithContext writes
-// gorilla's global websocket.DefaultDialer on each dial (v4.4.3 ticker.go:299–300), a data race
-// when the Manager's slots dial at once. A conn holds it from just before ServeWithContext until
-// OnConnect fires or ServeWithContext returns, whichever is first.
-var dialLock = make(chan struct{}, 1)
 
 // KiteDialer returns a Dialer over gokiteconnect's ticker. Each Conn is a fresh ticker.Ticker
 // with SetReconnectMaxRetries(0): the library then returns from ServeWithContext after the first
@@ -101,7 +96,7 @@ type kiteConn struct {
 	mu          sync.Mutex
 	ws          socket             // set on OnConnect
 	cancel      context.CancelFunc // ends the serve ctx; set by Serve
-	releaseDial func()             // releases dialLock once; set by Serve while it holds the lock
+	releaseDial func()             // releases the kite.AcquireDial lock once; set by Serve while it holds the lock
 	served      bool
 	stopped     bool
 	closed      bool // serve ctx ended or Serve returned: late sockets are closed, writes refused
@@ -111,7 +106,7 @@ type kiteConn struct {
 // before, during or after ServeWithContext (the library's Stop is a no-op until ServeWithContext
 // has assigned its cancel, and that assignment is unsynchronised — kiteConn never calls it). When
 // the ctx ends (caller cancel, Stop, or a failed write) the socket is closed so the library's
-// blocked read returns. Waiting for dialLock also ends on ctx/Stop, so a Stop never waits behind
+// blocked read returns. Waiting for the dial lock also ends on ctx/Stop, so a Stop never waits behind
 // another conn's dial.
 func (k *kiteConn) Serve(ctx context.Context) {
 	k.mu.Lock()
@@ -126,13 +121,13 @@ func (k *kiteConn) Serve(ctx context.Context) {
 	defer cancel()
 	defer k.closeSocket() // Serve returned: the conn is finished, later writes get errNotConnected
 
-	select {
-	case dialLock <- struct{}{}:
-	case <-ctx.Done():
+	// kite.AcquireDial is the process-wide dial lock shared with the capability probe: the library
+	// writes gorilla's global websocket.DefaultDialer on every dial (P0-2 Ruling 46, P0-3 Ruling 50).
+	// A conn holds it from just before ServeWithContext until OnConnect fires or Serve returns.
+	release, err := kite.AcquireDial(ctx)
+	if err != nil {
 		return
 	}
-	var once sync.Once
-	release := func() { once.Do(func() { <-dialLock }) }
 	defer release()
 	k.mu.Lock()
 	k.releaseDial = release
