@@ -63,7 +63,8 @@ type App struct {
 	rt        Runtime
 	lastState string
 	restart   atomic.Bool
-	wg        sync.WaitGroup // the service goroutines started by start; Shutdown waits for them
+	wg        sync.WaitGroup // StartPlatform and the service goroutines started by start; Shutdown waits for them
+	stopped   bool           // set by Shutdown under mu; start then starts nothing (wg.Add happens under mu too)
 
 	session     *api.Session
 	portfolio   *api.Portfolio
@@ -134,21 +135,35 @@ func (a *App) Bind() []any {
 // Startup is options.App.OnStartup. Wails runs it on its own goroutine.
 func (a *App) Startup(ctx context.Context) { a.start(ctx, wailsRuntime(ctx)) }
 
+// start runs once Wails has a window. When Shutdown has already run (or runs meanwhile) it starts nothing
+// more: the stopped check and every wg.Add happen under a.mu, so Shutdown's wg.Wait never races an Add,
+// and StartPlatform is counted in a.wg so StopPlatform runs only after it has returned.
 func (a *App) start(parent context.Context, rt Runtime) {
 	ctx, cancel := context.WithCancel(parent)
 	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		cancel()
+		return
+	}
 	a.ctx, a.cancel, a.rt = ctx, cancel, rt
 	a.mu.Unlock()
 	a.restoreGeometry(ctx, rt)
-	if a.d.StartPlatform != nil {
-		if err := a.d.StartPlatform(ctx); err != nil {
-			a.d.Log.Error("platform start failed", "err", err)
+	if !a.track() {
+		return
+	}
+	func() {
+		defer a.wg.Done()
+		if a.d.StartPlatform != nil {
+			if err := a.d.StartPlatform(ctx); err != nil {
+				a.d.Log.Error("platform start failed", "err", err)
+			}
 		}
-	}
-	emit := a.emitter(rt)
-	for _, src := range a.d.Service.EventSources() {
-		src.Start(ctx, emit)
-	}
+		emit := a.emitter(rt)
+		for _, src := range a.d.Service.EventSources() {
+			src.Start(ctx, emit)
+		}
+	}()
 	a.goTracked("service.session", func() { a.d.Service.RunSession(ctx) })
 	a.goTracked("service.run", func() { a.d.Service.Run(ctx) })
 	a.goTracked("service.quotes", func() { a.d.Service.RunQuotes(ctx) })
@@ -156,9 +171,23 @@ func (a *App) start(parent context.Context, rt Runtime) {
 	a.goTracked("service.restore", func() { a.d.Service.Restore(ctx) })
 }
 
-// goTracked starts fn through logging.Go and counts it in a.wg so Shutdown can wait for it.
-func (a *App) goTracked(name string, fn func()) {
+// track counts one unit of work in a.wg unless Shutdown has run; the check and the Add share a.mu.
+func (a *App) track() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.stopped {
+		return false
+	}
 	a.wg.Add(1)
+	return true
+}
+
+// goTracked starts fn through logging.Go and counts it in a.wg so Shutdown can wait for it; after
+// Shutdown it starts nothing.
+func (a *App) goTracked(name string, fn func()) {
+	if !a.track() {
+		return
+	}
 	logging.Go(name, func() {
 		defer a.wg.Done()
 		fn()
@@ -240,11 +269,13 @@ func (a *App) emitter(rt Runtime) service.Emit {
 // shutdownWait bounds how long Shutdown waits for the service goroutines (tests shorten it).
 var shutdownWait = 5 * time.Second
 
-// Shutdown is options.App.OnShutdown: it cancels the service goroutines, waits for them (bounded by
-// shutdownWait, Warn on timeout) and then stops the platform; boot.Shutdown (DB.Close) runs after it in
+// Shutdown is options.App.OnShutdown: it marks the App stopped (a later or concurrent start starts
+// nothing more), cancels the service goroutines, waits for them and for a StartPlatform in progress
+// (bounded by shutdownWait, Warn on timeout) and then stops the platform; boot.Shutdown (DB.Close) runs after it in
 // cmd/tradeloom.run (Ruling 82 I2).
 func (a *App) Shutdown(ctx context.Context) {
 	a.mu.Lock()
+	a.stopped = true
 	cancel := a.cancel
 	a.mu.Unlock()
 	if cancel != nil {

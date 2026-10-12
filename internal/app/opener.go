@@ -17,18 +17,27 @@ import (
 // openerTimeout bounds the desktop opener process (open / xdg-open hand the path to the file manager and exit).
 const openerTimeout = 10 * time.Second
 
+// openerWaitDelay bounds the wait for the opener's output pipes once it has exited or been killed.
+const openerWaitDelay = 2 * time.Second
+
 const openStage = "diagnostics"
 
 // openerCommand builds the desktop opener for path: "open" on macOS, "xdg-open" on Linux. No shell is
 // involved and the path is one argument (always absolute, so it can never be read as an option).
 func openerCommand(ctx context.Context, goos, path string) (*exec.Cmd, error) {
+	var cmd *exec.Cmd
 	switch goos {
 	case "darwin":
-		return exec.CommandContext(ctx, "open", path), nil
+		cmd = exec.CommandContext(ctx, "open", path)
 	case "linux":
-		return exec.CommandContext(ctx, "xdg-open", path), nil
+		cmd = exec.CommandContext(ctx, "xdg-open", path)
+	default:
+		return nil, fmt.Errorf("opening files is not supported on %s", goos)
 	}
-	return nil, fmt.Errorf("opening files is not supported on %s", goos)
+	// xdg-open can leave a launched child holding the output pipe; WaitDelay bounds how long
+	// CombinedOutput waits for it after the opener exits or ctx ends.
+	cmd.WaitDelay = openerWaitDelay
+	return cmd, nil
 }
 
 // execOpenPath runs the desktop opener and reports its failure (Ruling 82 I1: no silent success).
@@ -51,7 +60,7 @@ func refusedOpen(code, reason string) error {
 
 // openPath opens the logs folder or a file directly inside it in the desktop's file manager / viewer.
 // The path must be absolute, already clean, exist, and be the logs directory or a regular (non-symlink)
-// file under it; anything else is refused (Ruling 82 I1).
+// file directly in it (filepath.Dir(p) == logs); anything else is refused (Ruling 82 I1, Ruling 83).
 func (a *App) openPath(p string) error {
 	logs, err := a.d.Service.OpenLogsFolder(a.context())
 	if err != nil {
@@ -70,7 +79,7 @@ func (a *App) openPath(p string) error {
 		if !fi.IsDir() {
 			return refusedOpen("invalid_path", "The logs folder is not a directory.")
 		}
-	case strings.HasPrefix(p, logs+string(filepath.Separator)):
+	case filepath.Dir(p) == logs: // directly inside the logs folder, not in a sub-directory
 		if !fi.Mode().IsRegular() {
 			return refusedOpen("invalid_path", "Only regular files in the logs folder can be opened.")
 		}
