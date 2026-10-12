@@ -83,6 +83,9 @@ func TestRotation_BoundsFilesUnderConcurrentWriters(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	if len(files) < 2 {
+		t.Fatalf("rotation did not happen: %d file(s)", len(files))
+	}
 	if len(files) > 10 {
 		t.Fatalf("want ≤ 10 log files, got %d", len(files))
 	}

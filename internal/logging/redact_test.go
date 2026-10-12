@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -87,4 +89,41 @@ func TestRedactHandler_Enabled(t *testing.T) {
 	if !h.Enabled(context.Background(), slog.LevelDebug) {
 		t.Fatal("debug not enabled after switching level at runtime")
 	}
+}
+
+type nilStringer struct{ s string }
+
+func (n *nilStringer) String() string { return n.s }
+
+func TestRedactHandler_FixRound1(t *testing.T) {
+	r := NewRedactor()
+	r.Register("a&b<c>secretXYZ")
+	cases := []struct {
+		name, leak string
+		log        func(l *slog.Logger)
+	}{
+		{"json in free text", "LEAK1abcdef", func(l *slog.Logger) { l.Info("x", "body", `{"data":{"access_token":"LEAK1abcdef"}}`) }},
+		{"colon form", "LEAK7abcdef", func(l *slog.Logger) { l.Info("x", "body", "access_token: LEAK7abcdef") }},
+		{"http.Header", "LEAK2abcdef", func(l *slog.Logger) {
+			l.Info("x", "h", http.Header{"Authorization": {"token k:LEAK2abcdef"}})
+			l.Info("x", "h", fmt.Sprint(http.Header{"Authorization": {"token k:LEAK2abcdef"}}))
+		}},
+		{"map under sensitive key", "LEAK3abcdef", func(l *slog.Logger) { l.Info("x", "m", map[string]string{"access_token": "LEAK3abcdef"}) }},
+		{"sensitive group key", "LEAK4abcdef", func(l *slog.Logger) { l.Info("x", slog.Group("authorization", slog.String("v", "LEAK4abcdef"))) }},
+		{"json-escaped registered secret", "secretXYZ", func(l *slog.Logger) { l.Info("x", "m", map[string]string{"k": "a&b<c>secretXYZ"}) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, buf := newTestLogger(r)
+			tc.log(l)
+			if strings.Contains(buf.String(), tc.leak) {
+				t.Fatalf("%q leaked: %s", tc.leak, buf.String())
+			}
+		})
+	}
+	t.Run("nil pointer Stringer does not panic", func(t *testing.T) {
+		l, _ := newTestLogger(r)
+		var p *nilStringer
+		l.Info("x", "p", p)
+	})
 }

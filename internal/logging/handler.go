@@ -49,6 +49,9 @@ func (h *RedactHandler) WithGroup(name string) slog.Handler {
 func (h *RedactHandler) redactAttr(a slog.Attr) slog.Attr {
 	a.Value = a.Value.Resolve()
 	if a.Value.Kind() == slog.KindGroup {
+		if h.r.IsSensitiveKey(a.Key) {
+			return slog.String(a.Key, Redacted)
+		}
 		attrs := a.Value.Group()
 		red := make([]slog.Attr, len(attrs))
 		for i, g := range attrs {

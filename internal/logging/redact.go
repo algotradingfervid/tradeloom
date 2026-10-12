@@ -3,6 +3,7 @@ package logging
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,7 +25,8 @@ var valuePatterns = []struct {
 	repl string
 }{
 	{regexp.MustCompile(`(?i)\b(request_token|access_token|api_secret|checksum|bot_token)=[^&\s"']+`), "${1}=" + Redacted},
-	{regexp.MustCompile(`(?i)\b(authorization["']?\s*[:=]\s*["']?)[^"'\r\n]+`), "${1}" + Redacted},
+	{regexp.MustCompile(`(?i)\b(authorization["']?\s*[:=]\s*[\["']*)[^"'\r\n\]]+`), "${1}" + Redacted},
+	{regexp.MustCompile(`(?i)("?\b(?:request_token|access_token|api_secret|checksum|bot_token|passphrase)"?\s*[:=]\s*"?)[^"&\s,}\]]+`), "${1}" + Redacted},
 	{regexp.MustCompile(`\bbot\d{6,}:[A-Za-z0-9_-]{30,}`), "bot" + Redacted},
 }
 
@@ -67,6 +69,12 @@ func (r *Redactor) Register(v string) {
 	pairs := make([]string, 0, 2*len(vals))
 	for _, s := range vals {
 		pairs = append(pairs, s, Redacted)
+		// json.Marshal escapes e.g. < > & and quotes; redact that form too.
+		if b, err := json.Marshal(s); err == nil {
+			if esc := string(b[1 : len(b)-1]); esc != s {
+				pairs = append(pairs, esc, Redacted)
+			}
+		}
 	}
 	r.replacer = strings.NewReplacer(pairs...)
 }
@@ -92,6 +100,9 @@ func (r *Redactor) ScrubBytes(b []byte) []byte { return []byte(r.RedactString(st
 // redactAny turns an arbitrary attribute value into a redacted string when it
 // could carry a secret; values whose JSON form is unchanged by redaction are kept as is.
 func (r *Redactor) redactAny(v any) (any, bool) {
+	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Ptr && rv.IsNil() {
+		return v, false // nil pointer: calling Error/String could panic
+	}
 	switch x := v.(type) {
 	case error:
 		return r.RedactString(x.Error()), true
