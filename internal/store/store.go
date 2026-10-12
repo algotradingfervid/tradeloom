@@ -124,8 +124,12 @@ func Open(ctx context.Context, path string, o Options) (*DB, error) {
 	}
 	// Raw header check before any connection: opening in WAL mode would replay a leftover -wal
 	// into a damaged app.db (Review Focus 1).
-	if detail := rawHeaderCheck(path); detail != "" {
-		return nil, &CorruptError{Path: path, Detail: detail, LatestBackup: latestFile(o.BackupDir, "app-*.db")}
+	if err := CheckHeader(path); err != nil {
+		var ce *CorruptError
+		if errors.As(err, &ce) {
+			ce.LatestBackup = latestFile(o.BackupDir, "app-*.db")
+		}
+		return nil, err
 	}
 	if f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600); err != nil {
 		return nil, err
@@ -184,15 +188,24 @@ func Open(ctx context.Context, path string, o Options) (*DB, error) {
 	}
 	r.SetMaxOpenConns(4)
 	// Files hold session and order data: owner-only (Global Constraint, controller ruling 6).
-	if err := restrictModes(path); err != nil {
+	if err := RestrictModes(path); err != nil {
 		r.Close()
 		return fail(err)
 	}
 	return &DB{W: w, R: r, path: path, schema: mig.Latest(), now: o.Now}, nil
 }
 
-// rawHeaderCheck validates an existing app.db without SQLite. A missing or empty file is a new
-// database and passes. It returns "" when fine, otherwise a human-readable detail.
+// CheckHeader validates an existing SQLite file (app.db, candles.db) without opening it with
+// SQLite, so a leftover -wal is never replayed into a damaged file. A missing or empty file is a
+// new database and passes. A damaged file yields a *CorruptError (errors.Is ErrCorrupt) without
+// LatestBackup.
+func CheckHeader(path string) error {
+	if detail := rawHeaderCheck(path); detail != "" {
+		return &CorruptError{Path: path, Detail: detail}
+	}
+	return nil
+}
+
 func rawHeaderCheck(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -218,8 +231,8 @@ func rawHeaderCheck(path string) string {
 	return ""
 }
 
-// restrictModes chmods app.db and its -wal/-shm sidecars (those that exist) to 0600.
-func restrictModes(path string) error {
+// RestrictModes chmods a database file and its -wal/-shm sidecars (those that exist) to 0600.
+func RestrictModes(path string) error {
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
 		if err := os.Chmod(p, 0o600); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("store: chmod %s: %w", filepath.Base(p), err)
