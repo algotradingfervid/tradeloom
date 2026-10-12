@@ -112,6 +112,11 @@ type QuoteReader interface {
 	OHLC(ctx context.Context, ids ...string) (kite.QuoteOHLC, error)
 }
 
+// FeedController is the reconnect half of *feed.Feed (Task 33).
+type FeedController interface {
+	Reconnect()
+}
+
 // liveChart is one open chart subscription (OpenLive).
 type liveChart struct {
 	token uint32
@@ -162,6 +167,10 @@ type Deps struct {
 
 	// Task 32 (diagnostics façade, FR-SHELL-018)
 	CrashReports []string // Boot.CrashReports: unseen crash-*.json in Layout.LogsDir (any order; newest by name wins)
+
+	// Task 33 (system façade)
+	FeedCtl  FeedController // *feed.Feed: Reconnect for "Retry now" (Task 33)
+	Licences []byte         // licences.Notices (Task 33)
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
