@@ -6,6 +6,7 @@ import { useAppStore } from '../store/app';
 import './shell.css';
 import { useTrackHistoryDepth } from '../store/nav';
 import { ToastRegion } from '../components/ToastRegion';
+import { ShortcutProvider } from '../shortcuts/ShortcutProvider';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -24,10 +25,10 @@ export function RootLayout() {
   }, [backend, attempt]);
   useTrackHistoryDepth();
   return (
-    <>
+    <ShortcutProvider>
       {/* The boot-failure notice renders in the AppShell banner slot (BootNotice, ShellLayout). */}
       <Outlet />
       <ToastRegion />
-    </>
+    </ShortcutProvider>
   );
 }
