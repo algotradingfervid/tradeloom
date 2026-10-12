@@ -41,22 +41,24 @@ type StatusSnapshot struct {
 
 // ParseNotices reads THIRD_PARTY_NOTICES.md: sections "## <module> <version> — <licence>" (Go modules and,
 // as scripts/gen-notices.sh writes them, npm packages too) and npm lines "[name@version](repository) - <licence>"
-// (license-checker --markdown). Lines inside ``` fences are licence texts and are never parsed, so a heading
-// inside a third-party licence cannot appear as a component.
+// (license-checker --markdown). Lines between exact column-0 ``` fence lines are licence texts and are never
+// parsed, so a heading inside a third-party licence cannot appear as a component. The result is never nil
+// (an empty JSON array).
 func ParseNotices(md []byte) []Licence {
 	out := []Licence{}
 	sc := bufio.NewScanner(bytes.NewReader(md))
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	fenced := false
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if strings.HasPrefix(line, "```") {
+		raw := sc.Text()
+		if raw == "```" { // only an exact column-0 fence line, as scripts/gen-notices.sh writes it
 			fenced = !fenced
 			continue
 		}
 		if fenced {
 			continue
 		}
+		line := strings.TrimSpace(raw)
 		switch {
 		case strings.HasPrefix(line, "## "):
 			head, lic, ok := strings.Cut(strings.TrimPrefix(line, "## "), " — ")
@@ -107,8 +109,13 @@ func (s *Service) Status(_ context.Context) StatusSnapshot {
 
 // ReconnectFeed is the status indicator's "Retry now" (FR-ACCT-007 degraded states).
 func (s *Service) ReconnectFeed(_ context.Context) error {
-	if s.d.Session.State().State != kite.StateReady {
+	st := s.d.Session.State()
+	if st.State != kite.StateReady {
 		return s.refuse(systemStage, refused(systemStage, "not_logged_in", "Log in before reconnecting the market feed."))
+	}
+	if st.DataPlan != kite.PlanConnect {
+		// Personal plan (none) or a probe that has not finished (unknown): the feed is never started.
+		return s.refuse(systemStage, refused(systemStage, "unavailable", "Live market data needs the Kite Connect data plan."))
 	}
 	if s.d.FeedCtl == nil {
 		return s.refuse(systemStage, refused(systemStage, "unavailable", "The market feed is not available in this build."))
