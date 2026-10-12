@@ -8,7 +8,6 @@ import { holdingsCopy as copy } from '../../i18n/copy';
 import { formatMoney, formatNumber, formatPrice } from '../../i18n/format';
 import { holdingRow, liveLtp, rupees, summarizeHoldings, type LiveHolding } from '../../portfolio/calc';
 import { listStatusOf, usePortfolioResource } from '../../store/portfolio';
-import { useSessionStore } from '../../store/session';
 import { useTicksStore } from '../../store/ticks';
 
 const columns: Column<LiveHolding>[] = [
@@ -37,11 +36,10 @@ const columns: Column<LiveHolding>[] = [
 export function HoldingsView() {
   const { resource, reload, refresh } = usePortfolioResource('holdings');
   const latest = useTicksStore((s) => s.latest);
-  const sessionStartMs = useSessionStore((s) => s.session?.loggedInAtMs ?? 0);
   const [query, setQuery] = useState('');
   const rows = useMemo(
-    () => resource.data.rows.map((h) => holdingRow(h, liveLtp(latest[h.token], sessionStartMs))),
-    [resource.data, latest, sessionStartMs],
+    () => resource.data.rows.map((h) => holdingRow(h, liveLtp(latest[h.token]))),
+    [resource.data, latest],
   );
   const visible = filterRows(rows, query, (r) => [r.row.symbol, r.row.exchange]);
   const totals = summarizeHoldings(resource.data.summary, rows);
