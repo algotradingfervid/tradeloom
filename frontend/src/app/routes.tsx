@@ -1,4 +1,4 @@
-import { matchRoutes, type RouteObject } from 'react-router-dom';
+import { matchRoutes, Navigate, type RouteObject } from 'react-router-dom';
 import { HomeView } from '../views/home/HomeView';
 import { HoldingsView } from '../views/holdings/HoldingsView';
 import { NotFoundView } from '../views/NotFoundView';
@@ -6,6 +6,7 @@ import { LoginView } from '../views/onboarding/LoginView';
 import { RiskDisclosureView } from '../views/onboarding/RiskDisclosureView';
 import { SetupView } from '../views/onboarding/SetupView';
 import { RestoreLastRoute } from './RestoreLastRoute';
+import { SettingsView } from '../views/settings/SettingsView';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
 
@@ -13,6 +14,8 @@ import { ShellLayout } from './ShellLayout';
 export const shellChildren: RouteObject[] = [
   { path: 'home', element: <HomeView /> },
   { path: 'holdings', element: <HoldingsView /> },
+  { path: 'settings', element: <Navigate to="/settings/kite" replace /> },
+  { path: 'settings/:group', element: <SettingsView /> },
 ];
 
 /** Whether this build has a shell view at `path` (the not-found catch-all excluded) — Ruling 94 M4. */

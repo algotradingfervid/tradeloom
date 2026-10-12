@@ -4,7 +4,7 @@ test('first run: setup → paste login → risk disclosure → Home (FR-ACCT-005
   await page.goto('/?seed=fresh');
   await expect(page.getByRole('heading', { name: 'Connect your Kite account' })).toBeVisible();
   await page.getByLabel('API key').fill('kiteapikey9f2c');
-  await page.getByLabel('API secret').fill('s3cret-value');
+  await page.getByLabel('API secret').fill('s3cretvalue9');
   await page.getByRole('button', { name: 'Save and continue' }).click();
   await expect(page.getByRole('heading', { name: 'Log in to Kite' })).toBeVisible();
   await page.getByRole('button', { name: 'Login did not come back to Tradeloom?' }).click();

@@ -30,9 +30,9 @@ describe('FR-ACCT-005 credentials setup', () => {
     expect(backend.callsTo('session.saveCredentials')).toHaveLength(0);
     expect(screen.getByLabelText('API secret')).toHaveAttribute('type', 'password');
     await user.type(screen.getByLabelText('API key'), 'kiteapikey9f2c');
-    await user.type(screen.getByLabelText('API secret'), 's3cret-value');
+    await user.type(screen.getByLabelText('API secret'), 's3cretvalue9');
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
-    expect(backend.callsTo('session.saveCredentials')[0].args).toEqual([{ apiKey: 'kiteapikey9f2c', apiSecret: 's3cret-value' }]);
+    expect(backend.callsTo('session.saveCredentials')[0].args).toEqual([{ apiKey: 'kiteapikey9f2c', apiSecret: 's3cretvalue9' }]);
     expect(await screen.findByRole('heading', { name: 'Log in to Kite' })).toBeInTheDocument();
   });
   it('copies the redirect URL', async () => {
@@ -46,7 +46,7 @@ describe('FR-ACCT-005 credentials setup', () => {
     backend.failNext('session.saveCredentials', 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.', 'invalid_credentials');
     const { user } = renderApp({ route: '/', backend });
     await user.type(await screen.findByLabelText('API key'), 'kiteapikey9f2c');
-    await user.type(screen.getByLabelText('API secret'), 's3cret-value');
+    await user.type(screen.getByLabelText('API secret'), 's3cretvalue9');
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
     expect(await screen.findAllByText(/The API key and the API secret are identical/)).toHaveLength(2);
     expect(screen.getByRole('heading', { name: 'Connect your Kite account' })).toBeInTheDocument();
@@ -135,6 +135,12 @@ describe('FR-ACCT-006 login (UI)', () => {
     await screen.findByRole('heading', { name: 'Log in to Kite' });
     expect(screen.getByText(/http:\/\/127\.0\.0\.1:7420\/kite\/callback/)).toBeInTheDocument();
   });
+  it('links to Settings → Kite connection, which the gate allows while logged out (port or credentials fixes)', async () => {
+    const { user, router } = start(loggedOutSeed());
+    await user.click(await screen.findByRole('link', { name: 'Change the login port or the Kite credentials' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/kite'));
+    expect(await screen.findByLabelText('Login callback port')).toBeInTheDocument();
+  });
   it('Cancel login returns to the logged-out state', async () => {
     const { user, backend } = start(loggedOutSeed());
     await user.click(await screen.findByRole('button', { name: 'Log in with Kite' }));
@@ -215,6 +221,12 @@ describe('FR-SHELL-019 AC3 (frontend part): reopen on the last view', () => {
     seed.settings = { 'ui.last_route': '"/holdings"' };
     const { router } = start(seed);
     await waitFor(() => expect(router.state.location.pathname).toBe('/holdings'));
+  });
+  it('restores a Settings group (Task 14 routes are in the allow-list and exist)', async () => {
+    const seed = demoSeed();
+    seed.settings = { 'ui.last_route': '"/settings/calendar"' };
+    const { router } = start(seed);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings/calendar'));
   });
   it('falls back to Home for a view this build does not have', async () => {
     const seed = demoSeed();

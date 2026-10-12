@@ -134,10 +134,13 @@ export type JobKind = 'backup' | 'restore' | 'support_bundle';
 export interface JobProgress extends Omit<G.service_JobProgress, 'kind'> { kind: JobKind }
 
 export type CalendarExchange = 'NSE' | 'BSE' | 'NFO' | 'BFO';
+/** Day types a user can save (`CalendarEntryInput`). */
 export type CalendarDayType = 'trading' | 'holiday' | 'special';
+/** Day types Go lists: also days the app inferred as non-trading (P0-2 `calendar.DayInferredClosed`). */
+export type CalendarListedDayType = CalendarDayType | 'inferred-non-trading';
 export type PhaseKind = 'pre-open' | 'continuous' | 'closing' | 'post-closing' | 'closed';
 export interface PhaseDTO { kind: PhaseKind; start: string; end: string } // HH:MM IST
-export interface CalendarEntryDTO { exchange: CalendarExchange; date: string; type: CalendarDayType; phases: PhaseDTO[]; source: string }
+export interface CalendarEntryDTO { exchange: CalendarExchange; date: string; type: CalendarListedDayType; phases: PhaseDTO[]; source: string }
 export interface CalendarEntryInput { exchange: CalendarExchange; date: string; type: CalendarDayType; phases: PhaseDTO[] }
 export interface CalendarInfo { version: string; coversUntil: string; stale: boolean; entries: CalendarEntryDTO[] }
 

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useBackend } from '../../api/BackendContext';
 import { parseBackendError } from '../../api/errors';
 import { Button } from '../../components/Button';
@@ -94,6 +95,7 @@ export function LoginView() {
       {session?.state === 'expired' && <p className="onboarding__notice" role="status">{copy.expired}</p>}
       <p>{copy.intro}</p>
       {guidanceUrl && <p className="muted">{copy.redirectGuidance(guidanceUrl)}</p>}
+      <Link to="/settings/kite">{copy.settingsLink}</Link>
       <Button variant="primary" onClick={login}>{copy.button}</Button>
       {waiting && (
         <div className="row">

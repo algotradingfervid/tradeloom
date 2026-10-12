@@ -25,6 +25,12 @@ describe('session gate', () => {
     expect(gateTarget(readySession({ state: 'expired' }), '/holdings')).toBeNull();
     expect(gateTarget(readySession({ state: 'expired' }), '/login')).toBeNull();
   });
+  it('Settings stay reachable while logged out or logging in, not before setup (merge with Task 14, Ruling 97)', () => {
+    expect(gateTarget(readySession({ state: 'logged_out' }), '/settings/kite')).toBeNull();
+    expect(gateTarget(readySession({ state: 'logging_in' }), '/settings')).toBeNull();
+    expect(gateTarget(readySession({ state: 'no_credentials' }), '/settings/kite')).toBe('/setup');
+    expect(gateTarget(readySession({ state: 'locked' }), '/settings/kite')).toBe('/setup');
+  });
   it('legal pages and help are reachable before login', () => {
     expect(gateTarget(readySession({ state: 'no_credentials' }), '/legal/terms')).toBeNull();
     expect(gateTarget(readySession({ state: 'logged_out' }), '/help/kite-setup')).toBeNull();

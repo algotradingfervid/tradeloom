@@ -84,22 +84,22 @@ describe('setup: the API secret stays out of state (security)', () => {
   it('after a successful save the secret is nowhere', async () => {
     const { user, backend, router } = startLeak(freshSeed());
     await user.type(await screen.findByLabelText('API key'), 'kiteapikey9f2c');
-    await user.type(screen.getByLabelText('API secret'), 'S3cr3t-xyz-123');
+    await user.type(screen.getByLabelText('API secret'), 'S3cr3tXyz123');
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
     await screen.findByRole('heading', { name: 'Log in to Kite' });
-    expectNowhere('S3cr3t-xyz-123', backend, router);
+    expectNowhere('S3cr3tXyz123', backend, router);
   });
   it('after a refused save the secret field is empty and the secret is nowhere', async () => {
     const backend = createMockBackend(freshSeed(), { persistKey: PERSIST_KEY });
     backend.failNext('session.saveCredentials', 'Kite rejected the API key', 'invalid_credentials');
     const { user, router } = renderApp({ route: '/', backend });
     await user.type(await screen.findByLabelText('API key'), 'kiteapikey9f2c');
-    await user.type(screen.getByLabelText('API secret'), 'S3cr3t-fail-9');
+    await user.type(screen.getByLabelText('API secret'), 'S3cr3tFail9');
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
     expect(await screen.findAllByText('Kite rejected the API key')).not.toHaveLength(0);
     expect(screen.getByLabelText('API secret')).toHaveValue('');
     expect(screen.getByLabelText('API key')).toHaveValue('kiteapikey9f2c');
-    expectNowhere('S3cr3t-fail-9', backend, router);
+    expectNowhere('S3cr3tFail9', backend, router);
   });
   it('leaving setup discards the typed secret (unmount)', async () => {
     const { user, backend, router } = startLeak(freshSeed());

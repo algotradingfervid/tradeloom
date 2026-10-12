@@ -263,7 +263,8 @@ export function createMarketDomains(state: MockState, emit: Emit) {
         return {
           live: ordered.filter((t) => !polled.has(t)),
           polled: ordered.filter((t) => polled.has(t)),
-          snapshot: ordered.flatMap((t) => (state.quotes[t] ? [copy(state.quotes[t])] : [])),
+          // Quotes served in this run are stamped now, so the UI does not show them as stale (Ruling 95 I4).
+          snapshot: ordered.flatMap((t) => (state.quotes[t] ? [{ ...copy(state.quotes[t]), tsMs: Date.now() }] : [])),
         };
       },
     },
