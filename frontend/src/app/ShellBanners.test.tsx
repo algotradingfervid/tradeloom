@@ -6,7 +6,7 @@ import { istDayKey } from '../i18n/format';
 import { useToastStore } from '../store/toasts';
 import { renderApp } from '../test/render';
 import { CalendarStaleCheck } from './CalendarStaleCheck';
-import { LATER_SHELL_BANNERS } from './ShellBanners';
+import { registerShellBanner, shellBannerSlot } from './ShellBanners';
 import { useIstDay } from './useIstDay';
 
 const DAY_MS = 86_400_000;
@@ -18,19 +18,33 @@ describe('ShellBanners', () => {
     vi.restoreAllMocks();
   });
   it('the slot holds Task 17\'s calendar-stale check', () => {
-    expect(LATER_SHELL_BANNERS).toContain(CalendarStaleCheck);
+    expect(shellBannerSlot()).toContain(CalendarStaleCheck);
   });
-  it('renders the banners later tasks add to its slot (Task 15 crash notice)', async () => {
+  it('M13: renders banners registered in its slot and forgets them when unregistered', async () => {
     function TestBanner() {
       return <div role="status">later banner</div>;
     }
-    LATER_SHELL_BANNERS.push(TestBanner);
+    const unregister = registerShellBanner(TestBanner);
     try {
       renderApp({ route: '/home' });
       expect(await screen.findByText('later banner')).toBeInTheDocument();
     } finally {
-      LATER_SHELL_BANNERS.splice(LATER_SHELL_BANNERS.indexOf(TestBanner), 1);
+      unregister();
     }
+    expect(shellBannerSlot()).not.toContain(TestBanner);
+  });
+  it('order: crash notice (banner--error) first, then the boot notice, then the slot', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.state.crash = { path: '/tmp/crash-1.txt', atMs: Date.UTC(2026, 9, 11, 10, 0) };
+    backend.failNext('system.info', 'info unavailable');
+    const { container } = renderApp({ route: '/home', backend });
+    await screen.findByText('Some app data could not be loaded');
+    const banners = container.querySelector('#main-content');
+    const crash = await screen.findByText(/crash/i, { selector: '.banner--error span' });
+    const boot = screen.getByText('Some app data could not be loaded');
+    expect(crash.closest('.banner')).toHaveClass('banner', 'banner--error');
+    expect(banners?.querySelector('.crash-notice')).toBeNull();
+    expect(crash.compareDocumentPosition(boot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it('useIstDay re-checks at the next IST midnight and on window focus (Ruling 100 M6)', () => {
     vi.useFakeTimers();

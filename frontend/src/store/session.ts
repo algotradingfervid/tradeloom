@@ -21,4 +21,4 @@ export const useSessionStore = create<SessionStore>()((set) => ({
   setProfile: (profile) => set({ profile }),
 }));
 
-registerReset(() => useSessionStore.setState(initial), { onLogout: false });
+registerReset(() => useSessionStore.setState(initial), { onLogout: false, inspect: () => useSessionStore.getState() });

@@ -31,6 +31,10 @@ describe('session gate', () => {
     expect(gateTarget(readySession({ state: 'no_credentials' }), '/settings/kite')).toBe('/setup');
     expect(gateTarget(readySession({ state: 'locked' }), '/settings/kite')).toBe('/setup');
   });
+  it('M4 (Ruling 108): the Settings allowance never bypasses the risk disclosure; an expired session keeps Settings', () => {
+    expect(gateTarget(readySession({ riskAckRequired: true }), '/settings/kite')).toBe('/risk');
+    expect(gateTarget(readySession({ state: 'expired' }), '/settings/kite')).toBeNull();
+  });
   it('legal pages and help are reachable before login', () => {
     expect(gateTarget(readySession({ state: 'no_credentials' }), '/legal/terms')).toBeNull();
     expect(gateTarget(readySession({ state: 'logged_out' }), '/help/kite-setup')).toBeNull();

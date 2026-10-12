@@ -14,7 +14,7 @@ registerReset(() => {
   claimed.clear();
   pending = 0;
   held = [];
-}, { onLogout: false });
+}, { onLogout: false, inspect: () => ({ claimed, pending, held }) });
 
 function show(p: JobProgress): void {
   pushToast({ level: 'error', message: p.error });

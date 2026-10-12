@@ -2,15 +2,9 @@ import { act, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { freshSeed, lockedSeed, loggedOutSeed, noKeyringSeed } from '../../api/mock/fixtures';
 import { createMockBackend, type MockBackend, type MockState } from '../../api/mock/index';
-import { usePortfolioStore } from '../../store/portfolio';
-import { useAppStore } from '../../store/app';
-import { useNavStore } from '../../store/nav';
-import { useSessionStore } from '../../store/session';
-import { useSettingsStore } from '../../store/settings';
-import { useStatusStore } from '../../store/status';
-import { useTicksStore } from '../../store/ticks';
+import '../../store/jobNotices';
+import { registeredResets, storeSnapshots } from '../../store/reset';
 import { useToastStore } from '../../store/toasts';
-import { useShortcutStore } from '../../shortcuts/store';
 import { renderApp } from '../../test/render';
 
 // Ruling 101: the API secret, the passphrases and a pasted redirect URL (it carries request_token) live only in
@@ -19,13 +13,12 @@ import { renderApp } from '../../test/render';
 
 const PERSIST_KEY = 'tl-test-onboarding';
 
-/** Every zustand store the app holds, serialised (functions drop out). Toasts are in useToastStore. */
+/**
+ * Every store the app registered with the reset registry (store/reset.ts), serialised — M1 (Ruling 108): enumerated
+ * from the registry, so a store added later is covered without editing this test. Rendering the app imports them all.
+ */
 function allStoreState(): string {
-  return JSON.stringify([
-    useAppStore.getState(), useNavStore.getState(), useSessionStore.getState(), useSettingsStore.getState(),
-    useStatusStore.getState(), useTicksStore.getState(), useToastStore.getState(), usePortfolioStore.getState(),
-    useShortcutStore.getState(),
-  ]);
+  return JSON.stringify(storeSnapshots(), (_k, v: unknown) => (v instanceof Set || v instanceof Map ? [...v] : v));
 }
 
 function webStorage(): string {
@@ -70,14 +63,27 @@ function expectNowhere(value: string, backend: MockBackend, router: ReturnType<t
   expect(window.location.href).not.toContain(value);
   expect(consoleText()).not.toContain(value);
   expect(document.body.textContent).not.toContain(value);
+  // M2: attributes too (value, aria-*, data-*, title).
+  expect(document.body.innerHTML).not.toContain(value);
 }
+
+describe('the reset registry covers every store (M1)', () => {
+  it('each registration can be inspected', async () => {
+    startLeak(freshSeed());
+    await screen.findByRole('heading', { name: 'Connect your Kite account' });
+    const regs = registeredResets();
+    expect(regs.length).toBeGreaterThanOrEqual(10);
+    expect(regs.filter((r) => !r.inspect)).toEqual([]);
+  });
+});
 
 describe('setup: the API secret stays out of state (security)', () => {
   it('is a non-autocompleting password field that never echoes the secret', async () => {
     const { user } = startLeak(freshSeed());
     const secret = await screen.findByLabelText('API secret');
     expect(secret).toHaveAttribute('type', 'password');
-    expect(secret).toHaveAttribute('autocomplete', 'off');
+    // M3: as Task 14's dialog — browsers do not offer to fill or save a password here.
+    expect(secret).toHaveAttribute('autocomplete', 'new-password');
     await user.type(secret, 'top-secret-value');
     expect(document.body.textContent).not.toContain('top-secret-value');
   });

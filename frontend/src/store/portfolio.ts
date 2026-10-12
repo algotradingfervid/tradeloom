@@ -92,7 +92,7 @@ registerReset(() => {
   epoch += 1;
   announced.clear();
   usePortfolioStore.setState(initial());
-});
+}, { inspect: () => ({ ...usePortfolioStore.getState(), announced }) });
 
 const FETCH: { [K in PortfolioKind]: (b: Backend) => Promise<PortfolioData[K]> } = {
   holdings: (b) => b.portfolio.holdings(),

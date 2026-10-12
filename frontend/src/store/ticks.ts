@@ -65,4 +65,4 @@ registerReset(() => {
   healEpoch = 0;
   healedAt.clear();
   useTicksStore.setState({ latest: {} });
-}, { onLogout: false });
+}, { onLogout: false, inspect: () => ({ ...useTicksStore.getState(), healedAt }) });

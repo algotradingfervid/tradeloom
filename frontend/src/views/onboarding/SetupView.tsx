@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import type { SecretBackendName, SecretChoice } from '../../api/backend';
 import { useBackend } from '../../api/BackendContext';
@@ -27,6 +27,9 @@ function CredentialsForm({ redirectUrl, secretBackend }: { redirectUrl: string; 
   const [secret, setSecret] = useState('');
   const [errors, setErrors] = useState<{ apiKey?: string; secret?: string; form?: string }>({});
   const [busy, setBusy] = useState(false);
+  const keyRef = useRef<HTMLInputElement>(null);
+  const secretRef = useRef<HTMLInputElement>(null);
+  const formErrorId = useId();
 
   const copyRedirect = () => {
     if (!navigator.clipboard) {
@@ -44,7 +47,11 @@ function CredentialsForm({ redirectUrl, secretBackend }: { redirectUrl: string; 
     if (busy) return;
     const next = { apiKey: apiKey.trim() ? undefined : copy.apiKeyRequired, secret: secret ? undefined : copy.secretRequired };
     setErrors(next);
-    if (next.apiKey || next.secret) return;
+    if (next.apiKey || next.secret) {
+      // Ruling 108 I1: focus the first invalid field.
+      (next.apiKey ? keyRef : secretRef).current?.focus();
+      return;
+    }
     setBusy(true);
     try {
       adoptReturnedStatus(await backend.session.saveCredentials({ apiKey: apiKey.trim(), apiSecret: secret }));
@@ -65,9 +72,18 @@ function CredentialsForm({ redirectUrl, secretBackend }: { redirectUrl: string; 
         <Button icon="copy" onClick={copyRedirect}>{copy.copy}</Button>
       </div>
       <p>{secretBackend === 'file' ? copy.step2File : copy.step2}</p>
-      <TextField label={copy.apiKey} value={apiKey} onChange={(e) => setApiKey(e.target.value)} error={errors.apiKey} autoComplete="off" spellCheck={false} />
-      <TextField label={copy.apiSecret} type="password" value={secret} onChange={(e) => setSecret(e.target.value)} error={errors.secret} autoComplete="off" />
-      {errors.form && <p className="field__error" role="alert">{errors.form}</p>}
+      {/* Ruling 108 M5: a Go refusal is tied to both fields (aria-describedby + aria-invalid), as in Task 14. */}
+      <TextField
+        ref={keyRef} label={copy.apiKey} value={apiKey} onChange={(e) => setApiKey(e.target.value)} error={errors.apiKey}
+        autoComplete="off" spellCheck={false}
+        aria-invalid={errors.form || errors.apiKey ? true : undefined} aria-describedby={errors.form ? formErrorId : undefined}
+      />
+      <TextField
+        ref={secretRef} label={copy.apiSecret} type="password" value={secret} onChange={(e) => setSecret(e.target.value)} error={errors.secret}
+        autoComplete="new-password" spellCheck={false}
+        aria-invalid={errors.form || errors.secret ? true : undefined} aria-describedby={errors.form ? formErrorId : undefined}
+      />
+      {errors.form && <p id={formErrorId} className="field__error" role="alert">{errors.form}</p>}
       <Button type="submit" variant="primary" disabled={busy}>{copy.save}</Button>
       <Link to="/help/kite-setup">{copy.helpLink}</Link>
     </form>
@@ -90,6 +106,9 @@ function SecretStoreChoice({ refused }: { refused: boolean }) {
   const [repeat, setRepeat] = useState('');
   const [errors, setErrors] = useState<{ pass?: string; repeat?: string; form?: string }>({});
   const [busy, setBusy] = useState(false);
+  const passRef = useRef<HTMLInputElement>(null);
+  const repeatRef = useRef<HTMLInputElement>(null);
+  const formErrorId = useId();
   const choices: SecretChoice[] = fetched.length === 0 && refused ? ['encrypted_file'] : fetched;
 
   useEffect(() => {
@@ -115,7 +134,10 @@ function SecretStoreChoice({ refused }: { refused: boolean }) {
       const long = [...pass].length >= 8;
       const next = { pass: long ? undefined : copy.passphraseShort, repeat: long && pass !== repeat ? copy.passphraseMismatch : undefined };
       setErrors(next);
-      if (next.pass || next.repeat) return;
+      if (next.pass || next.repeat) {
+        (next.pass ? passRef : repeatRef).current?.focus(); // Ruling 108 I1
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -149,11 +171,19 @@ function SecretStoreChoice({ refused }: { refused: boolean }) {
       </fieldset>
       {choice === 'encrypted_file' && (
         <>
-          <TextField label={copy.passphrase} type="password" value={pass} onChange={(e) => setPass(e.target.value)} error={errors.pass} autoComplete="new-password" />
-          <TextField label={copy.passphraseRepeat} type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} error={errors.repeat} autoComplete="new-password" />
+          <TextField
+            ref={passRef} label={copy.passphrase} type="password" value={pass} onChange={(e) => setPass(e.target.value)} error={errors.pass}
+            autoComplete="new-password"
+            aria-invalid={errors.form || errors.pass ? true : undefined} aria-describedby={errors.form ? formErrorId : undefined}
+          />
+          <TextField
+            ref={repeatRef} label={copy.passphraseRepeat} type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} error={errors.repeat}
+            autoComplete="new-password"
+            aria-invalid={errors.form || errors.repeat ? true : undefined} aria-describedby={errors.form ? formErrorId : undefined}
+          />
         </>
       )}
-      {errors.form && <p className="field__error" role="alert">{errors.form}</p>}
+      {errors.form && <p id={formErrorId} className="field__error" role="alert">{errors.form}</p>}
       <Button type="submit" variant="primary" disabled={busy}>{copy.continue}</Button>
     </form>
   );

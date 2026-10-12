@@ -5,6 +5,7 @@ import {
 } from '../../api/mock/fixtures';
 import { createMockBackend, type MockState } from '../../api/mock/index';
 import { useAppStore } from '../../store/app';
+import { resetAllStores } from '../../store/reset';
 import { renderApp } from '../../test/render';
 
 const start = (seed: MockState) => renderApp({ route: '/', backend: createMockBackend(seed) });
@@ -265,5 +266,128 @@ describe('boot failures before the shell (Task 7 → Task 9 carry-forward)', () 
     expect(await screen.findByRole('heading', { name: 'Connect your Kite account' })).toBeInTheDocument();
     expect(await screen.findByText('Some app data could not be loaded')).toBeInTheDocument();
     expect(useAppStore.getState().bootError?.failed).toEqual(['info']);
+  });
+});
+
+describe('fix round 1 (Ruling 108)', () => {
+  it('I1: the step heading takes focus on start and whenever the step changes', async () => {
+    const { user } = start(noKeyringSeed());
+    const storeHeading = await screen.findByRole('heading', { name: 'Choose where to keep your Kite secret' });
+    await waitFor(() => expect(storeHeading).toHaveFocus());
+    expect(storeHeading).toHaveAttribute('tabindex', '-1');
+    await user.type(screen.getByLabelText('Passphrase'), 'correct horse');
+    await user.type(screen.getByLabelText('Repeat passphrase'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    const credsHeading = await screen.findByRole('heading', { name: 'Connect your Kite account' });
+    await waitFor(() => expect(credsHeading).toHaveFocus());
+  });
+  it('I1: a failed credentials check focuses the first invalid field', async () => {
+    const { user } = start(freshSeed());
+    await user.click(await screen.findByRole('button', { name: 'Save and continue' }));
+    expect(screen.getByLabelText('API key')).toHaveFocus();
+    await user.type(screen.getByLabelText('API key'), 'kiteapikey9f2c');
+    await user.click(screen.getByRole('button', { name: 'Save and continue' }));
+    expect(screen.getByLabelText('API secret')).toHaveFocus();
+  });
+  it('I1: a failed passphrase check focuses the first invalid passphrase field', async () => {
+    const { user } = start(noKeyringSeed());
+    await user.type(await screen.findByLabelText('Passphrase'), 'short');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByLabelText('Passphrase')).toHaveFocus();
+    await user.clear(screen.getByLabelText('Passphrase'));
+    await user.type(screen.getByLabelText('Passphrase'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByLabelText('Repeat passphrase')).toHaveFocus();
+  });
+  it('I1: an empty paste focuses the paste field', async () => {
+    const { user } = start(loggedOutSeed());
+    await user.click(await screen.findByRole('button', { name: 'Login did not come back to Tradeloom?' }));
+    await user.click(screen.getByRole('button', { name: 'Complete login' }));
+    expect(screen.getByLabelText('Redirect URL or request token')).toHaveFocus();
+  });
+  it.each(['session_expired', 'token_rejected'])('I2: an expired session shows exactly one expiry message (errorCode %s)', async (errorCode) => {
+    const seed = demoSeed();
+    seed.session = readySession({ state: 'expired', errorCode, errorMessage: 'Kite session expired — log in to continue.' });
+    renderApp({ route: '/login', backend: createMockBackend(seed) });
+    await screen.findByRole('heading', { name: 'Log in to Kite' });
+    expect(screen.queryByText('Kite session expired — log in to continue.')).toBeNull();
+    expect(screen.getAllByText(/session (has ended|expired)/i)).toHaveLength(1);
+    expect(screen.queryAllByRole('alert')).toHaveLength(0);
+  });
+  it('I2: Go\'s session error is also dropped for session_expired/token_rejected outside the expired state', async () => {
+    const seed = loggedOutSeed();
+    seed.session = { ...seed.session, errorCode: 'token_rejected', errorMessage: 'Kite rejected the access token.' };
+    start(seed);
+    await screen.findByRole('heading', { name: 'Log in to Kite' });
+    expect(screen.queryByText('Kite rejected the access token.')).toBeNull();
+  });
+  it('M5: a refused credentials save is tied to both fields (aria-describedby + aria-invalid)', async () => {
+    const backend = createMockBackend(freshSeed());
+    backend.failNext('session.saveCredentials', 'Kite rejected the API key', 'invalid_credentials');
+    const { user } = renderApp({ route: '/', backend });
+    await user.type(await screen.findByLabelText('API key'), 'kiteapikey9f2c');
+    await user.type(screen.getByLabelText('API secret'), 's3cretvalue9');
+    await user.click(screen.getByRole('button', { name: 'Save and continue' }));
+    const alert = (await screen.findAllByText('Kite rejected the API key')).find((el) => el.getAttribute('role') === 'alert');
+    expect(alert?.id).toBeTruthy();
+    for (const label of ['API key', 'API secret']) {
+      expect(screen.getByLabelText(label)).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText(label).getAttribute('aria-describedby')?.split(' ')).toContain(alert?.id);
+    }
+  });
+  it('M5: a refused secret-storage set-up is tied to both passphrase fields', async () => {
+    const backend = createMockBackend(noKeyringSeed());
+    backend.failNext('session.useEncryptedFile', 'A secrets file already exists; unlock it with its passphrase instead.', 'file_exists');
+    const { user } = renderApp({ route: '/', backend });
+    await user.type(await screen.findByLabelText('Passphrase'), 'correct horse');
+    await user.type(screen.getByLabelText('Repeat passphrase'), 'correct horse');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    const alert = (await screen.findAllByText(/A secrets file already exists/)).find((el) => el.getAttribute('role') === 'alert');
+    expect(alert?.id).toBeTruthy();
+    for (const label of ['Passphrase', 'Repeat passphrase']) {
+      expect(screen.getByLabelText(label)).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByLabelText(label).getAttribute('aria-describedby')?.split(' ')).toContain(alert?.id);
+    }
+  });
+  it('M7: a remembered Settings group is restored only if this build shows it', async () => {
+    const hidden = demoSeed();
+    hidden.settings = { 'ui.last_route': '"/settings/trading"' };
+    const first = start(hidden);
+    await waitFor(() => expect(first.router.state.location.pathname).toBe('/home'));
+    first.unmount();
+    resetAllStores();
+    const shown = demoSeed();
+    shown.settings = { 'ui.last_route': '"/settings/kite"' };
+    const second = start(shown);
+    await waitFor(() => expect(second.router.state.location.pathname).toBe('/settings/kite'));
+  });
+  it('M8: while waiting for the browser, Log in with Kite is disabled and Cancel stays available', async () => {
+    const { user } = start(loggedOutSeed());
+    await user.click(await screen.findByRole('button', { name: 'Log in with Kite' }));
+    await screen.findByText(/Waiting for the Kite login/);
+    expect(screen.getByRole('button', { name: 'Log in with Kite' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel login' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel login' })).toHaveFocus());
+  });
+  it('M9: arriving with a listener timeout already on the session opens the paste field', async () => {
+    const seed = loggedOutSeed();
+    seed.session = { ...seed.session, errorCode: 'listener_timeout', errorMessage: 'The login window timed out.' };
+    start(seed);
+    expect(await screen.findByLabelText('Redirect URL or request token')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Login did not come back to Tradeloom?' })).toHaveAttribute('aria-expanded', 'true');
+  });
+  it('M10: the paste toggle controls the paste form', async () => {
+    const { user } = start(loggedOutSeed());
+    const toggle = await screen.findByRole('button', { name: 'Login did not come back to Tradeloom?' });
+    const id = toggle.getAttribute('aria-controls');
+    expect(id).toBeTruthy();
+    await user.click(toggle);
+    expect(document.getElementById(id ?? '')).toContainElement(screen.getByLabelText('Redirect URL or request token'));
+  });
+  it('M11: mock refusals use Go\'s texts', async () => {
+    const m = createMockBackend(noKeyringSeed());
+    await expect(m.session.useEncryptedFile('short')).rejects.toThrow('Use a passphrase of at least 8 characters.');
+    await expect(m.session.saveCredentials({ apiKey: 'kiteapikey9f2c', apiSecret: 's3cretvalue9' }))
+      .rejects.toThrow('secret store not answering — unlock it and retry');
   });
 });

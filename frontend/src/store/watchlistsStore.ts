@@ -325,4 +325,4 @@ registerReset(() => {
   epoch++;
   lastUserId = null;
   useWatchlists.setState(initial);
-});
+}, { inspect: () => useWatchlists.getState() });

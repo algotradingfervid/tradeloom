@@ -201,7 +201,7 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
         if (state.session.state === 'logging_in') throw refusal(LOGIN_BUSY, 'session', 'Finish or cancel the current login before changing credentials.');
         if (state.session.state === 'ready') throw refusal('already_logged_in', 'session', 'Log out before changing the Kite credentials.');
         if (state.session.secrets.mode === 'choose' || state.session.secrets.mode === 'none') {
-          throw refusal('secret_store', 'session', 'Choose where to store the secret first');
+          throw refusal('secret_store', 'session', 'secret store not answering — unlock it and retry'); // Go kite msgSecretStore
         }
         return setSession({
           state: 'logged_out',
@@ -259,7 +259,7 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       profile: () => copy(state.profile),
       secretStorage: () => copy(state.session.secrets),
       useEncryptedFile: (passphrase: string) => {
-        if ([...passphrase].length < 8) throw refusal('passphrase_too_short', 'secrets', 'Use at least 8 characters');
+        if ([...passphrase].length < 8) throw refusal('passphrase_too_short', 'secrets', 'Use a passphrase of at least 8 characters.'); // Go service.UseEncryptedFile
         state.encPassphrase = passphrase;
         return setSession({
           secrets: { mode: 'file', backend: 'file', keyringAvailable: state.session.secrets.keyringAvailable, fileExists: true, choices: [] },

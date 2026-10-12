@@ -7,7 +7,7 @@ interface NavStore { depth: number; setDepth(n: number): void }
 
 export const useNavStore = create<NavStore>()((set) => ({ depth: 0, setDepth: (depth) => set({ depth }) }));
 
-registerReset(() => useNavStore.setState({ depth: 0 }));
+registerReset(() => useNavStore.setState({ depth: 0 }), { inspect: () => useNavStore.getState() });
 
 /** Counts in-app history entries so "Back" can fall back to Home when there is nothing to go back to. */
 export function useTrackHistoryDepth(): void {
