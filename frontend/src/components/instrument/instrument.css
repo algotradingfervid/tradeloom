@@ -1,0 +1,13 @@
+/* Instrument label (FR-WATCH-013/014): only the symbol truncates; badge, tag and flag keep their width (Ruling 96 I2). */
+.instrument-label { display: inline-flex; align-items: baseline; gap: var(--space-2); min-width: 0; max-width: 100%; }
+.instrument-label__symbol { flex: 0 1 auto; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.instrument-label__badge {
+  flex: none; display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: var(--radius-pill);
+  border: 1px solid currentColor; font-size: var(--fs-xs); font-weight: 700; line-height: 1;
+}
+.instrument-label__tag, .instrument-label__flag { flex: none; font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+.instrument-label__flag { padding: 0 var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-1); }
+.instrument-label__company { flex: none; margin-left: auto; font-size: var(--fs-sm); color: var(--text-muted); text-transform: uppercase; white-space: nowrap; }
+.price-change { display: inline-flex; gap: var(--space-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price-change--empty { color: var(--text-muted); }
+.price-change--stale .price-change__ltp { color: var(--text-muted); font-style: italic; }

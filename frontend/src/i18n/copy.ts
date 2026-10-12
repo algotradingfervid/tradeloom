@@ -261,3 +261,10 @@ export const aboutCopy = {
   licenceVersion: 'Version',
   licence: 'Licence',
 } as const;
+
+export const instrumentCopy = {
+  future: 'Future',
+  alsoOnNse: 'Also on NSE',
+  alsoOnNseHint: 'This company is also listed on NSE',
+  staleQuote: 'Last known price, not live yet',
+} as const;
