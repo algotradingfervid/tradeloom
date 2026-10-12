@@ -1,6 +1,7 @@
 import { useAppStore, type BootSlice } from '../store/app';
 import { resetOnLogout } from '../store/reset';
 import { notifyUnclaimedJob } from '../store/jobNotices';
+import { usePortfolioStore } from '../store/portfolio';
 import { useSessionStore } from '../store/session';
 import { markSettingsBaseline, useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
@@ -48,6 +49,10 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
     backend.on('settings.changed', (c) => useSettingsStore.getState().put(c.key, c.value)),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
     backend.on('job.progress', (p) => notifyUnclaimedJob(p)),
+    backend.on('order.update', (o) => usePortfolioStore.getState().applyOrderUpdate(o)),
+    backend.on('orders.changed', (b) => usePortfolioStore.getState().applySnapshot('orders', b)),
+    backend.on('positions.changed', (p) => usePortfolioStore.getState().applySnapshot('positions', p)),
+    backend.on('holdings.changed', (h) => usePortfolioStore.getState().applySnapshot('holdings', h)),
   ];
   return () => {
     for (const off of offs) off();

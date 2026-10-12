@@ -66,3 +66,19 @@ export const toastCopy = {
   region: 'Notifications',
   dismiss: 'Dismiss notification',
 } as const;
+
+export const holdingsCopy = {
+  title: 'Holdings',
+  description: 'Long-term equity holdings in your Kite account, valued at live prices.',
+  empty: 'No holdings',
+  refresh: 'Refresh',
+  loading: 'Loading holdings',
+  total: 'Total',
+  outOfScope: 'View only',
+  outOfScopeHint: 'Outside Tradeloom’s equity scope: shown for completeness and counted in the totals.',
+  cols: { symbol: 'Symbol', qty: 'Qty', avg: 'Avg', ltp: 'LTP', invested: 'Invested', current: 'Current value', pnl: 'P&L', net: 'Net change', day: 'Day change' },
+} as const;
+
+export const ordersCopy = {
+  updated: (symbol: string, status: string) => `Order ${symbol}: ${status}`,
+} as const;

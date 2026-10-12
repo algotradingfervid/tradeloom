@@ -35,3 +35,5 @@
 .list-state__art { color: var(--accent); }
 .list-section { display: flex; flex-direction: column; gap: var(--space-2); }
 .not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3); padding: var(--space-8); text-align: center; }
+.chip { display: inline-block; margin-left: var(--space-2); padding: 0 var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-1); font-size: var(--fs-xs); color: var(--text-muted); vertical-align: middle; }
+.data-table tfoot td.num, .data-table td.num { text-align: right; }
