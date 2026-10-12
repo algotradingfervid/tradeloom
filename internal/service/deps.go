@@ -93,6 +93,8 @@ type Service struct {
 
 	wlMu sync.Mutex // serialises watchlist read-modify-write
 
+	pf portfolioGate // RefreshPortfolio single-flight and minimum interval (Ruling 65)
+
 	liveMu sync.Mutex
 	live   map[ticker.Consumer]map[uint32]bool
 }
