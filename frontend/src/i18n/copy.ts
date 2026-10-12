@@ -409,3 +409,25 @@ export const instrumentCopy = {
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
 } as const;
+
+/** P0-5 Task 14: watchlist rows (FR-WATCH-001/005/006). */
+export const watchlistRowsCopy = {
+  empty: 'Search to add instruments',
+  symbolColumn: 'Symbol',
+  priceColumn: 'LTP / Change',
+  actionsColumn: 'Actions',
+  tableLabel: (list: string) => `${list} instruments`,
+  showOnChart: (name: string) => `Show ${name} on chart`,
+  remove: (name: string) => `Remove ${name}`,
+  removed: (name: string, list: string) => `Removed ${name} from ${list}`,
+  undo: 'Undo',
+  polled: 'polled',
+  polledHint: 'Live subscription limit reached — updates every 5 s',
+  stale: 'last known',
+  missing: 'Instrument no longer available',
+  removeMissing: 'Remove unavailable instrument',
+  missingName: 'unavailable instrument',
+  removeFailed: (reason: string) => `Could not remove the instrument: ${reason}`,
+  undoFailed: (reason: string) => `Could not restore the instrument: ${reason}`,
+  moveFailed: (reason: string) => `Could not reorder the watchlist: ${reason}`,
+} as const;
