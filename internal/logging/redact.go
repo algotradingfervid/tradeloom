@@ -3,6 +3,7 @@ package logging
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"reflect"
 	"regexp"
 	"sort"
@@ -26,9 +27,16 @@ var valuePatterns = []struct {
 }{
 	{regexp.MustCompile(`(?i)\b(request_token|access_token|api_secret|checksum|bot_token)=[^&\s"']+`), "${1}=" + Redacted},
 	{regexp.MustCompile(`(?i)\b(authorization["']?\s*[:=]\s*[\["']*)[^"'\r\n\]]+`), "${1}" + Redacted},
-	{regexp.MustCompile(`(?i)("?\b(?:request_token|access_token|api_secret|checksum|bot_token|passphrase)"?\s*[:=]\s*"?)[^"&\s,}\]]+`), "${1}" + Redacted},
+	// Quoted values are removed whole: spaces and escaped quotes included, an unterminated quote runs to
+	// the end of the line (Ruling 78 M7). An unquoted value swallows any leading "[redacted]" marker, so a
+	// value glued to it is still removed (Ruling 78 M6).
+	{regexp.MustCompile(`(?i)("?\b(?:request_token|access_token|api_secret|checksum|bot_token|passphrase)"?\s*[:=]\s*")(?:[^"\\\r\n]|\\.)*"?`), "${1}" + Redacted + `"`},
+	{regexp.MustCompile(`(?i)("?\b(?:request_token|access_token|api_secret|checksum|bot_token|passphrase)"?\s*[:=]\s*)(?:\[+redacted\]+|[^"&\s,}\]])+`), "${1}" + Redacted},
 	{regexp.MustCompile(`\bbot\d{6,}:[A-Za-z0-9_-]{30,}`), "bot" + Redacted},
 }
+
+// redactedRun collapses markers grown by repeated scrubbing ("[[redacted]]]") back to one marker.
+var redactedRun = regexp.MustCompile(`\[+redacted\]+`)
 
 // Redactor removes secrets from log attributes, messages and arbitrary bytes.
 // It is safe for concurrent use.
@@ -75,6 +83,10 @@ func (r *Redactor) Register(v string) {
 				pairs = append(pairs, esc, Redacted)
 			}
 		}
+		// A secret in a URL query (redirects, request dumps) appears query-escaped (Ruling 78 M8).
+		if esc := url.QueryEscape(s); esc != s {
+			pairs = append(pairs, esc, Redacted)
+		}
 	}
 	r.replacer = strings.NewReplacer(pairs...)
 }
@@ -91,7 +103,7 @@ func (r *Redactor) RedactString(s string) string {
 	for _, p := range valuePatterns {
 		s = p.re.ReplaceAllString(s, p.repl)
 	}
-	return s
+	return redactedRun.ReplaceAllString(s, Redacted)
 }
 
 // ScrubBytes is RedactString for file contents (support bundle, backups).
