@@ -36,7 +36,7 @@ func TestSupportFiles(t *testing.T) {
 	}
 	var v map[string]any
 	json.Unmarshal(byName["versions.json"], &v)
-	if v["schema"].(float64) != 1 || v["app_version_last"] != "v0.1.0" {
+	if v["schema"].(float64) != 2 || v["app_version_last"] != "v0.1.0" {
 		t.Fatalf("versions %v", v)
 	}
 	if string(byName["deployment_logs.json"]) != "[]" || byName["settings.json"] == nil {

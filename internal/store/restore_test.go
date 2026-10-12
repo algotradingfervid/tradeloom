@@ -34,7 +34,7 @@ func TestRestore_RoundTripToFreshDataDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Manifest.Schema != 1 || res.Manifest.Counts["watchlists"] != 1 {
+	if res.Manifest.Schema != 2 || res.Manifest.Counts["watchlists"] != 1 {
 		t.Fatalf("manifest %+v", res.Manifest)
 	}
 	if m, err := InspectBackup(archive); err != nil || m.Counts["order_journal"] != 1 {
@@ -114,7 +114,7 @@ func TestRestore_RejectsHostileOrNewerArchives(t *testing.T) {
 		Migrations: withStep3("CREATE TABLE c (y INTEGER);")})
 	nd.Close()
 	newerBytes, _ := os.ReadFile(newerDB)
-	manifestV3 := bytes.Replace(ents["manifest.json"], []byte(`"schema": 1`), []byte(`"schema": 3`), 1)
+	manifestV3 := bytes.Replace(ents["manifest.json"], []byte(`"schema": 2`), []byte(`"schema": 3`), 1)
 
 	cases := []struct {
 		name    string
@@ -167,7 +167,7 @@ func TestRestore_RejectsMoreHostileShapes(t *testing.T) {
 	db.Close()
 	ents := archiveEntries(t, good)
 	man, app := ents["manifest.json"], ents["app.db"]
-	manV2 := bytes.Replace(man, []byte(`"schema": 1`), []byte(`"schema": 0`), 1)
+	manV2 := bytes.Replace(man, []byte(`"schema": 2`), []byte(`"schema": 0`), 1)
 	trunc := app[:len(app)/2]
 
 	mf := tar.Header{Name: "manifest.json"}
