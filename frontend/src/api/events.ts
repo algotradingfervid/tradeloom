@@ -1,6 +1,7 @@
 import { useAppStore, type BootSlice } from '../store/app';
 import { resetOnLogout } from '../store/reset';
 import { notifyUnclaimedJob } from '../store/jobNotices';
+import { useJobsStore } from '../store/jobs';
 import { usePortfolioStore } from '../store/portfolio';
 import { useSessionStore } from '../store/session';
 import { markSettingsBaseline, useSettingsStore } from '../store/settings';
@@ -76,7 +77,10 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
     backend.on('settings.changed', (c) =>
       c.key === SHORTCUTS_CHANGE_KEY ? applyShortcutsEvent(c.value) : useSettingsStore.getState().put(c.key, c.value)),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
-    backend.on('job.progress', (p) => notifyUnclaimedJob(p)),
+    backend.on('job.progress', (p) => {
+      useJobsStore.getState().apply(p);
+      notifyUnclaimedJob(p);
+    }),
     backend.on('order.update', (o) => usePortfolioStore.getState().applyOrderUpdate(o)),
     backend.on('orders.changed', (b) => usePortfolioStore.getState().applySnapshot('orders', b)),
     backend.on('positions.changed', (p) => usePortfolioStore.getState().applySnapshot('positions', p)),
