@@ -66,3 +66,35 @@ export const toastCopy = {
   region: 'Notifications',
   dismiss: 'Dismiss notification',
 } as const;
+
+export const statusCopy = {
+  label: {
+    live: 'Live', connecting: 'Connecting', reconnecting: 'Reconnecting', offline: 'Offline', stopped: 'Not connected',
+    no_data_plan: 'No data plan', logged_out: 'Logged out',
+  },
+  button: (label: string, closed: boolean) => `Market data status: ${label}${closed ? ', market closed' : ''}`,
+  marketClosed: 'Market closed',
+  panelTitle: 'Connection status',
+  reconnect: 'Reconnect now',
+  reconnectRequested: 'Reconnect requested',
+  reconnectWaiting: 'The feed is already retrying on its own; Reconnect now cannot shorten the wait.',
+  logIn: 'Log in',
+  feed: {
+    live: 'Market data: live',
+    connecting: 'Market data: connecting',
+    reconnecting: (attempt: number, next: string) => `Market data: reconnecting (attempt ${attempt}, next retry at ${next})`,
+    offline: 'Market data: offline — retries exhausted or no network',
+    stopped: 'Market data: not connected',
+    no_data_plan: 'Market data: this needs a Kite Connect data plan',
+    logged_out: 'Market data: not connected',
+  },
+  sessionValid: (when: string) => `Session valid until ${when}`,
+  sessionExpired: 'Kite session expired — log in to continue',
+  notLoggedIn: 'Not logged in to Kite',
+  market: (label: string) => `Market: ${label}`,
+  clock: (offset: string, source: string) => `Clock offset ${offset} s (${source})`,
+  clockUnmeasured: 'Clock offset: not measured yet',
+  clockSource: { ticks: 'from ticks', 'http-date': 'from Kite server time', none: 'not measured' },
+  lastTick: (t: string) => `Last tick: ${t}`,
+  clockWarning: (offset: string) => `Your computer clock differs from exchange time by ${offset} s. Tradeloom uses the corrected time.`,
+} as const;
