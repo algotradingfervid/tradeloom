@@ -68,21 +68,61 @@ func (t *allowListTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if !strings.EqualFold(req.URL.Scheme, "https") && !isLoopback(host) {
 		return nil, fmt.Errorf("%w: %s requires https", ErrHostNotAllowed, host)
 	}
+	if err := refuseWrite(req, t.log); err != nil {
+		return nil, err
+	}
+	return t.next.RoundTrip(req)
+}
+
+// refuseWrite is the write deny-list (Ruling 79 M-2, Ruling 83): it returns ErrRequestNotAllowed (and
+// logs the refusal without query or body) for every request other than GET/HEAD that is not in
+// writeAllowed, and for every such request whose URL is Opaque (the request line then comes from Opaque,
+// not Path, and the client never builds one).
+func refuseWrite(req *http.Request, log *slog.Logger) error {
 	method := strings.ToUpper(req.Method)
 	if method == "" {
 		method = http.MethodGet
 	}
-	if method != http.MethodGet && method != http.MethodHead {
-		wire, canon := requestPaths(req.URL)
-		// Match on the canonical path, and require the path on the wire to be exactly that: an encoded,
-		// dotted, doubled-slash or upper-case variant could reach a different route at Kite.
-		if !writeAllowed[method+" "+canon] || wire != canon {
-			// Never log the query or the body: they can carry the API secret, the checksum or a token.
-			t.log.Warn("kite request refused: not on the read-only allow-list", "method", method, "host", host, "path", canon)
-			return nil, fmt.Errorf("%w: %s %s", ErrRequestNotAllowed, method, canon)
-		}
+	if method == http.MethodGet || method == http.MethodHead {
+		return nil
 	}
-	return t.next.RoundTrip(req)
+	host := strings.ToLower(req.URL.Hostname())
+	wire, canon := requestPaths(req.URL)
+	// Match on the canonical path, and require the path on the wire to be exactly that: an encoded,
+	// dotted, doubled-slash or upper-case variant could reach a different route at Kite.
+	if req.URL.Opaque != "" || !writeAllowed[method+" "+canon] || wire != canon {
+		// Never log the query or the body: they can carry the API secret, the checksum or a token.
+		log.Warn("kite request refused: not on the read-only allow-list", "method", method, "host", host, "path", canon)
+		return fmt.Errorf("%w: %s %s", ErrRequestNotAllowed, method, canon)
+	}
+	return nil
+}
+
+// writeGuard applies the write deny-list alone (no host check): kite.New and NewAuth put it under every
+// client they build, whatever transport the caller passed (Ruling 83).
+type writeGuard struct {
+	next http.RoundTripper
+	log  *slog.Logger
+}
+
+func (g *writeGuard) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := refuseWrite(req, g.log); err != nil {
+		return nil, err
+	}
+	return g.next.RoundTrip(req)
+}
+
+// guardWrites returns next (http.DefaultTransport when nil) behind the write deny-list. It is idempotent:
+// a writeGuard, or an allow-list transport (which applies the same deny-list), is returned unchanged.
+func guardWrites(next http.RoundTripper) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	switch next.(type) {
+	case *writeGuard, *allowListTransport:
+		return next
+	}
+	return &writeGuard{next: next, log: slog.Default()}
 }
 
 // requestPaths returns the path as it goes on the request line (from URL.RequestURI, so URL.Opaque wins
