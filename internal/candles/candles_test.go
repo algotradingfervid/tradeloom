@@ -129,3 +129,21 @@ func TestBucketStartGuardAndIST(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestSplitAndResampleDegenerateArgs(t *testing.T) {
+	r := Range{ist(2026, 1, 1, 0, 0), ist(2026, 1, 5, 0, 0)}
+	for _, max := range []time.Duration{0, -time.Hour} {
+		if got := Split(r, max); len(got) != 1 || got[0] != r {
+			t.Fatalf("Split max=%v = %v", max, got)
+		}
+	}
+	if got := Split(Range{r.To, r.From}, 0); got != nil {
+		t.Fatalf("empty = %v", got)
+	}
+	cs := []Candle{{Start: ist(2026, 10, 12, 9, 15), Volume: 1, Complete: true}}
+	for _, m := range []int{0, -5} {
+		if got := ResampleIntraday(cs, m, func(calendar.Date) (time.Time, time.Time, bool) { return time.Time{}, time.Time{}, false }); got != nil {
+			t.Fatalf("targetMin=%d = %v", m, got)
+		}
+	}
+}

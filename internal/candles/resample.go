@@ -50,8 +50,12 @@ func (a *agg) flush(start time.Time, out []Candle) []Candle {
 
 // ResampleIntraday aggregates ascending intraday candles into targetMin-minute buckets anchored
 // at each day's session start (FR-DATA-002, FR-BT-034); the last bucket of a session is cut at the
-// session end (e.g. 60-minute: 09:15, 10:15, …, 15:15–15:30). Candles outside the session drop.
+// session end (e.g. 60-minute: 09:15, 10:15, …, 15:15–15:30). Candles outside the session drop
+// (unlike DailyFromIntraday); targetMin <= 0 returns nil.
 func ResampleIntraday(cs []Candle, targetMin int, session SessionFunc) []Candle {
+	if targetMin <= 0 {
+		return nil
+	}
 	step := time.Duration(targetMin) * time.Minute
 	var out []Candle
 	var a agg
@@ -80,6 +84,7 @@ func ResampleIntraday(cs []Candle, targetMin int, session SessionFunc) []Candle 
 
 // DailyFromIntraday aggregates intraday candles per IST calendar date; a special session (e.g.
 // an evening Muhurat session) therefore belongs to its own date's day candle (FR-DATA-002 AC5).
+// It includes every candle given, including out-of-session ones, which ResampleIntraday drops.
 func DailyFromIntraday(cs []Candle) []Candle {
 	return byPeriod(cs, func(t time.Time) time.Time { return clock.MidnightIST(t) })
 }

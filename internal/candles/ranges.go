@@ -52,8 +52,15 @@ func Subtract(want Range, have []Range) []Range {
 	return append(out, Range{cur, want.To})
 }
 
-// Split cuts r into consecutive windows of at most max.
+// Split cuts r into consecutive windows of at most max. If max <= 0, a non-empty r is returned
+// whole (nil for an empty r).
 func Split(r Range, max time.Duration) []Range {
+	if !r.To.After(r.From) {
+		return nil
+	}
+	if max <= 0 {
+		return []Range{r}
+	}
 	var out []Range
 	for f := r.From; f.Before(r.To); f = f.Add(max) {
 		t := f.Add(max)
