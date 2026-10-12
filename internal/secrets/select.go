@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 )
 
 // Mode is what the app must do at start to get a Store.
@@ -57,13 +58,26 @@ func Detect(secretsFile string, probe func() error) Detection {
 // then deletes it from from; when from is an *EncFile its file is removed (FR-ACCT-013 AC3).
 // If any copy fails, keys already copied are removed from to and from is left untouched.
 func Migrate(from, to Store) error {
+	if reflect.TypeOf(from) == reflect.TypeOf(to) && reflect.TypeOf(from).Comparable() && from == to {
+		return errors.New("secrets: migrate source and target are the same store")
+	}
+	type prior struct {
+		key     Key
+		value   string
+		existed bool
+	}
+	var touched []prior // every key we may have changed in to, recorded BEFORE its Set
 	var copied []Key
 	rollback := func(cause error) error {
-		var errs []error
-		for _, k := range copied {
-			errs = append(errs, to.Delete(k))
+		errs := []error{cause}
+		for _, p := range touched {
+			if p.existed {
+				errs = append(errs, to.Set(p.key, p.value))
+			} else {
+				errs = append(errs, to.Delete(p.key))
+			}
 		}
-		return errors.Join(append([]error{cause}, errs...)...)
+		return errors.Join(errs...)
 	}
 	for _, k := range AllKeys {
 		v, err := from.Get(k)
@@ -72,6 +86,15 @@ func Migrate(from, to Store) error {
 		}
 		if err != nil {
 			return rollback(fmt.Errorf("secrets: migrate read %s from %s: %w", k, from.Backend(), err))
+		}
+		old, err := to.Get(k)
+		switch {
+		case err == nil:
+			touched = append(touched, prior{k, old, true})
+		case errors.Is(err, ErrNotFound):
+			touched = append(touched, prior{k, "", false})
+		default:
+			return rollback(fmt.Errorf("secrets: migrate snapshot %s in %s: %w", k, to.Backend(), err))
 		}
 		if err := to.Set(k, v); err != nil {
 			return rollback(fmt.Errorf("secrets: migrate write %s to %s: %w", k, to.Backend(), err))
@@ -82,7 +105,10 @@ func Migrate(from, to Store) error {
 		}
 	}
 	if f, ok := from.(*EncFile); ok {
-		return f.Destroy()
+		if err := f.Destroy(); err != nil {
+			return fmt.Errorf("secrets: migrated, but removing the source file failed: %w", err)
+		}
+		return nil
 	}
 	for _, k := range copied {
 		if err := from.Delete(k); err != nil {
