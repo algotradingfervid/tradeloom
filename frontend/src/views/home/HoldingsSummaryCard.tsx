@@ -1,0 +1,79 @@
+import { useId, useMemo, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
+import { Button } from '../../components/Button';
+import { Skeleton } from '../../components/Skeleton';
+import { Signed } from '../../components/Values';
+import { holdingsCardCopy as copy, listCopy } from '../../i18n/copy';
+import { formatMoney, toneOf } from '../../i18n/format';
+import { holdingRow, liveLtp, summarizeHoldings } from '../../portfolio/calc';
+import { usePortfolioResource } from '../../store/portfolio';
+import { useSessionStore } from '../../store/session';
+import { useTicksStore } from '../../store/ticks';
+import './home.css';
+
+export const HOLDINGS_REFRESH_MS = 300_000;
+
+/**
+ * FR-HOME-002. Totals are Go's `HoldingsSummary` (integer paise, every row incl. out-of-scope ones, P0-3 Ruling 38)
+ * plus each row's live-LTP difference in paise; quotes older than this session are ignored (Ruling 93, via liveLtp).
+ */
+export function HoldingsSummaryCard() {
+  const titleId = useId();
+  // Reads the Go cache on mount and every 5 minutes; fills arrive in between as "holdings.changed" snapshots
+  // (order.update is a notification only, P0-3 Ruling 71).
+  const { resource, reload } = usePortfolioResource('holdings', { pollMs: HOLDINGS_REFRESH_MS });
+  const latest = useTicksStore((s) => s.latest);
+  const sessionStartMs = useSessionStore((s) => s.session?.loggedInAtMs ?? 0);
+  const rows = useMemo(
+    () => resource.data.rows.map((h) => holdingRow(h, liveLtp(latest[h.token], sessionStartMs))),
+    [resource.data, latest, sessionStartMs],
+  );
+  const s = summarizeHoldings(resource.data.summary, rows);
+  // A failed re-read after a successful one keeps the shown figures (Task 10 M8); the store keeps the data on error.
+  const hasData = resource.data.asOfMs > 0;
+
+  let body: ReactNode;
+  if (resource.status === 'idle') {
+    body = <Skeleton rows={3} label={copy.loading} />;
+  } else if (resource.status === 'error' && !hasData) {
+    body = (
+      <div className="card__error" role="alert">
+        <p>{copy.error(resource.error ?? '')}</p>
+        <Button onClick={() => void reload()}>{listCopy.retry}</Button>
+      </div>
+    );
+  } else if (s.empty || rows.length === 0) {
+    body = <Link to="/holdings" className="holdings-card__body" title={copy.open}>{copy.empty}</Link>;
+  } else {
+    const pnlTone = toneOf(s.pnl);
+    body = (
+      <Link to="/holdings" className="holdings-card__body" title={copy.open}>
+        <dl className="holdings-card__grid">
+          <div><dt>{copy.currentValue}</dt><dd>{formatMoney(s.currentValue)}</dd></div>
+          <div><dt>{copy.investment}</dt><dd>{formatMoney(s.investment)}</dd></div>
+          <div>
+            <dt>{copy.pnl}</dt>
+            <dd className={`tone-${pnlTone}`}>
+              {pnlTone !== 'flat' && <span aria-hidden="true">{pnlTone === 'up' ? '▲ ' : '▼ '}</span>}
+              <Signed value={s.pnl} kind="money" /> (<Signed value={s.pnlPct} kind="percent" />)
+            </dd>
+          </div>
+          <div><dt>{copy.dayChange}</dt><dd><Signed value={s.dayChange} kind="money" /></dd></div>
+        </dl>
+      </Link>
+    );
+  }
+
+  return (
+    <section className="card holdings-card" aria-labelledby={titleId}>
+      <h2 id={titleId} className="card__title">{copy.title}</h2>
+      {body}
+      {resource.status === 'error' && hasData && (
+        <div className="card__notice" role="status">
+          <p>{copy.staleNotice(resource.error ?? '')}</p>
+          <Button onClick={() => void reload()}>{listCopy.retry}</Button>
+        </div>
+      )}
+    </section>
+  );
+}
