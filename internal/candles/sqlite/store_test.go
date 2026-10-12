@@ -234,3 +234,44 @@ func TestOpenRequiresSessionsOrCalendar(t *testing.T) {
 		t.Fatal("Open without Sessions or Calendar must fail")
 	}
 }
+
+// Fix round 1, item 1: an incomplete historical (forming) candle never downgrades a complete row,
+// so the month's checksum stays correct.
+func TestIncompleteHistoricalDoesNotDowngradeComplete(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTest(t, ist(2026, 10, 12, 16, 0))
+	at := ist(2026, 10, 12, 10, 0)
+	done := minute(at, 0, 100, true)
+	if err := s.Upsert(ctx, 1, candles.Minute, []candles.Candle{done}, candles.SourceHistorical); err != nil {
+		t.Fatal(err)
+	}
+	sum0, _ := s.Checksum(ctx, 1, candles.Minute, 202610)
+	forming := minute(at, 0, 150, false)
+	if err := s.Upsert(ctx, 1, candles.Minute, []candles.Candle{forming}, candles.SourceHistorical); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Read(ctx, 1, candles.Minute, at, at.Add(time.Minute))
+	if len(got) != 1 || !got[0].Complete || got[0].Open != 100 {
+		t.Fatalf("stored %+v, want the complete candle", got)
+	}
+	if sum1, _ := s.Checksum(ctx, 1, candles.Minute, 202610); sum1 != sum0 || sum0 == "" {
+		t.Fatalf("checksum %q -> %q", sum0, sum1)
+	}
+	// The stored checksum is still the hash of the stored rows: recomputing gives the same value.
+	if err := s.Upsert(ctx, 1, candles.Minute, []candles.Candle{done}, candles.SourceHistorical); err != nil {
+		t.Fatal(err)
+	}
+	if sum2, _ := s.Checksum(ctx, 1, candles.Minute, 202610); sum2 != sum0 {
+		t.Fatal("checksum was stale")
+	}
+	// An incomplete row is still replaced by a later incomplete or complete one.
+	at2 := at.Add(time.Minute)
+	for _, c := range []candles.Candle{minute(at2, 0, 1, false), minute(at2, 0, 2, false), minute(at2, 0, 3, true)} {
+		if err := s.Upsert(ctx, 1, candles.Minute, []candles.Candle{c}, candles.SourceHistorical); err != nil {
+			t.Fatal(err)
+		}
+		if got, _ := s.Read(ctx, 1, candles.Minute, at2, at2.Add(time.Minute)); len(got) != 1 || got[0].Open != c.Open {
+			t.Fatalf("stored %+v, want open %v", got, c.Open)
+		}
+	}
+}

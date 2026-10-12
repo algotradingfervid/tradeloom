@@ -72,7 +72,7 @@ func (s *Store) write(ctx context.Context, token uint32, iv candles.Interval, wi
 	st, err := tx.PrepareContext(ctx, `INSERT INTO `+t+`(token, ts, o, h, l, c, v, oi, src, complete) VALUES(?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(token, ts) DO UPDATE SET o=excluded.o, h=excluded.h, l=excluded.l, c=excluded.c, v=excluded.v,
 		oi=excluded.oi, src=excluded.src, complete=excluded.complete
-		WHERE NOT (excluded.src = 1 AND `+t+`.complete = 1)`)
+		WHERE NOT (`+t+`.complete = 1 AND (excluded.src = 1 OR excluded.complete = 0))`)
 	if err != nil {
 		return err
 	}
