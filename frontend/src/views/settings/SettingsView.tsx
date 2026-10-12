@@ -6,6 +6,7 @@ import { NotFoundView } from '../NotFoundView';
 import { AboutGroup } from './AboutGroup';
 import { AppearanceGroup } from './AppearanceGroup';
 import { ChartGroup } from './ChartGroup';
+import { DataGroup } from './DataGroup';
 import { SETTINGS_GROUPS, type SettingsGroupDef, type SettingsGroupId } from './groups';
 import { KiteGroup } from './KiteGroup';
 import './settings.css';
@@ -15,6 +16,7 @@ export const GROUP_COMPONENTS: Partial<Record<SettingsGroupId, ComponentType>> =
   kite: KiteGroup,
   appearance: AppearanceGroup,
   chart: ChartGroup,
+  data: DataGroup,
   about: AboutGroup,
 };
 

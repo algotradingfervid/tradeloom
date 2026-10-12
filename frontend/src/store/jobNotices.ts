@@ -28,10 +28,12 @@ export function claimJob(jobId: string): void {
 }
 
 /**
- * Task 16 / Task 15 usage around a call that starts a job (Go runs one job at a time):
+ * Task 16 / Task 15 usage around a call that starts a job (Go runs one job at a time) — the done-flag pattern
+ * (Ruling 86), so the window is closed exactly once whatever the call does:
+ *   let done = false;
  *   beginJobClaim();
- *   try { const id = await backend.data.backupNow(folder, candles); endJobClaim(id); }
- *   catch (e) { endJobClaim(); … }
+ *   try { const id = await backend.data.backupNow(folder, candles); done = true; endJobClaim(id); }
+ *   finally { if (!done) endJobClaim(); }
  * A job that finishes before the id comes back is then still treated as the caller's.
  */
 export function beginJobClaim(): void {

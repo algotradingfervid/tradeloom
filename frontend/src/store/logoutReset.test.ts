@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { JobProgress } from '../api/backend';
 import { claimJob, notifyUnclaimedJob } from './jobNotices';
+import { useJobsStore } from './jobs';
 import { resetOnLogout } from './reset';
 import { pushToast, useToastStore } from './toasts';
 
@@ -17,5 +18,11 @@ describe('logout reset (Ruling 85)', () => {
     resetOnLogout();
     notifyUnclaimedJob({ jobId: 'job-1', finished: true, error: 'disk full' } as JobProgress);
     expect(useToastStore.getState().visible).toEqual([]);
+  });
+
+  it('keeps job progress (Task 16 jobs store): a running backup or restore is not account data', () => {
+    useJobsStore.getState().apply({ jobId: 'restore-1', kind: 'restore', stage: 'restoring', done: 3, total: 4, finished: false, error: '', resultPath: '' });
+    resetOnLogout();
+    expect(useJobsStore.getState().jobs['restore-1']?.stage).toBe('restoring');
   });
 });

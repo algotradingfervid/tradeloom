@@ -142,3 +142,19 @@ export function formatExpiry(expiresAt: Num, now: number): string {
   if (delta === 1) return `${time} tomorrow`;
   return formatDateTimeLong(expiresAt);
 }
+
+const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+
+/** Binary units (1 KB = 1024 B): two decimals below 10, one decimal otherwise. */
+export function formatBytes(v: Num): string {
+  if (!isNum(v) || v < 0) return DASH;
+  let n = v;
+  let i = 0;
+  while (n >= 1024 && i < BYTE_UNITS.length - 1) {
+    n /= 1024;
+    i += 1;
+  }
+  if (i === 0) return `${grouping(0).format(n)} B`;
+  const digits = n < 10 ? 2 : 1;
+  return `${grouping(digits).format(roundTo(n, digits))} ${BYTE_UNITS[i]}`;
+}
