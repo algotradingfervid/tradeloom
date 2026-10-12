@@ -586,6 +586,32 @@ export const watchlistRowsCopy = {
   readOnlyMisuse: 'WatchlistRows: the list is not the active watchlist; rendering it read-only (store actions act on the active list)',
 } as const;
 
+/** P0-5 Task 16: watchlist panel, tabs, create/rename/delete (FR-WATCH-001/002/003). */
+export const watchlistPanelCopy = {
+  region: 'Watchlist',
+  heading: 'Watchlist',
+  tablist: 'Watchlists',
+  newList: 'New watchlist +',
+  newName: 'New watchlist name',
+  renameField: 'Watchlist name',
+  renameHint: 'Double-click or F2 to rename',
+  menu: (list: string) => `Actions for ${list}`,
+  rename: 'Rename',
+  loading: 'Loading watchlists…',
+  loadFailed: (reason: string) => `Could not load watchlists: ${reason}`,
+  retry: 'Retry',
+  switchFailed: (reason: string) => `Could not switch watchlist: ${reason}`,
+  deleteLabel: (list: string) => `Delete watchlist ${list}`,
+  deleteTitle: 'Delete watchlist',
+  deleteMessage: (list: string, count: number) => `Delete watchlist ${list} and its ${count} ${count === 1 ? 'instrument' : 'instruments'}?`,
+  deleteConfirm: 'Delete',
+  deleteFailed: (list: string, reason: string) => `Could not delete ${list}: ${reason}`,
+  addInstruments: 'Add instruments…',
+  addTitle: (list: string) => `Add to ${list}`,
+  addedMany: (n: number, list: string) => `Added ${n} ${n === 1 ? 'instrument' : 'instruments'} to ${list}`,
+  addFailed: (list: string, reason: string) => `Could not add to ${list}: ${reason}`,
+} as const;
+
 /** Shared multi-select instrument picker (FR-WATCH-007, P0-5 Task 17). Count and no-match text: instrumentSearchCopy. */
 export const instrumentPickerCopy = {
   title: 'Add instruments',

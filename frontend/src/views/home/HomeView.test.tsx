@@ -4,6 +4,9 @@ import { demoSeed, emptySeed, FIXED_NOW, holdingA, holdingB, holdingsOf, kiteOrd
 import { createMockBackend } from '../../api/mock/index';
 import { setRunStartedMs } from '../../market/quotes';
 import { renderApp } from '../../test/render';
+import { watchlistItemOf } from '../../api/mock/market';
+import { SBIN } from '../../instruments/fixtures';
+import { DASHBOARD_CONTEXT, useChartContexts } from '../../store/chartContextsStore';
 
 afterEach(() => vi.useRealTimers());
 
@@ -126,5 +129,17 @@ describe('FR-HOME-001 dashboard layout', () => {
     const right = await screen.findByRole('complementary', { name: 'Watchlists and widgets' });
     // P0-5 Task 16 renames the slot's region to its panel ("Watchlist"); either name is the watchlist slot.
     expect(within(right).getByRole('region', { name: /^Watchlists?$/ })).toBeInTheDocument();
+  });
+});
+
+describe('FR-WATCH-001 watchlist panel on Home (P0-5 Task 16)', () => {
+  it('clicking a watchlist row shows that instrument on the dashboard chart', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.state.watchlists = { lists: [{ id: 'wl-1', name: 'Watchlist 1', items: [watchlistItemOf(SBIN)] }], activeId: 'wl-1' };
+    const { user } = renderApp({ backend });
+    const panel = await screen.findByRole('region', { name: 'Watchlist' });
+    await vi.waitFor(() => expect(useChartContexts.getState().contexts[DASHBOARD_CONTEXT]?.identifier).toBe('NSE:NIFTY 50'));
+    await user.click(await within(panel).findByRole('button', { name: 'Show SBIN on chart' }));
+    expect(useChartContexts.getState().contexts[DASHBOARD_CONTEXT]?.identifier).toBe('NSE:SBIN');
   });
 });
