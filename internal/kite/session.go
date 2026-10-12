@@ -1,0 +1,446 @@
+// internal/kite/session.go
+package kite
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	kiteconnect "github.com/zerodha/gokiteconnect/v4"
+
+	"tradeloom/internal/bus"
+	"tradeloom/internal/clock"
+	"tradeloom/internal/logging"
+	"tradeloom/internal/secrets"
+	"tradeloom/internal/settings"
+	"tradeloom/internal/store"
+)
+
+const (
+	defaultListenerTimeout = 10 * time.Minute
+	expiryPoll             = 5 * time.Second
+	probeAttempts          = 3
+	probeRetry             = 30 * time.Second
+	msgExpired             = "Kite session expired — log in to continue."
+)
+
+// secretsTimeout bounds every secret-store call made by the Session: a locked keyring collection can
+// block on an unlock prompt that never appears (P0-1 carry-forward), and these calls run on the UI path.
+// A variable only so tests can shorten it.
+var secretsTimeout = secrets.ProbeTimeout
+
+// boundedSecrets runs each call of the wrapped store on its own goroutine and gives up after
+// secretsTimeout with an error wrapping secrets.ErrUnavailable. A call that answers late still
+// completes in the background; its result is discarded.
+type boundedSecrets struct{ next secrets.Store }
+
+func within[T any](name string, fn func() (T, error)) (T, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), secretsTimeout)
+	defer cancel()
+	type result struct {
+		v   T
+		err error
+	}
+	ch := make(chan result, 1)
+	logging.Go(name, func() {
+		v, err := fn()
+		ch <- result{v, err}
+	})
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-ctx.Done():
+		var zero T
+		return zero, fmt.Errorf("%w: the secret store did not answer within %v", secrets.ErrUnavailable, secretsTimeout)
+	}
+}
+
+func (b boundedSecrets) Get(k secrets.Key) (string, error) {
+	v, err := within("kite.secrets.get", func() (string, error) { return b.next.Get(k) })
+	if err == nil {
+		logging.RegisterSecret(v)
+	}
+	return v, err
+}
+
+func (b boundedSecrets) Set(k secrets.Key, v string) error {
+	logging.RegisterSecret(v)
+	_, err := within("kite.secrets.set", func() (struct{}, error) { return struct{}{}, b.next.Set(k, v) })
+	return err
+}
+
+func (b boundedSecrets) Delete(k secrets.Key) error {
+	_, err := within("kite.secrets.delete", func() (struct{}, error) { return struct{}{}, b.next.Delete(k) })
+	return err
+}
+
+func (b boundedSecrets) Backend() string { return b.next.Backend() }
+
+type FeedControl interface {
+	Start(ctx context.Context, apiKey, accessToken string) error
+	Stop()
+}
+
+type LimiterControl interface {
+	PauseAll(reason string)
+	Resume()
+}
+
+type TokenSink interface {
+	SetAPIKey(key string)
+	SetAccessToken(token string)
+}
+
+type ProfileReader interface {
+	Profile(ctx context.Context) (kiteconnect.UserProfile, error)
+}
+
+type Prober interface {
+	Probe(ctx context.Context, apiKey, accessToken string) DataPlan
+}
+
+type SessionDeps struct {
+	Settings        *settings.Settings
+	Secrets         secrets.Store
+	Repo            *store.SessionsRepo
+	Clock           clock.Clock
+	Bus             *bus.Bus
+	Auth            func(apiKey string) AuthAPI
+	Profiles        ProfileReader
+	Tokens          TokenSink
+	Limiter         LimiterControl
+	Feed            FeedControl
+	Probe           Prober
+	Log             *slog.Logger
+	ListenerTimeout time.Duration
+	NewID           func() string
+}
+
+// Session owns the Kite login, the token lifecycle and the capability probe (ARCH §5.2, FR-ACCT-005/006/007).
+type Session struct {
+	d SessionDeps
+
+	mu     sync.Mutex
+	st     SessionState
+	rec    *TokenRecord
+	prior  State // state to fall back to when a login attempt fails or times out
+	lb     *loopback
+	nonces map[string]bool
+	done   map[string]bool // request tokens already exchanged in this run (reload-safe)
+	gen    int             // login attempt generation
+	runCtx context.Context
+
+	exMu sync.Mutex // serialises token exchange and logout
+}
+
+func NewSession(d SessionDeps) *Session {
+	if d.NewID == nil {
+		d.NewID = func() string { return uuid.Must(uuid.NewV7()).String() }
+	}
+	if d.ListenerTimeout == 0 {
+		d.ListenerTimeout = defaultListenerTimeout
+	}
+	if d.Log == nil {
+		d.Log = slog.Default()
+	}
+	if d.Secrets != nil {
+		if _, ok := d.Secrets.(boundedSecrets); !ok {
+			d.Secrets = boundedSecrets{next: d.Secrets}
+		}
+	}
+	return &Session{
+		d:      d,
+		st:     SessionState{State: StateNoCredentials, DataPlan: PlanUnknown},
+		prior:  StateLoggedOut,
+		nonces: map[string]bool{},
+		done:   map[string]bool{},
+		runCtx: context.Background(),
+	}
+}
+
+func (s *Session) State() SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st
+}
+
+func (s *Session) set(st SessionState) SessionState {
+	s.mu.Lock()
+	s.st = st
+	s.mu.Unlock()
+	bus.Publish(s.d.Bus, TopicSessionState, st)
+	return st
+}
+
+func (s *Session) ctx() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.runCtx
+}
+
+func (s *Session) apiKey() string { return settings.Get(s.d.Settings, SettingAPIKey) }
+
+func (s *Session) secret() (string, bool) {
+	v, err := s.d.Secrets.Get(secrets.KeyAPISecret)
+	return v, err == nil && v != ""
+}
+
+func (s *Session) configured() bool {
+	_, ok := s.secret()
+	return ok && s.apiKey() != ""
+}
+
+// idle is the resting state when no valid token exists.
+func (s *Session) idle(code, msg string) SessionState {
+	st := SessionState{State: StateLoggedOut, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msg}
+	if !s.configured() {
+		st.State = StateNoCredentials
+	}
+	return st
+}
+
+func readyState(rec TokenRecord, plan DataPlan, ackRequired, offline bool) SessionState {
+	return SessionState{State: StateReady, SessionID: rec.SessionID, UserID: rec.UserID, LoggedInAtMs: rec.LoggedInAtMs,
+		ExpiresAtMs: rec.ExpiresAtMs, DataPlan: plan, RiskAckRequired: ackRequired, Offline: offline}
+}
+
+func (s *Session) CredentialsInfo() CredentialsInfo {
+	port := settings.Get(s.d.Settings, SettingRedirectPort)
+	return CredentialsInfo{Configured: s.configured(), APIKeyMasked: MaskKey(s.apiKey()), Port: port,
+		RedirectURL: RedirectURL(port), SecretBackend: s.d.Secrets.Backend()}
+}
+
+// SaveCredentials validates and stores the API key (settings) and API secret (secret store) (FR-ACCT-005).
+func (s *Session) SaveCredentials(ctx context.Context, apiKey, apiSecret string) (SessionState, error) {
+	k, sec := NormalizeCredential(apiKey), NormalizeCredential(apiSecret)
+	if err := ValidateAPIKey(k); err != nil {
+		return s.State(), err
+	}
+	if err := ValidateAPISecret(sec); err != nil {
+		return s.State(), err
+	}
+	if k == sec {
+		return s.State(), &LoginError{Code: CodeInvalidCredentials, Message: "The API key and the API secret are identical. Paste each from its own field in the Kite developer console."}
+	}
+	switch s.State().State {
+	case StateLoggingIn:
+		return s.State(), &LoginError{Code: CodeLoginBusy, Message: "Finish or cancel the current login before changing credentials."}
+	case StateReady:
+		return s.State(), &LoginError{Code: CodeAlreadyLoggedIn, Message: "Log out before changing the Kite credentials."}
+	}
+	logging.RegisterSecret(sec)
+	if err := s.d.Secrets.Set(secrets.KeyAPISecret, sec); err != nil {
+		return s.State(), &LoginError{Code: CodeSecretStore, Message: "The API secret could not be saved to the secret store: " + err.Error()}
+	}
+	if err := settings.Set(ctx, s.d.Settings, SettingAPIKey, k); err != nil {
+		return s.State(), err
+	}
+	s.d.Tokens.SetAPIKey(k)
+	s.d.Log.Info("kite credentials saved", "api_key", MaskKey(k), "secret_backend", s.d.Secrets.Backend())
+	return s.set(s.idle("", "")), nil
+}
+
+// Restore resumes a still-valid session at startup without asking for a login (FR-ACCT-006 AC4).
+func (s *Session) Restore(ctx context.Context) SessionState {
+	if !s.configured() {
+		s.d.Limiter.PauseAll("no credentials")
+		return s.set(s.idle("", ""))
+	}
+	apiKey := s.apiKey()
+	s.d.Tokens.SetAPIKey(apiKey)
+	raw, err := s.d.Secrets.Get(secrets.KeyAccessToken)
+	if err != nil {
+		if !errors.Is(err, secrets.ErrNotFound) {
+			s.d.Log.Warn("reading the access token failed", "err", err)
+		}
+		s.d.Limiter.PauseAll("logged out")
+		return s.set(s.idle("", ""))
+	}
+	var rec TokenRecord
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil || rec.AccessToken == "" || rec.SessionID == "" {
+		_ = s.d.Secrets.Delete(secrets.KeyAccessToken)
+		s.d.Limiter.PauseAll("logged out")
+		return s.set(s.idle("", ""))
+	}
+	logging.RegisterSecret(rec.AccessToken)
+	if s.d.Clock.Now().UnixMilli() >= rec.ExpiresAtMs {
+		return s.endSession(rec, CodeSessionExpired)
+	}
+	s.d.Tokens.SetAccessToken(rec.AccessToken)
+	s.d.Limiter.Resume()
+	offline := false
+	if _, err := s.d.Profiles.Profile(ctx); err != nil {
+		if isTokenError(err) {
+			return s.endSession(rec, CodeTokenRejected)
+		}
+		offline = true
+		s.d.Log.Warn("Kite unreachable at startup; continuing with cached data", "kind", errKind(err))
+	}
+	plan, ackRequired := PlanUnknown, true
+	switch row, err := s.d.Repo.Get(ctx, rec.SessionID); {
+	case err == nil:
+		if row.DataPlan != "" {
+			plan = DataPlan(row.DataPlan)
+		}
+		ackRequired = row.RiskAckAtMs == 0
+	case errors.Is(err, store.ErrNoRow):
+		// The token outlived its row (e.g. app.db restored from a backup): recreate it so the risk
+		// acknowledgement and the data plan of this session can be persisted.
+		if ierr := s.insertRow(ctx, rec, plan); ierr != nil {
+			s.d.Log.Warn("recreating the session row failed", "err", ierr)
+		}
+	default:
+		s.d.Log.Warn("reading the session row failed", "err", err)
+	}
+	s.mu.Lock()
+	s.rec = &rec
+	s.mu.Unlock()
+	st := s.set(readyState(rec, plan, ackRequired, offline))
+	s.afterReady(apiKey, rec)
+	return st
+}
+
+// AckRisk records the FR-SHELL-020 acknowledgement for the current session id.
+func (s *Session) AckRisk(ctx context.Context) (SessionState, error) {
+	st := s.State()
+	if st.State != StateReady {
+		return st, &LoginError{Code: CodeNotLoggedIn, Message: "Log in to Kite first."}
+	}
+	at := s.d.Clock.Now().UnixMilli()
+	err := s.d.Repo.AckRisk(ctx, st.SessionID, at)
+	if errors.Is(err, store.ErrNoRow) {
+		// No row to record against (Ruling 37): recreate it from the current session, then record.
+		rec := TokenRecord{SessionID: st.SessionID, UserID: st.UserID, LoggedInAtMs: st.LoggedInAtMs, ExpiresAtMs: st.ExpiresAtMs}
+		if err = s.insertRow(ctx, rec, st.DataPlan); err == nil {
+			err = s.d.Repo.AckRisk(ctx, st.SessionID, at)
+		}
+	}
+	if err != nil {
+		// Never report an acknowledgement that was not persisted (FR-SHELL-020).
+		return st, fmt.Errorf("kite: recording the risk acknowledgement failed: %w", err)
+	}
+	s.mu.Lock()
+	if s.st.SessionID == st.SessionID {
+		s.st.RiskAckRequired = false
+	}
+	st = s.st
+	s.mu.Unlock()
+	bus.Publish(s.d.Bus, TopicSessionState, st)
+	return st, nil
+}
+
+// afterReady runs the capability probe and starts the ticker unless the key has no data plan (FR-ACCT-007).
+func (s *Session) afterReady(apiKey string, rec TokenRecord) {
+	ctx := s.ctx()
+	logging.Go("kite.session.probe", func() {
+		plan := PlanUnknown
+		for attempt := 0; attempt < probeAttempts && plan == PlanUnknown; attempt++ {
+			if attempt > 0 {
+				retry := s.d.Clock.At(s.d.Clock.Now().Add(probeRetry))
+				select {
+				case <-ctx.Done():
+					retry.Stop()
+					return
+				case <-retry.C():
+				}
+			}
+			if !s.isCurrent(rec.SessionID) {
+				return
+			}
+			plan = s.d.Probe.Probe(ctx, apiKey, rec.AccessToken)
+		}
+		if !s.applyPlan(rec.SessionID, plan) {
+			return
+		}
+		if plan == PlanNone {
+			s.d.Log.Info("API key has no market-data permission; running in orders-and-portfolio-only mode")
+			return
+		}
+		if err := s.d.Feed.Start(ctx, apiKey, rec.AccessToken); err != nil {
+			s.d.Log.Warn("ticker start failed", "err", err)
+		}
+	})
+}
+
+// insertRow writes the sessions row for rec; a row that already exists counts as success.
+func (s *Session) insertRow(ctx context.Context, rec TokenRecord, plan DataPlan) error {
+	err := s.d.Repo.Insert(ctx, store.SessionRow{ID: rec.SessionID, UserID: rec.UserID, LoggedInAtMs: rec.LoggedInAtMs,
+		ExpiresAtMs: rec.ExpiresAtMs, DataPlan: string(plan)})
+	if errors.Is(err, store.ErrDuplicate) {
+		return nil
+	}
+	return err
+}
+
+func (s *Session) isCurrent(sessionID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.st.State == StateReady && s.st.SessionID == sessionID
+}
+
+func (s *Session) applyPlan(sessionID string, plan DataPlan) bool {
+	s.mu.Lock()
+	if s.st.State != StateReady || s.st.SessionID != sessionID {
+		s.mu.Unlock()
+		return false
+	}
+	s.st.DataPlan = plan
+	st := s.st
+	s.mu.Unlock()
+	if err := s.d.Repo.SetDataPlan(context.Background(), sessionID, string(plan)); errors.Is(err, store.ErrNoRow) {
+		s.d.Log.Warn("recording the data plan failed: no session row", "session_id", sessionID)
+	} else if err != nil {
+		s.d.Log.Warn("recording the data plan failed", "err", err)
+	}
+	bus.Publish(s.d.Bus, TopicSessionState, st)
+	return true
+}
+
+// endSession performs the side effects of a session ending through expiry or rejection.
+// Callers guarantee exclusivity (the state is no longer ready).
+func (s *Session) endSession(rec TokenRecord, code string) SessionState {
+	s.d.Limiter.PauseAll("session expired")
+	s.d.Feed.Stop()
+	s.d.Tokens.SetAccessToken("")
+	if err := s.d.Secrets.Delete(secrets.KeyAccessToken); err != nil && !errors.Is(err, secrets.ErrNotFound) {
+		s.d.Log.Warn("deleting the access token failed", "err", err)
+	}
+	s.endRow(rec.SessionID, code)
+	s.mu.Lock()
+	s.rec = nil
+	s.mu.Unlock()
+	s.d.Log.Info("kite session ended", "reason", code)
+	return s.set(SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired})
+}
+
+func (s *Session) endRow(sessionID, reason string) {
+	err := s.d.Repo.End(context.Background(), sessionID, s.d.Clock.Now().UnixMilli(), reason)
+	switch {
+	case errors.Is(err, store.ErrNoRow):
+		s.d.Log.Info("no session row to end", "session_id", sessionID, "reason", reason)
+	case err != nil:
+		s.d.Log.Warn("recording the session end failed", "err", err)
+	}
+}
+
+func isTokenError(err error) bool {
+	var ke kiteconnect.Error
+	if errors.As(err, &ke) {
+		return ke.ErrorType == kiteconnect.TokenError
+	}
+	return Classify(err) == KindSession
+}
+
+// errKind is a log-safe description of an error (never the message of a transport error, which may hold a URL).
+func errKind(err error) string {
+	var ke kiteconnect.Error
+	if errors.As(err, &ke) {
+		return ke.ErrorType
+	}
+	return "transport"
+}
