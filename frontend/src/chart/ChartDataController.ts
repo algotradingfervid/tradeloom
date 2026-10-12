@@ -57,7 +57,10 @@ export type ChartDataSink = Pick<
  * work. Session expiry is not a reset: an answer that arrives while the same user's session is expired still applies.
  */
 const resetHooks = new Set<() => void>();
-registerReset(() => { for (const reset of [...resetHooks]) reset(); });
+registerReset(() => { for (const reset of [...resetHooks]) reset(); }, {
+  name: 'chartControllers',
+  inspect: () => ({ mounted: resetHooks.size }),
+});
 
 const sessionUser = (): string => useSessionStore.getState().session?.userId ?? '';
 
