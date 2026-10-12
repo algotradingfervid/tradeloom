@@ -86,3 +86,62 @@ func TestCreateSupportBundle_RejectsEscapingNames(t *testing.T) {
 		t.Fatalf("temp files left: %v", left)
 	}
 }
+
+func TestCreateSupportBundle_BracketLogDirAndSymlinks(t *testing.T) {
+	base := t.TempDir()
+	logDir := filepath.Join(base, "lo[g]s")
+	os.MkdirAll(logDir, 0o700)
+	os.WriteFile(filepath.Join(logDir, "tradeloom.log"), []byte("x\n"), 0o600)
+	os.Symlink(filepath.Join(logDir, "tradeloom.log"), filepath.Join(logDir, "tradeloom-link.log"))
+	os.Mkdir(filepath.Join(logDir, "tradeloom-dir.log"), 0o700)
+	p, err := CreateSupportBundle(BundleOptions{LogDir: logDir, ExportDir: filepath.Join(base, "e"), Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, _ := zip.OpenReader(p)
+	defer zr.Close()
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "MANIFEST.txt,logs/tradeloom.log" {
+		t.Fatalf("got %v", names)
+	}
+}
+
+func TestCreateSupportBundle_NameValidation(t *testing.T) {
+	for _, n := range []string{"", "/abs", `\x`, `a\b`, "c:x", "../x", "a/../b", "a//b", "./a", "a/", "MANIFEST.txt", "logs/x.log", "."} {
+		dir := t.TempDir()
+		if _, err := CreateSupportBundle(BundleOptions{LogDir: dir, ExportDir: dir, Now: time.Now, Files: []BundleFile{{Name: n}}}); err == nil {
+			t.Errorf("name %q accepted", n)
+		}
+	}
+	dir := t.TempDir()
+	if _, err := CreateSupportBundle(BundleOptions{LogDir: dir, ExportDir: dir, Now: time.Now,
+		Files: []BundleFile{{Name: "a.json"}, {Name: "a.json"}}}); err == nil {
+		t.Error("duplicate accepted")
+	}
+	if _, err := CreateSupportBundle(BundleOptions{LogDir: dir, ExportDir: dir, Now: time.Now, Files: []BundleFile{{Name: "a..b"}, {Name: "sub/c.json"}}}); err != nil {
+		t.Errorf("valid names rejected: %v", err)
+	}
+}
+
+func TestCreateSupportBundle_NoOverwriteSameSecondAndNilNow(t *testing.T) {
+	dir := t.TempDir()
+	o := BundleOptions{LogDir: dir, ExportDir: dir, Now: func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }}
+	p1, err1 := CreateSupportBundle(o)
+	p2, err2 := CreateSupportBundle(o)
+	if err1 != nil || err2 != nil || p1 == p2 {
+		t.Fatalf("%v %v %s %s", err1, err2, p1, p2)
+	}
+	if _, err := os.Stat(p1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateSupportBundle(BundleOptions{LogDir: dir, ExportDir: dir}); err != nil {
+		t.Fatalf("nil Now: %v", err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".support-*")); len(left) != 0 {
+		t.Fatalf("temp left %v", left)
+	}
+}
