@@ -77,6 +77,9 @@ func (s *Store) write(ctx context.Context, token uint32, iv candles.Interval, wi
 		return err
 	}
 	defer st.Close()
+	// Only months receiving a complete row are re-hashed: the checksum covers complete rows only
+	// (an incomplete row never replaces a complete one), so an all-incomplete write, e.g. the
+	// builder's tick-built candles, skips the recompute entirely (Ruling 44).
 	months := map[int]bool{}
 	for _, c := range cs {
 		var oi any
