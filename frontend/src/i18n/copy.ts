@@ -85,4 +85,8 @@ export const profileMenuCopy = {
   darkTheme: 'Dark theme',
   version: (v: string) => `v${v}`,
   loadFailed: (reason: string) => `Your Kite profile could not be loaded: ${reason}`,
+  profilePending: 'Loading profile…',
+  profileUnavailable: 'Profile not loaded',
+  retry: 'Retry loading profile',
+  themeFailed: (reason: string) => `The theme could not be saved: ${reason}`,
 } as const;

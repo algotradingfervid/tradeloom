@@ -1,8 +1,10 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { demoSeed, readySession } from '../api/mock/fixtures';
+import { describe, expect, it, vi } from 'vitest';
+import type { Profile } from '../api/backend';
+import { demoSeed, profileFixture, readySession } from '../api/mock/fixtures';
 import { createMockBackend } from '../api/mock/index';
 import { resetAllStores } from '../store/reset';
+import { useSessionStore } from '../store/session';
 import { renderApp } from '../test/render';
 
 const openMenu = async (user: ReturnType<typeof renderApp>['user']) =>
@@ -81,6 +83,89 @@ describe('profile across sign-out (carry-forward Task 8)', () => {
     act(() => backend.emit('session.state', readySession()));
     await openMenu(user);
     expect(await screen.findByText('Asha Rao')).toBeInTheDocument();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const otherProfile: Profile = { ...profileFixture, userId: 'CD5678', name: 'Ravi Menon', initials: 'RM' };
+
+describe('Ruling 90 (I1): a late profile response never lands on another session', () => {
+  it('a profile() that resolves after logged_out and a login as another user is discarded', async () => {
+    const backend = createMockBackend(demoSeed());
+    const first = deferred<Profile>();
+    const second = deferred<Profile>();
+    const spy = vi.spyOn(backend.session, 'profile').mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const { user } = renderApp({ backend });
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    act(() => backend.emit('session.state', readySession({ state: 'logged_out', sessionId: '' })));
+    act(() => backend.emit('session.state', readySession({ userId: 'CD5678', sessionId: 'sess-2' })));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(2));
+    await act(async () => first.resolve(profileFixture));
+    expect(useSessionStore.getState().profile).toBeNull();
+    await act(async () => second.resolve(otherProfile));
+    await openMenu(user);
+    const menu = screen.getByRole('menu', { name: 'Account menu' });
+    expect(await within(menu).findByText('Ravi Menon')).toBeInTheDocument();
+    expect(within(menu).queryByText('Asha Rao')).toBeNull();
+  });
+  it('a profile() that fails after logged_out shows no toast', async () => {
+    const backend = createMockBackend(demoSeed());
+    const first = deferred<Profile>();
+    const spy = vi.spyOn(backend.session, 'profile').mockReturnValueOnce(first.promise);
+    renderApp({ backend });
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    act(() => backend.emit('session.state', readySession({ state: 'logged_out', sessionId: '' })));
+    await act(async () => first.reject(new Error('network down')));
+    expect(screen.queryByText(/could not be loaded/)).toBeNull();
+  });
+});
+
+describe('Ruling 90 (M1, M2): profile failure and logged-out avatar', () => {
+  it('M1: a failed load while ready shows a neutral placeholder and Retry, not "Not logged in"', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.failNext('session.profile', 'Kite is unreachable', 'network');
+    const { user } = renderApp({ backend });
+    expect(await screen.findByText('Your Kite profile could not be loaded: Kite is unreachable')).toBeInTheDocument();
+    await openMenu(user);
+    const menu = screen.getByRole('menu', { name: 'Account menu' });
+    expect(within(menu).queryByText('Not logged in')).toBeNull();
+    expect(within(menu).getByText('Profile not loaded')).toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: 'Log in' })).toBeNull();
+    await user.click(within(menu).getByRole('menuitem', { name: 'Retry loading profile' }));
+    await openMenu(user);
+    expect(await within(screen.getByRole('menu', { name: 'Account menu' })).findByText('Asha Rao')).toBeInTheDocument();
+  });
+  it('M2: the logged-out avatar is hidden from assistive technology', async () => {
+    const { backend } = renderApp();
+    const button = await screen.findByRole('button', { name: 'Account menu' });
+    act(() => backend.emit('session.state', readySession({ state: 'logged_out', sessionId: '' })));
+    expect(button.querySelector('.avatar')).toHaveAttribute('aria-hidden', 'true');
+  });
+});
+
+describe('Ruling 90 (I2): theme toggle writes', () => {
+  it('writes appearance.theme before appearance.follow_system and awaits both', async () => {
+    const { user, backend } = renderApp();
+    await openMenu(user);
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Dark theme' }));
+    await waitFor(() => expect(backend.callsTo('settings.set').map((c) => c.args[0])).toEqual(['appearance.theme', 'appearance.follow_system']));
+  });
+  it('a refused theme write is reported with the parsed reason and rolled back', async () => {
+    const { user, backend } = renderApp();
+    await openMenu(user);
+    backend.failNext('settings.set', 'The settings database is read-only', 'io');
+    await user.click(screen.getByRole('menuitemcheckbox', { name: 'Dark theme' }));
+    expect(await screen.findByText('The theme could not be saved: The settings database is read-only')).toBeInTheDocument();
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'));
   });
 });
 
