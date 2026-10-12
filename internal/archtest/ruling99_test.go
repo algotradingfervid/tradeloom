@@ -2,6 +2,7 @@ package archtest
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -11,10 +12,21 @@ import (
 )
 
 // loadFixtureCgo loads the fixture with an explicit CGO_ENABLED, so the untagged cgo file lands in
-// CgoFiles (1) or IgnoredFiles (0).
+// CgoFiles (1) or IgnoredFiles (0). With CGO_ENABLED=1 the load runs the cgo tool, so the test is skipped
+// when the C compiler (go env CC, which honours $CC) cannot be found.
 func loadFixtureCgo(t *testing.T, cgo, tags string) []*packages.Package {
 	t.Helper()
 	dir, env := fixtureEnv(t)
+	if cgo == "1" {
+		out, err := exec.Command("go", "env", "CC").Output()
+		cc := strings.Fields(string(out))
+		if err != nil || len(cc) == 0 {
+			t.Skipf("no C compiler: go env CC: %v", err)
+		}
+		if _, err := exec.LookPath(cc[0]); err != nil {
+			t.Skipf("no C compiler: %v", err)
+		}
+	}
 	pkgs, err := Load(dir, append(env, "CGO_ENABLED="+cgo), tags, "./...")
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +103,7 @@ func TestTASources_Fixture(t *testing.T) {
 		"g0-ta tafixture/bad.go:7", "g0-ta tafixture/bad.go:8", "g0-ta tafixture/bad.go:9", "g0-ta tafixture/bad.go:10",
 		"g0-ta tafixture/bad.go:11", "g0-ta tafixture/bad.go:13", "g0-ta tafixture/bad.go:14",
 		"g0-ta tafixture/net.go:3", "g0-ta tafixture/hidden_c.go:6",
+		"g0-ta tafixture/sneaky.go:5", "g0-ta tafixture/sneaky.go:6", // evil/sock, tradeloom/internal/kite: dot-less, not std
 		"g0-ta oracle/oracle.go:7", "g0-ta oracle/oracle.go:8",
 	}
 	assertList(t, ruleList(CheckTASources(dir, "tradeloom/ta")), want)
@@ -101,6 +114,16 @@ func TestTASources_RealModule(t *testing.T) {
 	ta := filepath.Join(moduleRoot(t), "ta")
 	if vs := CheckTASources(ta, "tradeloom/ta"); len(vs) != 0 {
 		t.Fatalf("ta violations: %v", vs)
+	}
+	// ta has no dependencies: no require or replace can bring in a module whose path looks like std.
+	b, err := os.ReadFile(filepath.Join(ta, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(line); len(f) != 0 && (f[0] == "require" || f[0] == "replace") {
+			t.Errorf("ta/go.mod:%d: %q; tradeloom/ta must have no require or replace directives", i+1, line)
+		}
 	}
 	for _, a := range cgoAllowed {
 		path := filepath.Join(moduleRoot(t), filepath.FromSlash(a.file))
@@ -118,7 +141,7 @@ func TestTASources_RealModule(t *testing.T) {
 // with CGO_ENABLED=1, and does not contain the oracle package; libm_c.go is excluded by its tag.
 func TestTA_DefaultBuildNoCgo(t *testing.T) {
 	root := moduleRoot(t)
-	for _, tags := range []string{"webkit2_41,noorders", "noorders", "webkit2_41,orders"} {
+	for _, tags := range []string{"webkit2_41,noorders", "noorders", "webkit2_41,orders", "desktop,production,webkit2_41,noorders"} {
 		pkgs, err := Load(filepath.Join(root, "ta"), append(os.Environ(), "CGO_ENABLED=1"), tags, "./...")
 		if err != nil {
 			t.Fatal(err)
@@ -176,4 +199,24 @@ func TestSysAllowMissing(t *testing.T) {
 	}
 	allow := map[string]sysAllowance{"internal/app": {objects: []string{"syscall.NoSuchThing", "golang.org/x/sys/unix.Exec", "nodot"}}}
 	assertList(t, SysAllowMissing(pkgs, allow), []string{"internal/app: nodot", "internal/app: syscall.NoSuchThing"})
+}
+
+// Ruling 99 fix round 1 (I-1): go list drops a directory whose Go files are all excluded by tags or GOOS
+// (internal/cgoonly holds only a "sneaky"-tagged cgo file), so the load-based CheckCgo cannot see it
+// (TestCgo_Fixture's list omits it). CheckCgoSources walks the source tree instead. It skips testdata,
+// "." and "_" directories, frontend/node_modules and nested modules (fakekite, fakesys) unless descended.
+func TestCgoSources_Fixture(t *testing.T) {
+	dir, _ := fixtureEnv(t)
+	want := []string{"g0-cgo cgoonly/only_c.go:5", "g0-cgo cgouser/cgo.go:5", "g0-cgo cgouser/hidden.go:7",
+		"g0-cgo cgouser/leaky_c.go:6", "g0-cgo cgouser/tagged_c.go:6"}
+	assertList(t, ruleList(CheckCgoSources(dir, "fixture", nil)), want)
+	// A listed nested module is walked too.
+	assertList(t, ruleList(CheckCgoSources(dir, "fixture", []string{"fakesys"})), append(want, "g0-cgo unix/never_c.go:5"))
+}
+
+// The real module, with ta descended into: no cgo outside the two tag-only test-oracle files.
+func TestCgoSources_RealModule(t *testing.T) {
+	if vs := CheckCgoSources(moduleRoot(t), "tradeloom", []string{"ta"}); len(vs) != 0 {
+		t.Fatalf("cgo violations: %v", vs)
+	}
 }

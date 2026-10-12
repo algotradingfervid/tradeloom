@@ -3,12 +3,14 @@ package archtest
 import (
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/build/constraint"
 	"go/constant"
 	"go/parser"
 	"go/token"
 	"go/types"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1057,29 +1059,30 @@ func checkCgo(module string, pkgs []*packages.Package, allow []cgoAllowance) []V
 	return out
 }
 
-// taBanned are the imports no tradeloom/ta file may have (Ruling 99), beyond the stdlib-only rule:
-// network, process, raw-syscall, plugin and unsafe/cgo access. "C" and "unsafe" are allowed only in the
-// cgoAllowed files under their tag.
-func taBanned(ip string) bool {
-	return under(ip, "net") || under(ip, "golang.org/x/sys") || containsStr([]string{"os/exec", "syscall", "plugin", "unsafe", "C"}, ip)
-}
-
-// CheckTASources walks the nested module tradeloom/ta (dir, module path modPath) and checks every non-test
-// .go file, under any build tags, outside testdata (g0-ta, Ruling 99): it may import only the standard
-// library and modPath's own packages, and none of net/..., os/exec, syscall, golang.org/x/sys/..., unsafe,
-// plugin or "C" — except "C" and "unsafe" in a cgoAllowed file whose //go:build line requires its tag.
-// ta is linked into the binary through internal/candles/builder but is not matched by ./...; TestArchitecture
-// also loads it for the type-based rules, and this file walk sees the tag-gated files (ta/internal/oracle is
-// not loaded at all without the oracle tag). Files that do not parse are reported (fail closed).
-func CheckTASources(dir, modPath string) []Violation {
-	var out []Violation
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+// walkGoSources calls fn for every non-test .go file under dir (module path modPath) with its package
+// path, under any build tags: unlike go list, it also sees directories whose files are all excluded by
+// tags or GOOS (Ruling 99 fix I-1). It skips testdata, directories starting with "." or "_", the
+// module-relative directories in skip, and nested modules (a directory with its own go.mod) other than the
+// module-relative ones in descend.
+func walkGoSources(dir, modPath string, descend, skip []string, fn func(path, pkgPath string)) error {
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
+			if path == dir {
+				return nil
+			}
 			name := d.Name()
-			if path != dir && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+			if name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || containsStr(skip, rel) {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil && !containsStr(descend, rel) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -1087,19 +1090,83 @@ func CheckTASources(dir, modPath string) []Violation {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		relDir, err := filepath.Rel(dir, filepath.Dir(path))
-		if err != nil {
-			return err
-		}
 		pkgPath := modPath
-		if relDir != "." {
-			pkgPath += "/" + filepath.ToSlash(relDir)
+		if relDir := filepath.ToSlash(filepath.Dir(rel)); relDir != "." {
+			pkgPath += "/" + relDir
 		}
+		fn(path, pkgPath)
+		return nil
+	})
+}
+
+// cgoSourceSkip are module-relative directories CheckCgoSources does not walk: the main go.mod ignores
+// frontend/node_modules, so nothing in it is part of the module.
+var cgoSourceSkip = []string{"frontend/node_modules"}
+
+// CheckCgoSources walks the module at root (module path module) and reports import "C" in every non-test
+// .go file, under any build tags, unless cgoAllowed allows it (g0-cgo, Ruling 99 fix I-1). It complements
+// the load-based CheckCgo: go list drops a directory whose Go files are all excluded by tags or GOOS
+// (NoGoError), so a tag-hidden cgo file alone in its directory never reaches CheckCgo. Nested modules are
+// walked only if listed in descend (the real module descends into ta). Files that do not parse are
+// reported (fail closed).
+func CheckCgoSources(root, module string, descend []string) []Violation {
+	var out []Violation
+	err := walkGoSources(root, module, descend, cgoSourceSkip, func(path, pkgPath string) {
+		imps, expr, err := parseImports(path)
+		if err != nil {
+			out = append(out, Violation{"g0-cgo", fileLabel(path), "cannot parse imports: " + err.Error()})
+			return
+		}
+		for _, imp := range imps {
+			if imp.path == "C" && !cgoAllowedFile(relPkg(module, pkgPath)+"/"+filepath.Base(path), expr, cgoAllowed) {
+				out = append(out, Violation{"g0-cgo", fileLabel(path) + ":" + strconv.Itoa(imp.line),
+					"import \"C\" in package " + pkgPath + "; cgo is not allowed (C code is invisible to the G-0 rules)"})
+			}
+		}
+	})
+	if err != nil {
+		out = append(out, Violation{"g0-cgo", root, "walk: " + err.Error()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// isStdlib reports whether path resolves to a package in GOROOT, looked up from srcDir (Ruling 99 fix
+// I-2): a dot-less first element is not enough, since main-module paths (tradeloom/internal/kite) and
+// replaced modules (evil/sock) have none.
+func isStdlib(path, srcDir string) bool {
+	if path == "C" {
+		return false
+	}
+	bp, err := build.Default.Import(path, srcDir, build.FindOnly)
+	return err == nil && bp.Goroot
+}
+
+// taBanned are the imports no tradeloom/ta file may have (Ruling 99), beyond the stdlib-only rule:
+// network, process, raw-syscall, plugin and unsafe/cgo access. "C" and "unsafe" are allowed only in the
+// cgoAllowed files under their tag.
+func taBanned(ip string) bool {
+	// Stricter than g0-net (which bans only net itself, as internal/kite needs net/http): an indicator
+	// library has no use for any net/... package, net/url included.
+	return under(ip, "net") || under(ip, "golang.org/x/sys") || containsStr([]string{"os/exec", "syscall", "plugin", "unsafe", "C"}, ip)
+}
+
+// CheckTASources walks the nested module tradeloom/ta (dir, module path modPath) and checks every non-test
+// .go file, under any build tags, outside testdata (g0-ta, Ruling 99): it may import only the standard
+// library (resolved in GOROOT, isStdlib) and modPath's own packages, and none of net/..., os/exec, syscall,
+// golang.org/x/sys/..., unsafe, plugin or "C" — except "C" and "unsafe" in a cgoAllowed file whose
+// //go:build line requires its tag. ta will be linked into the binary through internal/candles/builder; it
+// is not yet imported by any main-module package and is not matched by ./... TestArchitecture also loads
+// it for the type-based rules, and this file walk sees the tag-gated files (ta/internal/oracle is not
+// loaded at all without the oracle tag). Files that do not parse are reported (fail closed).
+func CheckTASources(dir, modPath string) []Violation {
+	var out []Violation
+	err := walkGoSources(dir, modPath, nil, nil, func(path, pkgPath string) {
 		key := relPkg("tradeloom", pkgPath) + "/" + filepath.Base(path)
 		imps, expr, err := parseImports(path)
 		if err != nil {
 			out = append(out, Violation{"g0-ta", fileLabel(path), "cannot parse imports: " + err.Error()})
-			return nil
+			return
 		}
 		for _, imp := range imps {
 			at := fileLabel(path) + ":" + strconv.Itoa(imp.line)
@@ -1108,12 +1175,11 @@ func CheckTASources(dir, modPath string) []Violation {
 			case taBanned(imp.path):
 				out = append(out, Violation{"g0-ta", at, "imports " + imp.path + " (not allowed in tradeloom/ta; C and unsafe only in the cgoAllowed test-oracle files under their tag)"})
 			case under(imp.path, modPath):
-			case !strings.Contains(strings.SplitN(imp.path, "/", 2)[0], "."):
+			case isStdlib(imp.path, filepath.Dir(path)):
 			default:
 				out = append(out, Violation{"g0-ta", at, "imports " + imp.path + " (tradeloom/ta may import only the standard library and its own packages)"})
 			}
 		}
-		return nil
 	})
 	if err != nil {
 		out = append(out, Violation{"g0-ta", dir, "walk: " + err.Error()})

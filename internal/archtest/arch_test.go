@@ -25,14 +25,21 @@ func moduleRoot(t *testing.T) string {
 }
 
 // The real module obeys rules 1–8 and G-0 in both build configurations. The nested module tradeloom/ta
-// (replaced into the main module, not matched by ./...) is loaded too, from its own directory so neither
-// go.work nor a require line is needed, and every type-based and import G-0 rule covers it (Ruling 99);
-// CheckTASources covers its tag-gated files.
+// (replaced into the main module; it will be linked through internal/candles/builder but is not yet
+// imported, and ./... does not match it) is loaded too, from its own directory so neither go.work nor a
+// require line is needed, and every type-based and import G-0 rule covers it (Ruling 99). The source walks
+// (CheckTASources, CheckCgoSources) do not depend on tags and run once, outside the tag loop.
 func TestArchitecture(t *testing.T) {
 	if testing.Short() {
 		t.Skip("loads and type-checks the whole module")
 	}
 	root := moduleRoot(t)
+	for _, v := range CheckTASources(filepath.Join(root, "ta"), "tradeloom/ta") {
+		t.Error(v)
+	}
+	for _, v := range CheckCgoSources(root, "tradeloom", []string{"ta"}) {
+		t.Error(v)
+	}
 	for _, tags := range []string{"webkit2_41,noorders", "webkit2_41,orders", "webkit2_41,orders,noorders"} {
 		t.Run(tags, func(t *testing.T) {
 			pkgs, err := Load(root, nil, tags, "./...")
@@ -61,7 +68,6 @@ func TestArchitecture(t *testing.T) {
 				vs = append(vs, CheckOtherFiles("tradeloom", set)...)
 				vs = append(vs, CheckCgo("tradeloom", set)...)
 			}
-			vs = append(vs, CheckTASources(filepath.Join(root, "ta"), "tradeloom/ta")...)
 			if missing := SysAllowMissing(pkgs, sysImporters); len(missing) != 0 {
 				t.Errorf("Ruling 99 g0-sys allow-list entries not found: %v", missing)
 			}
