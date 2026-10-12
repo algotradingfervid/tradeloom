@@ -25,8 +25,11 @@ import { tick } from '../../market/testing';
 import { setRunStartedMs } from '../../market/quotes';
 import { resetOnLogout } from '../../store/reset';
 import { useTicksStore } from '../../store/ticks';
-import { TOAST_DURATION_MS, useToastStore } from '../../store/toasts';
+import { pushToast, useToastStore } from '../../store/toasts';
+import { useShortcutStore } from '../../shortcuts/store';
+import { ToastRegion } from '../../components/ToastRegion';
 import { tokensOf, useWatchlists } from '../../store/watchlistsStore';
+import type { ShortcutAction } from '../../api/backend';
 import { RELIANCE, SBIN, TCS } from '../../instruments/fixtures';
 
 let backend: MockBackend;
@@ -74,8 +77,10 @@ describe('WatchlistRows', () => {
     seed(items(SBIN, TCS));
     const { rerender } = renderRows();
     expect(h.sub).toHaveBeenLastCalledWith('watchlist-panel', 'watchlist', [SBIN.token, TCS.token]);
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     rerender(<WatchlistRows list={{ id: 'b', name: 'B', items: items(RELIANCE) }} onChartItem={vi.fn()} />);
     expect(h.sub).toHaveBeenLastCalledWith('watchlist-panel', 'watchlist', [RELIANCE.token]);
+    err.mockRestore();
   });
 
   it('FR-WATCH-006: no subscription leak — the real coordinator drops the old set on list change and everything on unmount', async () => {
@@ -85,11 +90,13 @@ describe('WatchlistRows', () => {
     const watched = () => backend.callsTo('quotes.watch').filter((c) => c.args[0] === 'watchlist').at(-1)?.args[1];
     const { rerender, unmount } = renderRows();
     await waitFor(() => expect(watched()).toEqual([SBIN.token, TCS.token]));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     rerender(<WatchlistRows list={{ id: 'b', name: 'B', items: items(RELIANCE) }} onChartItem={vi.fn()} />);
     await waitFor(() => expect(watched()).toEqual([RELIANCE.token]));
     unmount();
     await waitFor(() => expect(watched()).toEqual([]));
     await subscriptions.idle();
+    err.mockRestore();
   });
 
   it('FR-WATCH-005 AC1: clicking the symbol charts it and highlights the row', () => {
@@ -102,6 +109,22 @@ describe('WatchlistRows', () => {
     expect(screen.getByRole('row', { name: /SBIN/ })).toHaveAttribute('aria-selected', 'false');
   });
 
+  it('Ruling 86 M4: the Undo toast stays until it is used or dismissed (a plain info toast still goes after 5 s)', async () => {
+    seed(items(SBIN, TCS));
+    vi.useFakeTimers();
+    try {
+      render(<><WatchlistRows list={current()} onChartItem={vi.fn()} /><ToastRegion /></>);
+      fireEvent.click(screen.getByRole('button', { name: 'Remove TCS' }));
+      for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+      act(() => { pushToast({ level: 'info', message: 'control' }); });
+      act(() => { vi.advanceTimersByTime(6000); });
+      expect(screen.queryByText('control')).toBeNull();
+      expect(screen.getByText('Removed TCS from Watchlist 1')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('FR-WATCH-005 AC3: remove shows a 5 s Undo toast that restores the row at its position', async () => {
     seed(items(SBIN, TCS, RELIANCE));
     renderRows();
@@ -109,7 +132,6 @@ describe('WatchlistRows', () => {
     await waitFor(() => expect(useToastStore.getState().visible).toHaveLength(1));
     const toast = useToastStore.getState().visible[0];
     expect(toast).toMatchObject({ level: 'info', message: 'Removed TCS from Watchlist 1', action: { label: 'Undo' } });
-    expect(TOAST_DURATION_MS.info).toBe(5000);
     expect(tokensOf(current())).toEqual([SBIN.token, RELIANCE.token]);
     await act(async () => { toast.action!.onSelect(); });
     await waitFor(() => expect(tokensOf(current())).toEqual([SBIN.token, TCS.token, RELIANCE.token]));
@@ -146,6 +168,14 @@ describe('WatchlistRows', () => {
 
   it('the reorder shortcuts exist only while a row has focus, and focus follows the moved row', async () => {
     seed(items(SBIN, TCS, RELIANCE));
+    // Chromium blurs a focused node that is re-inserted; jsdom does not. Simulate it so React's focus restore is tested.
+    const original = Node.prototype.insertBefore;
+    let blurred = 0;
+    Node.prototype.insertBefore = function <T extends Node>(this: Node, node: T, child: Node | null): T {
+      if (node instanceof Element && node.contains(document.activeElement)) { blurred++; (document.activeElement as HTMLElement).blur(); }
+      return original.call(this, node, child) as T;
+    };
+    const restore = () => { Node.prototype.insertBefore = original; };
     const outside = document.createElement('button');
     document.body.append(outside);
     render(<LiveRows />);
@@ -156,11 +186,13 @@ describe('WatchlistRows', () => {
     await act(async () => { h.shortcuts['watchlist.moveDown'](); });
     await act(async () => { h.shortcuts['watchlist.moveDown'](); });
     await waitFor(() => expect(tokensOf(current())).toEqual([TCS.token, RELIANCE.token, SBIN.token]));
+    expect(blurred).toBeGreaterThan(0); // the simulated Chromium blur ran; React restored focus to the moved row
     expect(document.activeElement).toBe(screen.getByRole('row', { name: /SBIN/ }));
     expect(screen.getAllByRole('row').slice(1).map((r) => r.getAttribute('data-token'))).toEqual([TCS, RELIANCE, SBIN].map((i) => String(i.token)));
     act(() => outside.focus());
     expect(h.shortcuts['watchlist.moveDown']).toBeUndefined();
     outside.remove();
+    restore();
   });
 
   it('drag-and-drop reorders', async () => {
@@ -201,7 +233,7 @@ describe('WatchlistRows', () => {
     renderRows();
     expect(screen.getByText('Instrument no longer available')).toBeInTheDocument();
     expect(h.sub).toHaveBeenLastCalledWith('watchlist-panel', 'watchlist', [SBIN.token]);
-    fireEvent.click(screen.getByRole('button', { name: 'Remove unavailable instrument' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove unavailable instrument in row 2' }));
     await waitFor(() => expect(backend.callsTo('watchlists.remove')[0]?.args).toEqual(['a', 424242]));
   });
 
@@ -216,5 +248,138 @@ describe('WatchlistRows', () => {
     seed(items(SBIN, TCS));
     renderRows();
     expect(screen.queryByRole('button', { name: /\b(buy|sell)\b|^[BS]$/i })).toBeNull();
+  });
+
+  it('I1: removing a missing item shows a toast without Undo (Go refuses unknown_instrument)', async () => {
+    seed([watchlistItemOf(SBIN), { token: 424242, exchange: '', symbol: '', displayName: '', name: '', isIndex: false, missing: true }]);
+    renderRows();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove unavailable instrument in row 2' }));
+    await waitFor(() => expect(useToastStore.getState().visible).toHaveLength(1));
+    expect(useToastStore.getState().visible[0]).toMatchObject({ level: 'info', message: 'Removed unavailable instrument from Watchlist 1' });
+    expect(useToastStore.getState().visible[0].action).toBeUndefined();
+  });
+
+  it('I3: roving tabindex — one row in the tab order, symbol buttons out of it; Arrow/Home/End move by row', () => {
+    seed(synthetic(60));
+    renderRows();
+    const table = screen.getByRole('grid');
+    const stops = () => [...table.querySelectorAll<HTMLElement>('tr, button')].filter((el) => el.tabIndex >= 0 && (el.tagName === 'TR' || !el.closest('tr')?.matches('[tabindex="-1"]')));
+    const rows = () => screen.getAllByRole('row').slice(1);
+    expect(rows().filter((r) => r.tabIndex === 0)).toHaveLength(1);
+    expect(rows()[0].tabIndex).toBe(0);
+    expect(within(rows()[0]).getByRole('button', { name: /^SYM0/ }).tabIndex).toBe(-1);
+    expect(stops().length).toBeLessThanOrEqual(3);
+    act(() => rows()[0].focus());
+    fireEvent.keyDown(rows()[0], { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(rows()[1]);
+    expect(rows()[1].tabIndex).toBe(0);
+    expect(rows()[0].tabIndex).toBe(-1);
+    fireEvent.keyDown(rows()[1], { key: 'End' });
+    expect(document.activeElement).toBe(rows()[59]);
+    fireEvent.keyDown(rows()[59], { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(rows()[59]);
+    fireEvent.keyDown(rows()[59], { key: 'Home' });
+    expect(document.activeElement).toBe(rows()[0]);
+    fireEvent.keyDown(rows()[0], { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(rows()[0]);
+  });
+
+  it('I3: the roving position follows the token when rows change above it; Alt+Arrow is left to the shortcuts', () => {
+    seed(items(SBIN, TCS, RELIANCE));
+    render(<LiveRows />);
+    const tcs = screen.getByRole('row', { name: /TCS/ });
+    act(() => tcs.focus());
+    const ev = fireEvent.keyDown(tcs, { key: 'ArrowDown', altKey: true });
+    expect(ev).toBe(true); // not prevented: the global shortcut listener handles Alt+ArrowDown
+    expect(document.activeElement).toBe(tcs);
+    act(() => useWatchlists.setState({ lists: [{ ...current(), items: items(RELIANCE, SBIN, TCS) }] }));
+    expect(screen.getByRole('row', { name: /TCS/ }).tabIndex).toBe(0);
+    expect(screen.getByRole('row', { name: /SBIN/ }).tabIndex).toBe(-1);
+  });
+
+  it('m4: rows carry aria-keyshortcuts from the registry, and a move is announced', async () => {
+    useShortcutStore.getState().setActions([
+      { id: 'watchlist.moveUp', label: 'Move item up', scope: 'view', binding: 'Alt+ArrowUp' },
+      { id: 'watchlist.moveDown', label: 'Move item down', scope: 'view', binding: 'Alt+Shift+J' },
+    ] as ShortcutAction[]);
+    seed(items(SBIN, TCS, RELIANCE));
+    render(<LiveRows />);
+    const sbin = screen.getByRole('row', { name: /SBIN/ });
+    expect(sbin).toHaveAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+Shift+J');
+    act(() => sbin.focus());
+    await act(async () => { h.shortcuts['watchlist.moveDown'](); });
+    await act(async () => { h.shortcuts['watchlist.moveDown'](); });
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('SBIN moved to 3 of 3'));
+  });
+
+  it('m4: remove buttons of missing rows have distinct names', () => {
+    const gone = (token: number) => ({ token, exchange: '', symbol: '', displayName: '', name: '', isIndex: false, missing: true });
+    seed([gone(1), watchlistItemOf(SBIN), gone(2)]);
+    renderRows();
+    expect(screen.getByRole('button', { name: 'Remove unavailable instrument in row 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove unavailable instrument in row 3' })).toBeInTheDocument();
+  });
+
+  it('m6: a cancelled drag (dragend) does not reorder on a later drop', async () => {
+    seed(items(SBIN, TCS, RELIANCE));
+    renderRows();
+    fireEvent.dragStart(screen.getByRole('row', { name: /RELIANCE/ }));
+    fireEvent.dragEnd(screen.getByRole('row', { name: /RELIANCE/ }));
+    fireEvent.drop(screen.getByRole('row', { name: /SBIN/ }));
+    await act(async () => { await Promise.resolve(); });
+    expect(backend.callsTo('watchlists.reorder')).toEqual([]);
+  });
+
+  it('m7: a list that is not the active one renders read-only and logs in dev', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    seed(items(SBIN, TCS));
+    render(<WatchlistRows list={{ id: 'other', name: 'Other', items: items(SBIN, TCS) }} onChartItem={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull();
+    expect(screen.getByRole('row', { name: /SBIN/ })).not.toHaveAttribute('draggable');
+    act(() => screen.getByRole('row', { name: /SBIN/ }).focus());
+    expect(h.shortcuts['watchlist.moveDown']).toBeUndefined();
+    expect(screen.getByRole('button', { name: /^SBIN/ })).toBeInTheDocument();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('m8: the polled explanation is the row description (reachable without hover)', () => {
+    h.polledAbove = 10_000;
+    seed(synthetic(2));
+    renderRows();
+    const row = screen.getByRole('row', { name: /SYM1/ });
+    expect(row).toHaveAccessibleDescription(/Live subscription limit reached — updates every 5 s/);
+    expect(screen.getByRole('row', { name: /SYM0\b/ })).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('m9: a failed move shows an error toast', async () => {
+    seed(items(SBIN, TCS));
+    renderRows();
+    backend.failNext('watchlists.reorder', 'disk full');
+    const tcs = screen.getByRole('row', { name: /TCS/ });
+    act(() => tcs.focus());
+    await act(async () => { h.shortcuts['watchlist.moveUp'](); });
+    await waitFor(() => expect(useToastStore.getState().visible[0]).toMatchObject({ level: 'error', message: 'Could not reorder the watchlist: disk full' }));
+  });
+
+  it('m9: a failed undo shows an error toast', async () => {
+    seed(items(SBIN, TCS));
+    renderRows();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove TCS' }));
+    await waitFor(() => expect(useToastStore.getState().visible).toHaveLength(1));
+    backend.failNext('watchlists.add', 'disk full');
+    await act(async () => { useToastStore.getState().visible[0].action!.onSelect(); });
+    await waitFor(() => expect(useToastStore.getState().visible[0]).toMatchObject({ level: 'error', message: 'Could not restore the instrument: disk full' }));
+  });
+
+  it('m9: a drop after the list changed uses the target row\'s current position', async () => {
+    seed(items(SBIN, TCS, RELIANCE));
+    renderRows(); // rendered with the old order on purpose: the drop must read the current one
+    fireEvent.dragStart(screen.getByRole('row', { name: /RELIANCE/ }));
+    const reordered: Watchlist = { id: 'a', name: 'Watchlist 1', items: items(TCS, SBIN, RELIANCE) };
+    backend.state.watchlists = JSON.parse(JSON.stringify({ lists: [reordered], activeId: 'a' }));
+    act(() => useWatchlists.getState().applyChanged({ lists: [reordered], activeId: 'a' }));
+    fireEvent.drop(screen.getByRole('row', { name: /SBIN/ }));
+    await waitFor(() => expect(backend.callsTo('watchlists.reorder')[0]?.args).toEqual(['a', [TCS.token, RELIANCE.token, SBIN.token]]));
   });
 });

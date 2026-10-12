@@ -8,23 +8,9 @@
 .watchlist-menu { position: absolute; z-index: 10; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 .watchlist-menu button { white-space: nowrap; background: none; border: 0; color: var(--text); padding: 6px 10px; cursor: pointer; }
 .watchlist-error { margin: 0; font-size: 12px; color: var(--down); }
-.watchlist-empty { color: var(--text-muted); padding: 12px 4px; }
+.watchlist-empty { color: var(--text-muted); padding: var(--space-3) var(--space-1); }
 .watchlist-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.watchlist-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--text-muted); padding: 4px; }
-.watchlist-table th:nth-child(3) { width: 72px; }
-.instrument-row td { padding: 4px; border-top: 1px solid var(--border); }
-.instrument-row.is-selected { box-shadow: inset 3px 0 0 var(--accent); }
-.instrument-row__symbol { display: inline-flex; gap: 8px; align-items: center; background: none; border: 0; color: inherit; padding: 0; cursor: pointer; min-width: 0; max-width: 100%; }
-.instrument-row__avatar { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: 11px; }
-.instrument-row__price { white-space: nowrap; }
-.instrument-row__hint { margin-left: 6px; font-size: 10px; color: var(--text-muted); border: 1px dashed currentColor; border-radius: 3px; padding: 0 3px; }
-.instrument-row__actions { visibility: hidden; text-align: right; white-space: nowrap; }
-.instrument-row:hover .instrument-row__actions, .instrument-row:focus-within .instrument-row__actions { visibility: visible; }
-.watchlist-search__list { position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 0; padding: 4px; list-style: none; max-height: 320px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
-.watchlist-search__row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; }
-.watchlist-search__row.is-active { outline: 1px solid var(--accent); }
-.watchlist-search__hint { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
-.watchlist-search__add { margin-left: 8px; width: 18px; text-align: center; visibility: hidden; }
-.watchlist-search__row:hover .watchlist-search__add, .watchlist-search__row.is-active .watchlist-search__add, .watchlist-search__add.is-in-list { visibility: visible; }
-.instrument-row__missing { margin-left: 8px; font-style: italic; color: var(--text-muted); }
-.instrument-row[draggable="true"] { cursor: grab; }
+.watchlist-table th { text-align: left; font-size: var(--fs-xs); font-weight: 500; color: var(--text-muted); padding: var(--space-1); }
+/* Two 32 px icon buttons, a 4 px gap and 4 px padding each side. */
+.watchlist-table th:nth-child(3) { width: calc(2 * 32px + var(--space-1) * 3); }
+.watchlist-table .instrument-row[draggable="true"] { cursor: grab; }

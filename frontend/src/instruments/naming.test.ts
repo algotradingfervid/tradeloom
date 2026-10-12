@@ -50,4 +50,10 @@ describe('instrument naming (FR-WATCH-013) and tagging (FR-WATCH-014)', () => {
     expect(itemTag({ exchange: 'BSE', isIndex: false })).toBe('BSE');
     expect(labelOfItem(item)).toEqual({ token: SENSEX.token, tag: 'INDICES', displayName: 'SENSEX', tradingsymbol: 'SENSEX', name: 'SENSEX' });
   });
+
+  it('labelOfItem never throws: an out-of-scope or missing item keeps its raw exchange as the tag', () => {
+    const mcx = { token: 1, exchange: 'MCX', symbol: 'GOLDM', displayName: 'GOLDM', name: 'GOLD', isIndex: false };
+    expect(labelOfItem(mcx)).toEqual({ token: 1, tag: 'MCX', displayName: 'GOLDM', tradingsymbol: 'GOLDM', name: 'GOLD' });
+    expect(labelOfItem({ token: 2, exchange: '', symbol: '', displayName: '', name: '', isIndex: false }).tag).toBe('');
+  });
 });
