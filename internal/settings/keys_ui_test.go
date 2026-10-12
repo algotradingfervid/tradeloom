@@ -78,3 +78,16 @@ func TestUIKeys_NoSecretLikeNames(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRoute_RejectsEscapes(t *testing.T) {
+	for _, bad := range []string{"//evil.com", "/a/../b", "/..", "/a/..", "/../x"} {
+		if ValidateRoute(bad) == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+	for _, ok := range []string{"/home", "/settings/data", "/a..b", "/"} {
+		if err := ValidateRoute(ok); err != nil {
+			t.Fatalf("%q refused: %v", ok, err)
+		}
+	}
+}

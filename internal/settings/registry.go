@@ -26,6 +26,9 @@ var (
 // Register records k so the generic settings façade can list, read and write it by name.
 // Declare keys as `var X = settings.Register(settings.Key[T]{…})`. It panics on a duplicate name.
 func Register[T any](k Key[T]) Key[T] {
+	if isSecretKey(k.Name) {
+		panic(fmt.Sprintf("settings: key %q looks like a secret; secrets belong in internal/secrets", k.Name))
+	}
 	regMu.Lock()
 	defer regMu.Unlock()
 	if _, dup := registry[k.Name]; dup {

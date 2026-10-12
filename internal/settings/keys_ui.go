@@ -15,6 +15,14 @@ func ValidateRoute(v string) error {
 	if !strings.HasPrefix(v, "/") || strings.ContainsAny(v, " \t\r\n") {
 		return errors.New("must be an in-app route starting with /")
 	}
+	if strings.HasPrefix(v, "//") {
+		return errors.New("must not start with //")
+	}
+	for _, seg := range strings.Split(v, "/") {
+		if seg == ".." {
+			return errors.New("must not contain .. segments")
+		}
+	}
 	return nil
 }
 

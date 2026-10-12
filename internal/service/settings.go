@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"tradeloom/internal/logging"
 	"tradeloom/internal/settings"
 )
 
@@ -20,13 +21,16 @@ const settingsStage = "settings"
 
 func credentialKey(name string) bool { return strings.HasPrefix(name, "kite.") }
 
+// hiddenKey is fail-closed: credential keys and any secret-like name are never listed.
+func hiddenKey(name string) bool { return credentialKey(name) || logging.IsSecretLikeKey(name) }
+
 // Settings lists every registered key (sorted by settings.Names) except the credential keys.
 func (s *Service) Settings(_ context.Context) ([]SettingValue, error) {
 	names := settings.Names()
 	sort.Strings(names)
 	out := make([]SettingValue, 0, len(names))
 	for _, n := range names {
-		if credentialKey(n) {
+		if hiddenKey(n) {
 			continue
 		}
 		raw, err := settings.GetJSON(s.d.Settings, n)
@@ -49,7 +53,11 @@ func (s *Service) SetSetting(ctx context.Context, name, valueJSON string) (Setti
 		if errors.Is(err, settings.ErrUnknownKey) {
 			return SettingValue{}, refused(settingsStage, "unknown_setting", "Unknown setting "+name+".")
 		}
-		return SettingValue{}, refused(settingsStage, "invalid_setting", err.Error())
+		var ve *settings.ValidationError
+		if errors.As(err, &ve) {
+			return SettingValue{}, refused(settingsStage, "invalid_setting", err.Error())
+		}
+		return SettingValue{}, asRefused(settingsStage, err)
 	}
 	raw, err := settings.GetJSON(s.d.Settings, name)
 	if err != nil {
