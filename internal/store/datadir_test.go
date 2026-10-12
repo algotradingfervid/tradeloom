@@ -80,3 +80,35 @@ func TestLock_SingleHolderAndExitMarker(t *testing.T) {
 		t.Fatalf("after clean exit: %s", k3.PreviousExit())
 	}
 }
+
+// An abandoned start-up (Restore before Release) must not look like a crash on the next start.
+func TestLock_RestorePreviousMarker(t *testing.T) {
+	for _, prev := range []ExitState{ExitFirstRun, ExitClean, ExitUnclean} {
+		l := NewLayout(t.TempDir())
+		switch prev {
+		case ExitClean:
+			os.WriteFile(l.LockFile, []byte("clean\n"), 0o600)
+		case ExitUnclean:
+			os.WriteFile(l.LockFile, []byte("running pid=7\n"), 0o600)
+		}
+		k, err := AcquireLock(l, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k.PreviousExit() != prev {
+			t.Fatalf("setup: %s", k.PreviousExit())
+		}
+		if err := k.Restore(k.PreviousExit()); err != nil {
+			t.Fatal(err)
+		}
+		k.Release()
+		k2, err := AcquireLock(l, 101)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k2.PreviousExit() != prev {
+			t.Fatalf("%s restored as %s", prev, k2.PreviousExit())
+		}
+		k2.Release()
+	}
+}

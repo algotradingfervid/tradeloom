@@ -71,3 +71,17 @@ func (k *Lock) MarkClean() error { return os.WriteFile(k.path, []byte(markerClea
 
 // Release unlocks and closes the lock file. The marker is left as written.
 func (k *Lock) Release() error { return k.fl.Close() }
+
+// Restore rewrites the marker to the state AcquireLock found (prev = PreviousExit()), for a start-up
+// that is abandoned before the app ran (refused or failed app.Start): the next start must not report
+// a crash that did not happen. ExitUnclean keeps the running marker, so an unseen crash stays reported.
+func (k *Lock) Restore(prev ExitState) error {
+	switch prev {
+	case ExitClean:
+		return k.MarkClean()
+	case ExitFirstRun:
+		return os.WriteFile(k.path, nil, 0o600)
+	default:
+		return nil
+	}
+}
