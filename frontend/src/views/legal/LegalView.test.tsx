@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { freshSeed, unackedSeed } from '../../api/mock/fixtures';
+import { freshSeed, loggedOutSeed, unackedSeed } from '../../api/mock/fixtures';
 import { createMockBackend } from '../../api/mock/index';
 import { renderApp } from '../../test/render';
 
@@ -52,6 +52,18 @@ describe('FR-ACCT-015 legal pages', () => {
     await user.click(screen.getByRole('button', { name: 'Back' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/risk'));
     expect(await screen.findByRole('heading', { name: 'Before you start' })).toBeInTheDocument();
+  });
+  it('Ruling 117 I1: signed in and acknowledged, a legal page keeps the shell chrome', async () => {
+    renderApp({ route: '/legal/terms' });
+    expect(await screen.findByRole('heading', { level: 1, name: 'Terms of use' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument();
+    expect(screen.getAllByRole('main')).toHaveLength(1);
+  });
+  it('logged out: a legal page has no shell chrome', async () => {
+    renderApp({ route: '/legal/privacy', backend: createMockBackend(loggedOutSeed()) });
+    expect(await screen.findByRole('heading', { level: 1, name: 'Privacy notice' })).toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Main navigation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Account menu' })).toBeNull();
   });
   it('section headings sit directly under the page h1 (h2, no skipped level)', async () => {
     renderApp({ route: '/legal/privacy' });

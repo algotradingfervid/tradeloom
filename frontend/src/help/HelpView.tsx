@@ -1,12 +1,9 @@
-import { useMemo, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, useParams } from 'react-router-dom';
-import { useBackend } from '../api/BackendContext';
-import { parseBackendError } from '../api/errors';
-import { Button } from '../components/Button';
+import { SupportActions } from '../app/SupportActions';
 import { ListPage } from '../components/ListPage';
-import { diagnosticsCopy, helpCopy as copy } from '../i18n/copy';
+import { helpCopy as copy } from '../i18n/copy';
 import { useShortcutStore } from '../shortcuts/store';
-import { pushToast } from '../store/toasts';
 import { NotFoundView } from '../views/NotFoundView';
 import { ARTICLES, HELP_CATEGORIES, shortcutsArticle, type HelpArticle } from './articles';
 import { renderArticle } from './renderArticle';
@@ -14,49 +11,60 @@ import { searchArticles } from './search';
 import './help.css';
 
 /**
- * One article. On the help page its title is an h2 under the page h1; in the side panel (`inPanel`) the dialog's own
- * h2 already carries the title, so it is not repeated and the article is named by aria-label instead.
+ * One article. On the help page its title is an h2 under the page h1; `focusTitle` moves focus to it (after the user
+ * picked another article, so focus is not lost). In the side panel (`inPanel`) the dialog's own h2 already carries the
+ * title, so it is not repeated: the article is named by aria-label and is itself focusable (tabIndex -1, the
+ * dialog's initial focus) so its body scrolls with the keyboard.
  */
-export function ArticleBody({ article, inPanel = false }: { article: HelpArticle; inPanel?: boolean }) {
-  const titleId = `help-${article.id}`;
-  return (
-    <article className="help__article" aria-labelledby={inPanel ? undefined : titleId} aria-label={inPanel ? article.title : undefined}>
-      <p className="muted">{article.category}</p>
-      {!inPanel && <h2 id={titleId}>{article.title}</h2>}
-      <p className="muted">{copy.updatedFor(article.updatedFor)}</p>
-      {renderArticle(article.body)}
-    </article>
-  );
-}
+export const ArticleBody = forwardRef<HTMLElement, { article: HelpArticle; inPanel?: boolean; focusTitle?: boolean }>(
+  function ArticleBody({ article, inPanel = false, focusTitle = false }, ref) {
+    const titleId = `help-${article.id}`;
+    const title = useRef<HTMLHeadingElement>(null);
+    useEffect(() => {
+      if (focusTitle) title.current?.focus();
+    }, [focusTitle]);
+    return (
+      <article
+        ref={ref}
+        className="help__article"
+        aria-labelledby={inPanel ? undefined : titleId}
+        aria-label={inPanel ? article.title : undefined}
+        tabIndex={inPanel ? -1 : undefined}
+      >
+        <p className="muted">{article.category}</p>
+        {!inPanel && <h2 ref={title} id={titleId} tabIndex={-1}>{article.title}</h2>}
+        <p className="muted">{copy.updatedFor(article.updatedFor)}</p>
+        {renderArticle(article.body)}
+      </article>
+    );
+  },
+);
 
 function SupportLinks() {
-  const backend = useBackend();
-  const fail = (e: unknown) => pushToast({ level: 'error', message: parseBackendError(e).reason });
-  const bundle = () =>
-    backend.diagnostics.createSupportBundle().then((path) => pushToast({ level: 'success', message: diagnosticsCopy.bundleSaved(path) }), fail);
   return (
     <section className="help__support" aria-labelledby="help-support">
       <h2 id="help-support">{copy.support}</h2>
       <p className="muted">{copy.supportHint}</p>
-      <div className="settings__actions">
-        <Button onClick={() => void backend.diagnostics.openLogsFolder().catch(fail)}>{diagnosticsCopy.openLogs}</Button>
-        <Button onClick={() => void bundle()}>{diagnosticsCopy.bundle}</Button>
-      </div>
+      <SupportActions />
     </section>
   );
 }
 
-/** The help centre (FR-ACCT-010). Ruling 108 M6: routed in rootChildren, outside the shell, so it has its own main. */
+/**
+ * The help centre (FR-ACCT-010), framed by DocsFrame (Ruling 117 I1). Each article gets a fresh HelpContent (Minor 1:
+ * the search clears); after the first render a new article takes focus on its heading (Minor 2), while opening Help
+ * directly leaves focus where the shell puts it.
+ */
 export function HelpView() {
-  return (
-    <main className="standalone-page">
-      <HelpContent />
-    </main>
-  );
+  const { article: articleId } = useParams();
+  const [first] = useState(articleId);
+  const [changed, setChanged] = useState(false);
+  // Derived during render (React's "adjust state on prop change" pattern): once the article changes, it stays changed.
+  if (!changed && articleId !== first) setChanged(true);
+  return <HelpContent key={articleId ?? ''} articleId={articleId} focusArticle={changed || articleId !== first} />;
 }
 
-function HelpContent() {
-  const { article: articleId } = useParams();
+function HelpContent({ articleId, focusArticle }: { articleId: string | undefined; focusArticle: boolean }) {
   const actions = useShortcutStore((s) => s.actions);
   const all = useMemo(() => [...ARTICLES, shortcutsArticle(actions)], [actions]);
   const [query, setQuery] = useState('');
@@ -98,7 +106,7 @@ function HelpContent() {
               )}
             </section>
           ) : current ? (
-            <ArticleBody article={current} />
+            <ArticleBody article={current} focusTitle={focusArticle} />
           ) : (
             <>
               <ul className="help__cards" aria-label={copy.topics}>

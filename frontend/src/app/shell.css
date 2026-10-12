@@ -63,3 +63,6 @@
 .banner > span { flex: 1 1 auto; }
 .banner--warn { border-left: 4px solid var(--warn); }
 .banner--error { border-left: 4px solid var(--down); }
+
+/* SupportActions (Settings → Diagnostics and Help): Help does not load settings.css. */
+.support-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }

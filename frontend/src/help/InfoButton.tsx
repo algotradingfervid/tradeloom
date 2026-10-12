@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Dialog } from '../components/Dialog';
 import { IconButton } from '../components/IconButton';
 import { ARTICLES } from './articles';
@@ -10,13 +10,14 @@ import { ArticleBody } from './HelpView';
  */
 export function InfoButton({ articleId, label }: { articleId: string; label: string }) {
   const [open, setOpen] = useState(false);
+  const body = useRef<HTMLElement>(null);
   const article = ARTICLES.find((a) => a.id === articleId);
   if (!article) return null;
   return (
     <>
       <IconButton label={label} icon="info" aria-haspopup="dialog" onClick={() => setOpen(true)} />
-      <Dialog open={open} title={article.title} size="side" onClose={() => setOpen(false)}>
-        <ArticleBody article={article} inPanel />
+      <Dialog open={open} title={article.title} size="side" initialFocus={body} onClose={() => setOpen(false)}>
+        <ArticleBody ref={body} article={article} inPanel />
       </Dialog>
     </>
   );

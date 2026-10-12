@@ -509,7 +509,6 @@ export const helpCopy = {
   description: 'Guides and answers that work offline.',
   searchPlaceholder: 'Search help articles',
   results: 'Search results',
-  noResults: (q: string) => `No articles match "${q}"`,
   topics: 'Help topics',
   tree: 'Help articles',
   articles: (n: number) => (n === 1 ? '1 article' : `${n} articles`),
@@ -520,8 +519,6 @@ export const helpCopy = {
   shortcutsIntro: 'Every shortcut can be changed in Settings → Shortcuts. This list always shows the current keys.',
   unbound: 'not set',
 } as const;
-
-export const legalCopy = { updatedFor: (v: string) => `Updated for v${v}` } as const;
 
 /** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
 export const symbolSearchCopy = {
