@@ -159,6 +159,9 @@ type Deps struct {
 	Detection    secrets.Detection    // Boot.Secrets
 	KeyringProbe func() error         // secrets.ProbeKeyringWithin(secrets.ProbeTimeout); nil = available
 	NewKeyring   func() secrets.Store // secrets.NewKeyring; tests inject a memory store
+
+	// Task 32 (diagnostics façade, FR-SHELL-018)
+	CrashReports []string // Boot.CrashReports: unseen crash-*.json in Layout.LogsDir (any order; newest by name wins)
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
@@ -201,6 +204,9 @@ type Service struct {
 	closes       map[uint32]float64                       // previous close per token, fetched once per session (OHLC)
 	quitQuotes   chan struct{}                            // closed when RunQuotes exits; ends pending linger goroutines
 	quitOnce     sync.Once
+
+	// Task 32 (diagnostics façade): guards d.CrashReports after New.
+	crashMu sync.Mutex
 
 	// Task 31 (calendar façade): serialises override writes so app.db, the coverage setting and the
 	// running calendar.Service change in the same order.
