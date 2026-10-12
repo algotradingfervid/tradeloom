@@ -3,6 +3,7 @@ import { GlobalShortcuts } from '../shortcuts/GlobalShortcuts';
 import { useSetting } from '../store/settings';
 import { AppShell } from './AppShell';
 import { visibleNavEntries } from './features';
+import { IndexTickerStrip } from './IndexTickerStrip';
 import { ProfileMenu } from './ProfileMenu';
 import { QuickLinks } from './QuickLinks';
 import { ShellBanners } from './ShellBanners';
@@ -16,7 +17,7 @@ export function ShellLayout() {
   useRememberLastRoute();
   return (
     <AppShell
-      topBar={<TopBar ticker={null} status={<StatusIndicator />} links={<QuickLinks />} profile={<ProfileMenu />} />}
+      topBar={<TopBar ticker={<IndexTickerStrip />} status={<StatusIndicator />} links={<QuickLinks />} profile={<ProfileMenu />} />}
       banner={<ShellBanners />}
       sidebar={<Sidebar entries={visibleNavEntries()} collapsed={collapsed} onToggleCollapsed={() => void setCollapsed(!collapsed)} />}
     >

@@ -12,12 +12,23 @@ test('FR-SHELL-001 AC2: at 1280×720 no horizontal scrollbar; status, quick link
     page.getByRole('link', { name: 'Positions' }),
     page.getByRole('button', { name: 'Account menu' }),
   ];
-  // The three ticker pills (P0-5) and the bell (P3) join this list when they ship.
+  // The bell (P3) joins this list when it ships.
   for (const t of targets) {
     const box = await t.boundingBox();
     expect(box).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0);
     expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(1280);
+  }
+  // P0-5 Task 12: the three index ticker pills. .topbar__ticker clips its overflow and boundingBox() ignores clipping,
+  // so each pill must lie inside the ticker container's box, not merely inside the window.
+  const ticker = await page.getByTestId('topbar-ticker').boundingBox();
+  expect(ticker).not.toBeNull();
+  for (const name of [/^NIFTY 50,/, /^NIFTY BANK,/, /^SENSEX,/]) {
+    const box = await page.getByRole('button', { name }).boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(ticker!.x);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(ticker!.x + ticker!.width);
     expect(box!.x + box!.width).toBeLessThanOrEqual(1280);
   }
 });
