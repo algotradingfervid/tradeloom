@@ -7,6 +7,7 @@ ignore ./frontend/node_modules
 replace tradeloom/ta => ./ta
 
 require (
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gofrs/flock v0.13.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
@@ -27,7 +28,6 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gocarina/gocsv v0.0.0-20180809181117-b8c38cb1ba36 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
 	github.com/labstack/echo/v4 v4.13.3 // indirect

@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { aboutCopy as copy } from '../../i18n/copy';
+import { aboutCopy as copy, profileMenuCopy } from '../../i18n/copy';
 import { DASH } from '../../i18n/format';
 import { useAppStore } from '../../store/app';
 import { Fact, SettingSection } from './SettingRow';
@@ -11,7 +11,7 @@ export function AboutGroup() {
     <>
       <SettingSection title={copy.app}>
         <dl className="facts">
-          <Fact label={copy.version}>{info ? copy.versionValue(info.version) : DASH}</Fact>
+          <Fact label={copy.version}>{info ? profileMenuCopy.version(info.version) : DASH}</Fact>
           <Fact label={copy.build}>{info?.build ?? DASH}</Fact>
           <Fact label={copy.schema}>{info ? String(info.schemaVersion) : DASH}</Fact>
         </dl>

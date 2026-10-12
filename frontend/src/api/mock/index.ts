@@ -4,8 +4,9 @@ import type {
   ShortcutScope, StatusSnapshot,
 } from '../backend';
 import { next0600Ist } from './fixtures';
+import { createMarketDomains, type MarketMockState } from './market';
 
-export interface MockState {
+export interface MockState extends MarketMockState {
   session: SessionStatus;
   status: StatusSnapshot;
   profile: Profile;
@@ -140,6 +141,7 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
     if (scope === 'holdings' || scope === 'all') emit('holdings.changed', (state.holdings = { ...state.holdings, asOfMs, stale: false }));
   };
 
+  const market = createMarketDomains(state, emit);
   const backend: MockBackend = {
     state,
     calls,
@@ -315,6 +317,10 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       info: () => copy(state.info),
       status: () => copy(state.status),
     }),
+    chart: wrap('chart', market.chart),
+    instruments: wrap('instruments', market.instruments),
+    quotes: wrap('quotes', market.quotes),
+    watchlists: wrap('watchlists', market.watchlists),
   };
   return backend;
 }

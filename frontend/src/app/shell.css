@@ -31,3 +31,29 @@
 
 .boot-notice { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--surface-2); color: var(--text); border-bottom: 1px solid var(--warn); }
 .boot-notice__reason { color: var(--text-muted); }
+
+.status {
+  display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--bg); color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.status__dot { width: 10px; height: 10px; border-radius: 50%; background: var(--flat); transition: background-color var(--motion-colour); }
+.status--up .status__dot { background: var(--up); }
+.status--warn .status__dot { background: var(--warn); }
+.status--down .status__dot { background: var(--down); }
+.status__closed { color: var(--text-muted); font-size: var(--fs-xs); }
+.status-panel { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+.status-panel__note { margin: var(--space-2) 0 0; color: var(--text-muted); }
+[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+
+.toplink {
+  display: inline-flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1); color: var(--text); text-decoration: none; white-space: nowrap;
+}
+.toplink:hover { background: var(--surface-2); }
+.toplink[aria-current="page"] { color: var(--accent); background: var(--surface-2); font-weight: 600; }
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent);
+  color: var(--on-accent); font-size: var(--fs-xs); font-weight: 600; object-fit: cover;
+}
+.profile-head { display: flex; flex-direction: column; }
+.menu__version { display: block; text-align: right; font-size: var(--fs-xs); }
