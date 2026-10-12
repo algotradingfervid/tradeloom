@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"tradeloom/internal/bus"
+	"tradeloom/internal/calendar"
 	"tradeloom/internal/candles"
 	"tradeloom/internal/candles/backfill"
 	"tradeloom/internal/clock"
 	"tradeloom/internal/instruments"
 	"tradeloom/internal/kite"
+	"tradeloom/internal/kite/ratelimit"
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/logging"
 	"tradeloom/internal/orders"
@@ -72,6 +74,29 @@ type LiveSubscriber interface {
 	Release(c ticker.Consumer, owner string)
 }
 
+// HistoricalFetcher is *kite.Client (kite.HistoricalPicker): the manual refresh fetches one window at Interactive priority.
+type HistoricalFetcher interface {
+	HistoricalPick(ctx context.Context, prio ratelimit.Priority, pick func() (kite.HistoricalRequest, bool)) (kite.HistoricalRequest, []kite.HistoricalData, bool, error)
+}
+
+// CandleUpserter is the covered-write half of candles.Store (*sqlite.Store): the manual refresh records
+// coverage for the window it fetched, up to the first candle that has not ended (Ruling 66).
+type CandleUpserter interface {
+	UpsertCovered(ctx context.Context, token uint32, iv candles.Interval, window candles.Range, cs []candles.Candle, src candles.Source) error
+}
+
+// CandleTracker is *builder.Builder: forming/closed candles are built only for tracked (token, interval) pairs.
+type CandleTracker interface {
+	Track(token uint32, ivs ...candles.Interval)
+	Untrack(token uint32, ivs ...candles.Interval)
+}
+
+// liveChart is one open chart subscription (OpenLive).
+type liveChart struct {
+	token uint32
+	iv    candles.Interval
+}
+
 type Deps struct {
 	Session     SessionAPI
 	Orders      PortfolioSync
@@ -88,6 +113,12 @@ type Deps struct {
 
 	Shortcuts *store.ShortcutsRepo   // user rebinds (Task 28)
 	UiState   *store.WindowStateRepo // window_state key/value (Task 28)
+
+	// Task 16 (chart data)
+	Calendar     *calendar.Service // trading-day arithmetic, market phase (Task 21), calendar settings (Task 31)
+	Historical   HistoricalFetcher // *kite.Client
+	CandleWriter CandleUpserter    // *sqlite.Store
+	Tracker      CandleTracker     // *builder.Builder
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
@@ -101,6 +132,9 @@ type Service struct {
 
 	liveMu sync.Mutex
 	live   map[ticker.Consumer]map[uint32]bool
+
+	chartMu    sync.Mutex
+	liveCharts map[string]liveChart // subscription id → (token, interval)
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
@@ -118,7 +152,7 @@ func New(d Deps) *Service {
 	if d.Log == nil {
 		d.Log = slog.Default()
 	}
-	return &Service{d: d, live: map[ticker.Consumer]map[uint32]bool{}}
+	return &Service{d: d, live: map[ticker.Consumer]map[uint32]bool{}, liveCharts: map[string]liveChart{}}
 }
 
 func (s *Service) nowMs() int64 { return s.d.Clock.Now().UnixMilli() }
