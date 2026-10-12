@@ -14,4 +14,4 @@
 .fact dd { margin: 0; overflow-wrap: anywhere; }
 .capture { padding: var(--space-4); border: 2px dashed var(--border); border-radius: var(--radius-2); text-align: center; font-family: var(--font-mono); }
 .capture:focus { border-color: var(--focus); outline: none; }
-kbd { padding: 1px var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface); font-family: var(--font-mono); font-size: var(--fs-xs); }
+.settings kbd { padding: 1px var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface); font-family: var(--font-mono); font-size: var(--fs-xs); }

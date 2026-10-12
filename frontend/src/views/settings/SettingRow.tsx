@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { TextField } from '../../components/TextField';
 import { settingsViewCopy } from '../../i18n/copy';
 import { useSetting } from '../../store/settings';
@@ -29,9 +29,12 @@ export interface NumberCommitFieldProps { label: string; value: number; onCommit
 export function NumberCommitField({ label, value, onCommit, hint }: NumberCommitFieldProps) {
   const [draft, setDraft] = useState(String(value));
   const [error, setError] = useState<string | null>(null);
+  /** A commit is in flight: Enter followed by blur (or a second Enter) must not write twice (M2). */
+  const pending = useRef(false);
   useEffect(() => setDraft(String(value)), [value]);
 
   const commit = async () => {
+    if (pending.current) return;
     if (draft === String(value)) {
       setError(null);
       return;
@@ -41,7 +44,13 @@ export function NumberCommitField({ label, value, onCommit, hint }: NumberCommit
       setError(settingsViewCopy.wholeNumber);
       return;
     }
-    const reason = await onCommit(n);
+    pending.current = true;
+    let reason: string | null;
+    try {
+      reason = await onCommit(n);
+    } finally {
+      pending.current = false;
+    }
     setError(reason);
     if (reason) setDraft(String(value));
   };

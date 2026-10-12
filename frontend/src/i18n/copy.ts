@@ -145,6 +145,10 @@ export const kiteSettingsCopy = {
   backend: { keyring: 'System keyring', file: 'Encrypted file (secrets.enc)', locked: 'Encrypted file (locked)', none: 'Not stored' } as Record<string, string>,
   change: 'Change',
   changeTitle: 'Change Kite credentials',
+  changeConfirmTitle: 'Change Kite credentials?',
+  changeConfirmMessage: 'Changing the API key logs you out of Tradeloom; you will log in to Kite again.',
+  changeConfirm: 'Log out and continue',
+  changeLoginBusy: 'Finish or cancel the current login before changing credentials.',
   save: 'Save',
   saved: 'Kite credentials saved. Log in again to use them.',
   remove: 'Remove credentials',
@@ -155,6 +159,9 @@ export const kiteSettingsCopy = {
   fileNotRemovedTitle: 'Old secrets file not removed',
   fileNotRemoved: 'Your secrets are now in the system keyring, but the old encrypted file (secrets.enc) is still on disk.',
   fileNotRemovedRetry: 'Try removing it again',
+  leftoverFileInfo: 'An old encrypted secrets file (secrets.enc) is still on disk. Tradeloom uses the system keyring and does not read it.',
+  loadFailed: 'The Kite connection details could not be loaded.',
+  loadFailedRetry: 'Retry loading Kite connection',
   login: 'Login',
   redirectUrl: 'Redirect URL',
   port: 'Login callback port',
@@ -170,6 +177,7 @@ export const appearanceCopy = {
   followSystemHint: 'Use the light or dark preference of your desktop.',
   followingHint: 'Controlled by your desktop while "Follow system theme" is on.',
   sidebarCollapsed: 'Collapse the sidebar to icons',
+  saveFailed: (reason: string) => `The setting could not be saved: ${reason}`,
 } as const;
 
 export const chartSettingsCopy = {
