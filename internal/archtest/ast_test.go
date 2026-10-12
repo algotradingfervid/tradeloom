@@ -129,3 +129,39 @@ func TestKiteRawWrite_NamesResolve(t *testing.T) {
 		t.Fatalf("Ruling 69 identifiers not found in gokiteconnect: %v", missing)
 	}
 }
+
+// g0-path (Ruling 69 addendum) on the fixture module: literal, folded-concatenation, whitespace and
+// host-prefixed write paths outside internal/kite/mock are flagged; read paths, the fake kite/mock and
+// the orders-tagged writer.go are not; the rawhttp fixtures are flagged too, because their folded
+// gokiteconnect URI constants are write paths.
+func TestPathRule_Fixture(t *testing.T) {
+	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOPROXY=off")
+	rawhttp := []string{
+		"g0-path orderwrite/uri.go",                                // kiteconnect.URICancelOrder, untagged file
+		"g0-path rawhttp/dotkite.go", "g0-path rawhttp/dotkite.go", // URIAlerts+URIPlaceMFSIP, URIGetOrders
+		"g0-path rawhttp/kitehttp.go", "g0-path rawhttp/kitehttp.go", "g0-path rawhttp/kitehttp.go", "g0-path rawhttp/kitehttp.go",
+	}
+	rawpath := []string{"g0-path rawpath/path.go", "g0-path rawpath/path.go", "g0-path rawpath/path.go", "g0-path rawpath/path.go", "g0-path rawpath/path.go"}
+	for _, tags := range []string{"noorders", "orders", "orders,noorders"} {
+		t.Run(tags, func(t *testing.T) {
+			pkgs, err := Load(dir, env, tags, "./...")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, v := range CheckKitePaths("fixture", pkgs) {
+				got = append(got, v.Rule+" "+strings.SplitN(v.Pkg, ":", 2)[0])
+			}
+			sort.Strings(got)
+			want := append(append([]string{}, rawhttp...), rawpath...)
+			sort.Strings(want)
+			if strings.Join(got, "|") != strings.Join(want, "|") {
+				t.Fatalf("\n got %v\nwant %v", got, want)
+			}
+		})
+	}
+}

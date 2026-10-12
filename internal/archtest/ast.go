@@ -1,8 +1,10 @@
 package archtest
 
 import (
+	"fmt"
 	"go/ast"
 	"go/build/constraint"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"path/filepath"
@@ -466,6 +468,107 @@ func CheckKiteRawWrite(module string, pkgs []*packages.Package) []Violation {
 			}
 			out = append(out, Violation{"g0-kitehttp", position(p.Fset, id.Pos()),
 				"kiteconnect." + name + " is only allowed in internal/kite/orderwrite files built with the orders tag"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// writePathPrefixes are the Kite REST paths that change account state (Ruling 69 addendum, g0-path):
+// orders, GTT, alerts, mutual funds, position conversion and holdings authorisation. /orders and
+// /portfolio/positions also prefix read endpoints; the rule bans those too outside the mock, because
+// production code reaches Kite only through gokiteconnect's read methods. The entries omit the leading
+// "/" (writePathPrefix adds it) so this list does not trip g0-path itself without exempting archtest.
+var writePathPrefixes = []string{"orders", "gtt", "alerts", "mf/", "portfolio/positions", "portfolio/holdings/authorise"}
+
+// kitePath trims leading whitespace and a host ("https://api.kite.trade/x" or "api.kite.trade/x")
+// from s, leaving the path.
+func kitePath(s string) string {
+	s = strings.TrimLeft(s, " \t\r\n")
+	if i := strings.Index(s, "://"); i > 0 && !strings.ContainsAny(s[:i], "/ \t") {
+		s = s[i+3:]
+		if j := strings.IndexByte(s, '/'); j >= 0 {
+			return s[j:]
+		}
+		return ""
+	}
+	if !strings.HasPrefix(s, "/") {
+		if j := strings.IndexByte(s, '/'); j > 0 && strings.ContainsAny(s[:j], ".:") && !strings.ContainsAny(s[:j], " \t") {
+			return s[j:]
+		}
+	}
+	return s
+}
+
+// writePathPrefix returns the write-path prefix s starts with (case-folded), or "".
+func writePathPrefix(s string) string {
+	p := strings.ToLower(kitePath(s))
+	if !strings.HasPrefix(p, "/") {
+		return ""
+	}
+	for _, w := range writePathPrefixes {
+		if strings.HasPrefix(p[1:], w) {
+			return p[:1] + w
+		}
+	}
+	return ""
+}
+
+// CheckKitePaths reports every string constant expression whose folded value is a Kite write path
+// (g0-path, Ruling 69 addendum). It reads constant values from TypesInfo.Types, so a write path built by
+// concatenating constants ("/" + seg) is caught like a literal; an expression nested in a reported one is
+// not reported again. Exempt: internal/kite/mock (the fake Kite), orders-tagged files of
+// internal/kite/orderwrite, packages under a testdata directory, and test files (not loaded).
+// Residual: a path assembled at run time (fmt.Sprintf, strings.Join, byte slices) is not a constant;
+// g0-http confines net/http to internal/kite and the mock-Kite recording suite is the dynamic backstop.
+func CheckKitePaths(module string, pkgs []*packages.Package) []Violation {
+	type hit struct {
+		pos, end token.Pos
+		val, pre string
+	}
+	var out []Violation
+	for _, p := range pkgs {
+		rel := relPkg(module, p.PkgPath)
+		if under(rel, "internal/kite/mock") || rel == "testdata" || strings.HasPrefix(rel, "testdata/") ||
+			strings.Contains(rel, "/testdata/") || strings.HasSuffix(rel, "/testdata") {
+			continue
+		}
+		allowedFile := map[*token.File]bool{}
+		if rel == "internal/kite/orderwrite" {
+			for _, f := range p.Syntax {
+				if requiresOrdersTag(f) {
+					allowedFile[p.Fset.File(f.Pos())] = true
+				}
+			}
+		}
+		var hits []hit
+		for e, tv := range p.TypesInfo.Types {
+			if tv.Value == nil || tv.Value.Kind() != constant.String || allowedFile[p.Fset.File(e.Pos())] {
+				continue
+			}
+			v := constant.StringVal(tv.Value)
+			if pre := writePathPrefix(v); pre != "" {
+				hits = append(hits, hit{e.Pos(), e.End(), v, pre})
+			}
+		}
+		sort.Slice(hits, func(i, j int) bool {
+			if hits[i].pos != hits[j].pos {
+				return hits[i].pos < hits[j].pos
+			}
+			return hits[i].end > hits[j].end
+		})
+		var outerEnd token.Pos
+		for _, h := range hits {
+			if h.pos < outerEnd { // nested in the last reported expression
+				continue
+			}
+			outerEnd = h.end
+			val := h.val
+			if len(val) > 60 {
+				val = val[:60] + "…"
+			}
+			out = append(out, Violation{"g0-path", position(p.Fset, h.pos),
+				fmt.Sprintf("string constant %q is a Kite write path (%s…); allowed only in internal/kite/mock and orders-tagged internal/kite/orderwrite files", val, h.pre)})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })

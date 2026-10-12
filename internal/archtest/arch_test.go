@@ -39,6 +39,7 @@ func TestArchitecture(t *testing.T) {
 			vs = append(vs, CheckOrderWrite("tradeloom", pkgs)...)
 			vs = append(vs, CheckKiteIndirect("tradeloom", pkgs)...)
 			vs = append(vs, CheckKiteRawWrite("tradeloom", pkgs)...)
+			vs = append(vs, CheckKitePaths("tradeloom", pkgs)...)
 			if missing := KiteRawWriteMissing(pkgs); len(missing) != 0 {
 				t.Errorf("Ruling 69 identifiers not found in gokiteconnect: %v", missing)
 			}
