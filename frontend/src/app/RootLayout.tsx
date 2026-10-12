@@ -7,6 +7,7 @@ import './shell.css';
 import { useTrackHistoryDepth } from '../store/nav';
 import { ToastRegion } from '../components/ToastRegion';
 import { ShortcutProvider } from '../shortcuts/ShortcutProvider';
+import { SessionGate } from './SessionGate';
 
 export function RootLayout() {
   const backend = useBackend();
@@ -26,8 +27,11 @@ export function RootLayout() {
   useTrackHistoryDepth();
   return (
     <ShortcutProvider>
-      {/* The boot-failure notice renders in the AppShell banner slot (BootNotice, ShellLayout). */}
-      <Outlet />
+      {/* The boot-failure notice renders in the AppShell banner slot (ShellBanners) and in the onboarding frame. */}
+      {/* ToastRegion stays outside the gate so onboarding errors are shown (P0-4 Task 9). */}
+      <SessionGate>
+        <Outlet />
+      </SessionGate>
       <ToastRegion />
     </ShortcutProvider>
   );

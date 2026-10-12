@@ -1,0 +1,16 @@
+/* Index ticker strip (FR-SHELL-004). Compact enough that the three pills fit beside status, quick links and the
+   avatar at 1280×720 (narrow format below 1440 px drops the absolute change). Colour only adds to the arrow and sign. */
+.ticker-strip { display: flex; gap: var(--space-1); min-width: 0; flex-shrink: 1; }
+.ticker-pill {
+  display: inline-flex; align-items: baseline; min-width: 0; gap: var(--space-1); padding: 2px var(--space-2); border-radius: var(--radius-pill);
+  border: 1px solid var(--border); background: none; color: inherit; font: inherit; font-size: var(--fs-xs); white-space: nowrap;
+  cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.ticker-pill:hover { background: var(--surface-2); }
+/* .topbar__ticker clips its overflow, so the focus ring is drawn inside the pill (as .menu__item). */
+.ticker-pill:focus-visible { outline-offset: -2px; }
+.ticker-pill__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.ticker-pill--up .ticker-pill__change { color: var(--up); }
+.ticker-pill--down .ticker-pill__change { color: var(--down); }
+.ticker-pill--flat .ticker-pill__change, .ticker-pill--empty .ticker-pill__ltp { color: var(--text-muted); }
+.ticker-pill--stale .ticker-pill__ltp { color: var(--text-muted); font-style: italic; }

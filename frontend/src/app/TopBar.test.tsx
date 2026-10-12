@@ -76,10 +76,11 @@ describe('profile across sign-out (carry-forward Task 8)', () => {
     expect(await screen.findByText('Asha Rao')).toBeInTheDocument();
     await user.keyboard('{Escape}');
     act(() => backend.emit('session.state', readySession({ state: 'logged_out', sessionId: '' })));
-    await openMenu(user);
-    expect(screen.getByText('Not logged in')).toBeInTheDocument();
+    // Since P0-4 Task 9 the session gate leaves the shell for the login view on sign-out (FR-ACCT-006), so the
+    // cleared profile is checked in the store rather than through the (no longer rendered) account menu.
+    expect(await screen.findByRole('heading', { name: 'Log in to Kite' })).toBeInTheDocument();
+    expect(useSessionStore.getState().profile).toBeNull();
     expect(screen.queryByText('Asha Rao')).toBeNull();
-    await user.keyboard('{Escape}');
     act(() => backend.emit('session.state', readySession()));
     await openMenu(user);
     expect(await screen.findByText('Asha Rao')).toBeInTheDocument();

@@ -11,4 +11,4 @@ export const useJobsStore = create<JobsStore>()((set) => ({
 }));
 
 // Not account data: a backup or restore runs on regardless of the Kite session (Ruling 85).
-registerReset(() => useJobsStore.setState({ jobs: {} }), { onLogout: false });
+registerReset(() => useJobsStore.setState({ jobs: {} }), { onLogout: false, name: 'jobs', inspect: () => useJobsStore.getState() });

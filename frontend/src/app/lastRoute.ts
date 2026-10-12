@@ -13,8 +13,12 @@ export function isRememberable(path: string): boolean {
   return REMEMBERABLE.some((r) => r.test(path));
 }
 
-export function safeLastRoute(value: unknown): string {
-  return typeof value === 'string' && isRememberable(value) ? value : '/home';
+/**
+ * The remembered view if it is allow-listed and, when `exists` is given, a route this build actually has (Ruling 94
+ * M4: the allow-list is trimmed to existing routes at restore time, so later views need no edit here); else Home.
+ */
+export function safeLastRoute(value: unknown, exists?: (path: string) => boolean): string {
+  return typeof value === 'string' && isRememberable(value) && (exists?.(value) ?? true) ? value : '/home';
 }
 
 /** Persists the current view so the app reopens on it (FR-SHELL-019 window state). */

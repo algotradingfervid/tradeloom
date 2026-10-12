@@ -22,7 +22,7 @@ export function CrashNotice() {
   }, [backend]);
   if (!crash || !crash.path) return null;
   return (
-    <div className="crash-notice" role="status">
+    <div className="banner banner--error" role="status">
       <Icon name="error" />
       <span>{crashCopy.message(formatDateTimeLong(crash.atMs))}</span>
       <Button onClick={() => void backend.diagnostics.openCrashReport().catch(fail)}>{crashCopy.view}</Button>

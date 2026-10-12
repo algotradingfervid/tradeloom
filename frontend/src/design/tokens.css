@@ -8,3 +8,24 @@
   --motion-fast: 150ms; --motion-colour: 300ms;
   --z-menu: 20; --z-dialog: 40; --z-toast: 60; --z-tooltip: 80;
 }
+
+/* chart (P0-5): background, text, up and down come from P0-4's colour tokens */
+:root {
+  --chart-bg: var(--bg);
+  --chart-text: var(--text);
+  --chart-grid: #eef1f4;
+  --chart-crosshair: #7b8794;
+  --chart-separator: #d9dee5;
+  --chart-volume-up: rgba(22, 163, 74, 0.45);
+  --chart-volume-down: rgba(220, 38, 38, 0.45);
+  --chart-band: rgba(59, 130, 246, 0.12);
+}
+
+:root[data-theme="dark"] {
+  --chart-grid: #1d232b;
+  --chart-crosshair: #8a96a6;
+  --chart-separator: #2a313b;
+  --chart-volume-up: rgba(34, 197, 94, 0.45);
+  --chart-volume-down: rgba(239, 68, 68, 0.45);
+  --chart-band: rgba(96, 165, 250, 0.16);
+}

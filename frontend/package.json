@@ -12,11 +12,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "preview": "vite preview",
-    "lint": "eslint src e2e",
+    "lint": "eslint src e2e spike",
     "e2e": "playwright test",
     "dev:mock": "vite --mode mock"
   },
   "dependencies": {
+    "lightweight-charts": "5.2.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-router-dom": "7.18.4",

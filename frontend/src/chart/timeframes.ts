@@ -45,3 +45,10 @@ export function parseTimeframe(v: unknown): TimeframeId {
   }
   return SHIPPED_DEFAULT_TIMEFRAME;
 }
+
+const DAY_MS = 86_400_000;
+/** Kite's per-request historical limits, as Go's maxRefreshSpan (internal/service/chart.go): Chart.Refresh refuses wider ranges. */
+export const MAX_REFRESH_SPAN_MS: Readonly<Record<KiteInterval, number>> = {
+  minute: 60 * DAY_MS, '3minute': 100 * DAY_MS, '5minute': 100 * DAY_MS, '10minute': 100 * DAY_MS, '15minute': 100 * DAY_MS,
+  '30minute': 100 * DAY_MS, '60minute': 400 * DAY_MS, day: 2000 * DAY_MS,
+};

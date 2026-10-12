@@ -77,7 +77,7 @@ registerReset(() => {
   idInflight.clear();
   unknown.clear();
   useInstruments.setState((s) => ({ byToken: {}, byId: {}, generation: s.generation + 1 }));
-});
+}, { name: 'instruments', inspect: () => ({ ...useInstruments.getState(), epoch, lastUserId, inflight, idInflight, unknown }) });
 
 /**
  * Loads the tokens not cached yet with one Instruments.ByTokens call; tokens already being loaded share that call.
@@ -144,17 +144,46 @@ export function useInstrument(token: number | undefined): Instrument | undefined
   return inst;
 }
 
+/**
+ * A failed identifier lookup is asked again while the hook is mounted (Ruling 113 I2): on first launch the master may
+ * not be imported yet and Go sends no event when it is, and identifier misses never enter the negative cache.
+ */
+export const RESOLVE_RETRY_MS: readonly number[] = [5_000, 15_000, 60_000];
+
 export function useResolvedInstrument(id: string | undefined): { instrument?: Instrument; error?: string } {
   const generation = useInstruments((s) => s.generation);
   const [state, setState] = useState<{ id?: string; generation?: number; instrument?: Instrument; error?: string }>({});
+  // Retry rounds for one (id, generation): `n` re-runs the lookup, `failures` walks the backoff. A new id or
+  // generation (reset, user switch) starts over, and its effect cleanup clears any pending timer.
+  const key = `${id ?? ''}\u0000${generation}`;
+  const [retry, setRetry] = useState({ key, n: 0, failures: 0 });
+  const failures = retry.key === key ? retry.failures : 0;
   useEffect(() => {
     if (!id) return;
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     resolveIdentifier(id)
       .then((instrument) => { if (alive) setState({ id, generation, instrument }); })
-      .catch((e: unknown) => { if (alive) setState({ id, generation, error: e instanceof Error ? e.message : String(e) }); });
-    return () => { alive = false; };
-  }, [id, generation]);
+      .catch((e: unknown) => {
+        if (!alive) return;
+        setState({ id, generation, error: e instanceof Error ? e.message : String(e) });
+        const delay = RESOLVE_RETRY_MS[failures];
+        if (delay !== undefined) {
+          timer = setTimeout(() => setRetry((r) => ({ key, n: r.n + 1, failures: failures + 1 })), delay);
+        }
+      });
+    return () => { alive = false; if (timer !== undefined) clearTimeout(timer); };
+    // retry.n re-runs the lookup; failures and key change only together with retry.n, id or generation.
+  }, [id, generation, retry.n, failures, key]);
   // An answer from before a reset or user switch (older generation) is never shown (Ruling 107 m4).
-  return state.id === id && state.generation === generation ? { instrument: state.instrument, error: state.error } : {};
+  const current = state.id === id && state.generation === generation;
+  const errored = current && state.error !== undefined;
+  // Every transition to ready may follow a new master import: an unresolved identifier asks again with a fresh backoff.
+  useEffect(() => {
+    if (!errored) return;
+    return useSessionStore.subscribe((s, prev) => {
+      if (s.session?.state === 'ready' && prev.session?.state !== 'ready') setRetry((r) => ({ key, n: r.n + 1, failures: 0 }));
+    });
+  }, [errored, key]);
+  return current ? { instrument: state.instrument, error: state.error } : {};
 }
