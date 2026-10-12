@@ -84,6 +84,14 @@ describe('market helpers over the Backend', () => {
     expect(backend.listenerCount('candle.closed')).toBe(0);
   });
 
+  it('onCandle carries partial: true from the Go builder (open/volume unknown)', () => {
+    const seen: unknown[] = [];
+    const off = onCandle((e) => seen.push(e));
+    backend.emit('candle.forming', [{ token: 5, interval: '5minute', candle: { t: 1, o: 1, h: 2, l: 1, c: 1, v: 0, oi: 0, complete: false }, partial: true }]);
+    expect(seen).toEqual([{ token: 5, interval: '5minute', closed: false, partial: true, bar: { time: 1, open: 1, high: 2, low: 1, close: 1, volume: 0 } }]);
+    off();
+  });
+
   it('watchQuotes: budget overflow is polled; snapshot is the in-memory last quote per token', async () => {
     backend.state.liveBudget = 1;
     const r = await watchQuotes('watchlist', [256265, RELIANCE.token]);
