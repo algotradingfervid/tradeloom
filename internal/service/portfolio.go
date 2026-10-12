@@ -1,9 +1,13 @@
 package service
 
 import (
+	"fmt"
+	"runtime/debug"
+
 	"context"
 	"sync"
 	"time"
+	"tradeloom/internal/logging"
 
 	"tradeloom/internal/kite"
 	"tradeloom/internal/orders"
@@ -27,10 +31,10 @@ const minRefreshInterval = 2 * time.Second
 // RefreshPortfolio is the views' Refresh button (FR-ORD-001/002/003) and FR-ORD-014's "on demand" reconciliation.
 // It is single-flight per scope (concurrent callers join the in-flight refresh and get its result) and a call
 // within 2 s of a successful refresh of the same scope is a no-op that returns nil.
-func (s *Service) RefreshPortfolio(ctx context.Context, scope string) error {
-	sc, err := orders.ParseScope(scope)
-	if err != nil {
-		return s.refuse(portfolioStage, refused(portfolioStage, "invalid_scope", err.Error()))
+func (s *Service) RefreshPortfolio(ctx context.Context, scope string) (err error) {
+	sc, perr := orders.ParseScope(scope)
+	if perr != nil {
+		return s.refuse(portfolioStage, refused(portfolioStage, "invalid_scope", perr.Error()))
 	}
 	if s.d.Session.State().State != kite.StateReady {
 		return s.refuse(portfolioStage, refused(portfolioStage, kite.CodeNotLoggedIn, "Log in to Kite to refresh."))
@@ -60,15 +64,24 @@ func (s *Service) RefreshPortfolio(ctx context.Context, scope string) error {
 	g.flights[sc] = f
 	g.mu.Unlock()
 
+	// The cleanup is deferred so a panicking Orders.Refresh can never leave the flight (and its joiners) stuck.
+	// A panic is converted into an "internal" refusal returned to the leader and the joiners (not re-panicked).
+	defer func() {
+		if r := recover(); r != nil {
+			msg := logging.Default.RedactString(fmt.Sprint(r))
+			s.d.Log.Error("service.portfolio_refresh_panic", "scope", scope, "panic", msg, "stack", logging.Default.RedactString(string(debug.Stack())))
+			f.err = refused(portfolioStage, "internal", "Could not refresh: unexpected internal error.")
+			err = f.err
+		}
+		g.mu.Lock()
+		delete(g.flights, sc)
+		if f.err == nil {
+			g.lastOK[sc] = s.d.Clock.Now()
+		}
+		g.mu.Unlock()
+		close(f.done)
+	}()
 	f.err = s.doRefresh(ctx, scope, sc)
-
-	g.mu.Lock()
-	delete(g.flights, sc)
-	if f.err == nil {
-		g.lastOK[sc] = s.d.Clock.Now()
-	}
-	g.mu.Unlock()
-	close(f.done)
 	return f.err
 }
 

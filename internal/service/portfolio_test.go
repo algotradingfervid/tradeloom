@@ -42,6 +42,7 @@ type gatedSync struct {
 	gate    chan struct{} // nil = do not block
 	started chan struct{} // closed on the first call
 	err     error
+	panicV  any // when set, Refresh panics with it after the gate
 	book    orders.BookSnapshot
 	pos     orders.PositionsSnapshot
 	hold    orders.HoldingsSnapshot
@@ -53,10 +54,13 @@ func (g *gatedSync) Refresh(_ context.Context, _ orders.Scope) error {
 	if g.calls == 1 && g.started != nil {
 		close(g.started)
 	}
-	gate, err := g.gate, g.err
+	gate, err, pv := g.gate, g.err, g.panicV
 	g.mu.Unlock()
 	if gate != nil {
 		<-gate
+	}
+	if pv != nil {
+		panic(pv)
 	}
 	return err
 }
@@ -218,5 +222,83 @@ func TestPortfolio_FlagsPassThrough(t *testing.T) {
 	if !b.Stale || !b.Orders[0].OutOfScope || b.OutOfScopeCount != 1 ||
 		!p.Stale || !p.Net[0].OutOfScope || !h.Stale || !h.Rows[0].OutOfScope {
 		t.Fatalf("flags changed: %+v %+v %+v", b, p, h)
+	}
+}
+
+func waitWaiters(t *testing.T, e *svcEnv, sc orders.Scope, n int) {
+	t.Helper()
+	eventually(t, "joiners", func() bool {
+		e.svc.pf.mu.Lock()
+		defer e.svc.pf.mu.Unlock()
+		f := e.svc.pf.flights[sc]
+		return f != nil && f.waiters == n
+	})
+}
+
+func TestRefreshPortfolio_PanicDoesNotStickTheFlight(t *testing.T) {
+	const secret = "panic-secret-token-123"
+	logging.RegisterSecret(secret)
+	e := newSvcEnv(t)
+	g := gated(e)
+	g.gate = make(chan struct{})
+	g.panicV = "kaboom " + secret
+	ctx := context.Background()
+	leader, joiner := make(chan error, 1), make(chan error, 1)
+	go func() { leader <- e.svc.RefreshPortfolio(ctx, "orders") }()
+	<-g.started
+	go func() { joiner <- e.svc.RefreshPortfolio(ctx, "orders") }()
+	waitWaiters(t, e, orders.ScopeOrders, 1)
+	close(g.gate)
+	for name, ch := range map[string]chan error{"leader": leader, "joiner": joiner} {
+		select {
+		case err := <-ch:
+			if refusedCode(t, err) != "internal" {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if strings.Contains(err.(*ErrRefused).Reason, secret) {
+				t.Fatalf("%s: secret leaked", name)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s stuck after a panicking Refresh", name)
+		}
+	}
+	g.mu.Lock()
+	g.panicV, g.gate = nil, nil
+	g.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- e.svc.RefreshPortfolio(ctx, "orders") }()
+	select {
+	case err := <-done:
+		if err != nil || g.count() != 2 {
+			t.Fatalf("later call: %v, calls %d", err, g.count())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("later call stuck")
+	}
+}
+
+func TestRefreshPortfolio_JoinerContextCancelReturnsPromptly(t *testing.T) {
+	e := newSvcEnv(t)
+	g := gated(e)
+	g.gate = make(chan struct{})
+	leader := make(chan error, 1)
+	go func() { leader <- e.svc.RefreshPortfolio(context.Background(), "all") }()
+	<-g.started
+	jctx, cancel := context.WithCancel(context.Background())
+	joiner := make(chan error, 1)
+	go func() { joiner <- e.svc.RefreshPortfolio(jctx, "all") }()
+	waitWaiters(t, e, orders.ScopeAll, 1)
+	cancel()
+	select {
+	case err := <-joiner:
+		if err == nil {
+			t.Fatal("cancelled joiner returned nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled joiner did not return")
+	}
+	close(g.gate)
+	if err := <-leader; err != nil {
+		t.Fatal(err)
 	}
 }
