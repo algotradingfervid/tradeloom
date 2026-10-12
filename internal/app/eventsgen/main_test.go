@@ -17,11 +17,18 @@ func TestGenerate(t *testing.T) {
 		"export interface kite_Order {",
 		"  order_id: string;",
 		"  order_timestamp: string;",
-		"  meta: Record<string, unknown>;",
+		"  meta: Record<string, unknown> | null;",
 		"export interface service_MarketStatus {",
 		"  atMs: number;",
 		`  "session.state": service_SessionStatus;`,
-		`  "tick.batch": Array<service_TickDTO>;`,
+		`  "tick.batch": Array<service_TickDTO> | null;`,
+		`  "feed.state": service_FeedStateDTO;`,
+		`  "clock.offset": service_OffsetDTO;`,
+		`  "limits.usage": service_UsageDTO;`,
+		`  "backfill.progress": Array<service_BackfillProgressDTO> | null;`,
+		"  classes: Array<service_ClassUsageDTO> | null;",
+		"  etaMs: number;",
+		"  nextRetryMs: number;",
 		`  "orders.changed": orders_BookSnapshot;`,
 		`  "order.update": kite_Order;`,
 		`  "market.status": service_MarketStatus;`,
@@ -33,6 +40,11 @@ func TestGenerate(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q", want)
+		}
+	}
+	for _, bad := range []string{"nextRetry: string", "updatedAt: string", "etaNs", "backoffUntil: string"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("time-typed field %q in payloads", bad)
 		}
 	}
 	if strings.Contains(out, "v4_Order") {

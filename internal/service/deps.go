@@ -19,6 +19,7 @@ import (
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/logging"
 	"tradeloom/internal/orders"
+	"tradeloom/internal/secrets"
 	"tradeloom/internal/settings"
 	"tradeloom/internal/store"
 )
@@ -79,9 +80,10 @@ type HistoricalFetcher interface {
 	HistoricalPick(ctx context.Context, prio ratelimit.Priority, pick func() (kite.HistoricalRequest, bool)) (kite.HistoricalRequest, []kite.HistoricalData, bool, error)
 }
 
-// CandleUpserter is the write half of candles.Store (*sqlite.Store).
+// CandleUpserter is the covered-write half of candles.Store (*sqlite.Store): the manual refresh records
+// coverage for the window it fetched, up to the first candle that has not ended (Ruling 66).
 type CandleUpserter interface {
-	Upsert(ctx context.Context, token uint32, iv candles.Interval, cs []candles.Candle, src candles.Source) error
+	UpsertCovered(ctx context.Context, token uint32, iv candles.Interval, window candles.Range, cs []candles.Candle, src candles.Source) error
 }
 
 // CandleTracker is *builder.Builder: forming/closed candles are built only for tracked (token, interval) pairs.
@@ -118,6 +120,7 @@ type Deps struct {
 
 	Shortcuts *store.ShortcutsRepo   // user rebinds (Task 28)
 	UiState   *store.WindowStateRepo // window_state key/value (Task 28)
+
 	// Task 16 (chart data)
 	Calendar     *calendar.Service // trading-day arithmetic, market phase (Task 21), calendar settings (Task 31)
 	Historical   HistoricalFetcher // *kite.Client
@@ -125,6 +128,13 @@ type Deps struct {
 	Tracker      CandleTracker     // *builder.Builder
 	// Task 29 (quotes)
 	Quotes QuoteReader // *kite.Client
+
+	// Secret storage (Task 27, FR-ACCT-013).
+	Secrets      *SecretSwitch        // the Session's secrets.Store; swapped by setup, unlock and migration
+	SecretsFile  string               // Layout.SecretsFile
+	Detection    secrets.Detection    // Boot.Secrets
+	KeyringProbe func() error         // secrets.ProbeKeyringWithin(secrets.ProbeTimeout); nil = available
+	NewKeyring   func() secrets.Store // secrets.NewKeyring; tests inject a memory store
 }
 
 // Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.

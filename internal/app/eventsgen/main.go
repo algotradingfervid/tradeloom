@@ -65,12 +65,18 @@ func (g *gen) ts(t reflect.Type) string {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
 		return "number"
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice: // encoding/json writes a nil slice as null
+		return "Array<" + g.ts(t.Elem()) + "> | null"
+	case reflect.Array:
 		return "Array<" + g.ts(t.Elem()) + ">"
-	case reflect.Map:
-		return "Record<string, " + g.ts(t.Elem()) + ">"
+	case reflect.Map: // a nil map is null too
+		return "Record<string, " + g.ts(t.Elem()) + "> | null"
 	case reflect.Pointer:
-		return g.ts(t.Elem()) + " | null"
+		if inner := g.ts(t.Elem()); strings.HasSuffix(inner, " | null") {
+			return inner
+		} else {
+			return inner + " | null"
+		}
 	case reflect.Struct:
 		return g.structType(t)
 	}
