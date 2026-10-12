@@ -2,7 +2,10 @@ package instruments
 
 import (
 	"context"
+	"log/slog"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,9 +89,7 @@ func TestDueOncePerTradingDayAfterDumpTime(t *testing.T) { // FR-WATCH-008 AC1
 
 func TestRunDownloadsAtStartThenAtNextDumpTime(t *testing.T) {
 	g := newRig(t, ist(2026, 10, 16, 9, 0)) // Friday
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go g.r.Run(ctx)
+	g.run(t)
 	if !g.clk.WaitTimers(2, 2*time.Second) { // limiter usage loop + Run's next-dump timer
 		t.Fatal("Run never armed its timer")
 	}
@@ -151,6 +152,21 @@ func TestDumpFileRoundTrip(t *testing.T) {
 	}
 }
 
+type capHandler struct {
+	mu   *sync.Mutex
+	recs *[]slog.Record
+}
+
+func (h capHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h capHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	*h.recs = append(*h.recs, r)
+	h.mu.Unlock()
+	return nil
+}
+func (h capHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h capHandler) WithGroup(string) slog.Handler      { return h }
+
 func TestLoadDropsOutOfScopeAndExpiredRows(t *testing.T) { // Ruling 40 carry-forward
 	g := newRig(t, ist(2026, 10, 12, 9, 0))
 	g.mustRefresh(t)
@@ -161,13 +177,199 @@ func TestLoadDropsOutOfScopeAndExpiredRows(t *testing.T) { // Ruling 40 carry-fo
 	good := len(rows)
 	rows = append(rows,
 		store.InstrumentRow{Token: 9001, Tradingsymbol: "FOO", Exchange: "MCX", Segment: "MCX-FUT", InstrumentType: "FUT", Expiry: 20261029},
-		store.InstrumentRow{Token: 9002, Tradingsymbol: "OLDFUT", Exchange: "NFO", Segment: "NFO-FUT", InstrumentType: "FUT", Expiry: 20260929})
+		store.InstrumentRow{Token: 9002, Tradingsymbol: "OLDFUT", Exchange: "NFO", Segment: "NFO-FUT", InstrumentType: "FUT", Expiry: 20260929},
+		store.InstrumentRow{Token: 9003, Tradingsymbol: "TODAYFUT", Exchange: "NFO", Segment: "NFO-FUT", InstrumentType: "FUT", Expiry: 20261012})
 	imp := store.InstrumentImport{DownloadedAt: ist(2026, 10, 12, 9, 0).UnixMilli(), RowCount: len(rows), KeptCount: len(rows), Source: "kite"}
 	if err := g.db.ReplaceInstruments(context.Background(), rows, imp); err != nil {
 		t.Fatal(err)
 	}
+	var mu sync.Mutex
+	var recs []slog.Record
+	b := bus.New(nil)
+	sub := bus.Subscribe(b, TopicStatus, bus.SubOpts[Status]{Buffer: 4})
 	m2 := NewMaster(g.clk)
-	if err := NewRefresher(Options{Master: m2, DB: g.db, Clock: g.clk}).Load(context.Background()); err != nil || m2.Len() != good {
-		t.Fatalf("loaded %d want %d (%v)", m2.Len(), good, err)
+	r2 := NewRefresher(Options{Master: m2, DB: g.db, Clock: g.clk, Bus: b, Log: slog.New(capHandler{&mu, &recs})})
+	if err := r2.Load(context.Background()); err != nil || m2.Len() != good+1 {
+		t.Fatalf("loaded %d want %d (%v)", m2.Len(), good+1, err)
 	}
+	for _, tok := range []uint32{9001, 9002} {
+		if _, ok := m2.ByToken(tok); ok {
+			t.Fatalf("token %d must be dropped", tok)
+		}
+	}
+	if _, ok := m2.ByToken(9003); !ok {
+		t.Fatal("future expiring today must be kept")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, r := range recs {
+		got := map[string]int64{}
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Value.Kind() == slog.KindInt64 {
+				got[a.Key] = a.Value.Int64()
+			}
+			return true
+		})
+		if got["out_of_scope"] == 1 && got["expired_futures"] == 1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("drop counts not logged: %v", recs)
+	}
+	if st := <-sub.C(); !st.OK || st.Kept != good+1 {
+		t.Fatalf("load status %+v", st)
+	}
+}
+
+var tokenFail = mock.Failure{Status: 400, ErrorType: "InputException", Message: "bad request"}
+
+func (g *rig) waitCalls(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for g.srv.Calls(mock.RouteInstruments) < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := g.srv.Calls(mock.RouteInstruments); got != n {
+		t.Fatalf("downloads = %d, want %d", got, n)
+	}
+}
+
+func TestRunArmsDumpTimeFromEarlyStart(t *testing.T) {
+	g := newRig(t, ist(2026, 10, 12, 7, 0))
+	g.run(t)
+	if !g.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("Run never armed its timer")
+	}
+	g.waitCalls(t, 0)
+	g.clk.Set(ist(2026, 10, 12, 8, 30))
+	g.waitCalls(t, 1)
+}
+
+func TestRunArmsNextTradingDayFromHoliday(t *testing.T) {
+	g := newRig(t, ist(2026, 10, 20, 9, 0)) // Dussehra
+	g.run(t)
+	if !g.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("Run never armed its timer")
+	}
+	g.waitCalls(t, 0)
+	g.clk.Set(ist(2026, 10, 21, 8, 30))
+	g.waitCalls(t, 1)
+}
+
+func TestRunRetriesFailedRefreshWithBackoff(t *testing.T) { // Ruling 49
+	g := newRig(t, ist(2026, 10, 12, 9, 0))
+	g.srv.FailNext(mock.RouteInstruments, tokenFail)
+	g.srv.FailNext(mock.RouteInstruments, tokenFail)
+	g.run(t)
+	g.waitCalls(t, 1)
+	if !g.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("no retry timer")
+	}
+	g.clk.Advance(59 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	g.waitCalls(t, 1)
+	g.clk.Advance(time.Second) // +1 min
+	g.waitCalls(t, 2)
+	if !g.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("no second retry timer")
+	}
+	g.clk.Advance(4*time.Minute + 59*time.Second)
+	time.Sleep(20 * time.Millisecond)
+	g.waitCalls(t, 2)
+	g.clk.Advance(time.Second) // +5 min, succeeds
+	g.waitCalls(t, 3)
+	for i := 0; i < 2000 && g.m.Len() == 0; i++ {
+		time.Sleep(time.Millisecond)
+	}
+	if g.m.Len() != 17 {
+		t.Fatalf("list not installed: %d", g.m.Len())
+	}
+}
+
+func TestRunBackoffEndsWithTheDay(t *testing.T) {
+	g := newRig(t, ist(2026, 10, 12, 23, 59))
+	g.srv.FailNext(mock.RouteInstruments, tokenFail)
+	g.run(t)
+	g.waitCalls(t, 1)
+	if !g.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("no timer")
+	}
+	g.clk.Set(ist(2026, 10, 13, 0, 1))
+	time.Sleep(20 * time.Millisecond)
+	g.waitCalls(t, 1)
+	g.clk.Set(ist(2026, 10, 13, 8, 30))
+	g.waitCalls(t, 2)
+}
+
+func TestTriggerRefreshesWhenDueAndCoalesces(t *testing.T) {
+	g := newRig(t, ist(2026, 10, 12, 9, 0))
+	g.srv.FailNext(mock.RouteInstruments, tokenFail)
+	g.run(t)
+	g.waitCalls(t, 1)
+	if !g.clk.WaitTimers(2, 2*time.Second) {
+		t.Fatal("no retry timer")
+	}
+	g.r.Trigger() // no clock advance: the trigger alone retries
+	g.waitCalls(t, 2)
+	g.r.Trigger() // list is current now: not due, no download
+	time.Sleep(20 * time.Millisecond)
+	g.waitCalls(t, 2)
+	for i := 0; i < 5; i++ {
+		g.r.Trigger() // never blocks
+	}
+	if len(g.r.trigger) > 1 {
+		t.Fatal("trigger not coalesced")
+	}
+}
+
+func TestLoadAndFailedRefreshStatus(t *testing.T) {
+	g := newRig(t, ist(2026, 10, 12, 9, 0))
+	g.mustRefresh(t)
+	sub := bus.Subscribe(g.bus, TopicStatus, bus.SubOpts[Status]{Buffer: 4})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := g.r.Refresh(ctx); err == nil {
+		t.Fatal("cancelled refresh succeeded")
+	}
+	select {
+	case st := <-sub.C():
+		t.Fatalf("status published during shutdown: %+v", st)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestWriteDumpPrivateAndNoTmpLeft(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "i", "last.csv.gz")
+	if err := WriteDump(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v %v", st, err)
+	}
+	if _, err := os.Stat(p + ".tmp"); err == nil {
+		t.Fatal("tmp left behind")
+	}
+	bad := filepath.Join(dir, "d", "x")
+	if err := os.MkdirAll(bad, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteDump(bad, nil); err == nil { // rename onto a directory fails
+		t.Fatal("expected error")
+	}
+	if _, err := os.Stat(bad + ".tmp"); err == nil {
+		t.Fatal("tmp left after failed rename")
+	}
+}
+
+// run starts Run and, at cleanup, stops it and waits so no refresh outlives the temp dir.
+func (g *rig) run(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { g.r.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
 }

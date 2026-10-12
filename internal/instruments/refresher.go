@@ -43,14 +43,17 @@ type Options struct {
 }
 
 // Refresher downloads the dump once per trading day after 08:30 IST and on demand.
-type Refresher struct{ o Options }
+type Refresher struct {
+	o       Options
+	trigger chan struct{}
+}
 
 // NewRefresher builds a Refresher.
 func NewRefresher(o Options) *Refresher {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	return &Refresher{o: o}
+	return &Refresher{o: o, trigger: make(chan struct{}, 1)}
 }
 
 // Load fills the Master from app.db (startup; works offline).
@@ -86,6 +89,9 @@ func (r *Refresher) Load(ctx context.Context) error {
 		at = time.UnixMilli(imp.DownloadedAt).In(clock.IST)
 	}
 	r.o.Master.Replace(ins, at)
+	if hasImp {
+		publish(r.o.Bus, TopicStatus, Status{OK: true, ImportedAt: at, Kept: len(ins)})
+	}
 	return nil
 }
 
@@ -124,6 +130,9 @@ func (r *Refresher) Refresh(ctx context.Context) error {
 		if !prev.IsZero() && prev.Unix() > 0 {
 			msg = "Instrument list refresh failed; using the list from " + clock.FormatDateIST(prev)
 		}
+		if ctx.Err() != nil {
+			return err // shutting down: not a refresh failure worth a WARNING
+		}
 		r.o.Log.Warn("instrument refresh failed", "err", err, "using", prev)
 		publish(r.o.Bus, TopicStatus, Status{OK: false, ImportedAt: prev, Kept: r.o.Master.Len(), Message: msg})
 		return err
@@ -139,26 +148,69 @@ func (r *Refresher) Refresh(ctx context.Context) error {
 	return nil
 }
 
-// Run refreshes now if due, then at every following trading day's dump time, until ctx ends.
+// retryBackoff is the same-day retry schedule after a failed refresh; the last step repeats.
+var retryBackoff = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
+
+// Trigger asks Run to refresh now if due (e.g. after login). It never blocks and coalesces.
+func (r *Refresher) Trigger() {
+	select {
+	case r.trigger <- struct{}{}:
+	default:
+	}
+}
+
+// Run refreshes now if due, retries failures on a same-day back-off, then waits for the next
+// trading day's dump time, until ctx ends. Trigger wakes it early.
 func (r *Refresher) Run(ctx context.Context) {
+	failures := 0
 	for {
-		if r.Due(r.o.Clock.Now()) {
-			_ = r.Refresh(ctx)
-		}
 		now := r.o.Clock.Now()
-		next := calendar.DateOf(now)
-		if !r.o.Calendar.IsTradingDay(calendar.NSE, next) || !now.Before(r.o.Calendar.InstrumentsReadyAt(next)) {
-			var ok bool
-			if next, ok = r.o.Calendar.NextTradingDay(calendar.NSE, next); !ok {
-				return
+		if r.Due(now) {
+			if err := r.Refresh(ctx); err != nil {
+				failures++
+			} else {
+				failures = 0
+			}
+			now = r.o.Clock.Now()
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		var target time.Time
+		today := calendar.DateOf(now)
+		if r.Due(now) { // still no list for today: retry later the same day
+			step := failures - 1
+			if step < 0 {
+				step = 0
+			}
+			if step >= len(retryBackoff) {
+				step = len(retryBackoff) - 1
+			}
+			target = now.Add(retryBackoff[step])
+			if calendar.DateOf(target) != today {
+				target = time.Time{} // the day is over; fall through to the next dump time
 			}
 		}
-		t := r.o.Clock.At(r.o.Calendar.InstrumentsReadyAt(next))
+		if target.IsZero() {
+			next := today
+			if !r.o.Calendar.IsTradingDay(calendar.NSE, next) || !now.Before(r.o.Calendar.InstrumentsReadyAt(next)) {
+				var ok bool
+				if next, ok = r.o.Calendar.NextTradingDay(calendar.NSE, next); !ok {
+					r.o.Log.Warn("instrument refresher stopping: no further trading day in the calendar", "from", today.String())
+					return
+				}
+			}
+			target = r.o.Calendar.InstrumentsReadyAt(next)
+			failures = 0
+		}
+		t := r.o.Clock.At(target)
 		select {
 		case <-ctx.Done():
 			t.Stop()
 			return
 		case <-t.C():
+		case <-r.trigger:
+			t.Stop()
 		}
 	}
 }
@@ -171,10 +223,16 @@ func WriteDump(path string, ins []Instrument) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
+	ok := false
+	defer func() {
+		if !ok {
+			os.Remove(tmp)
+		}
+	}()
 	zw := gzip.NewWriter(f)
 	w := csv.NewWriter(zw)
 	_ = w.Write(dumpHeader)
@@ -196,10 +254,18 @@ func WriteDump(path string, ins []Instrument) error {
 		f.Close()
 		return err
 	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	ok = true
+	return nil
 }
 
 // ReadDump reads a file written by WriteDump and re-derives names and flags.
