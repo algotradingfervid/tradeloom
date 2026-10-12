@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strconv"
 	"time"
 
 	"tradeloom/internal/candles"
@@ -110,17 +112,35 @@ func (s *Store) ClaimNext(ctx context.Context) (candles.Window, bool, error) {
 }
 
 func (s *Store) FinishWindow(ctx context.Context, jobID string, seq int, st candles.WindowStatus, attempts int, errMsg string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE backfill_windows SET status=?, attempts=?, error=NULLIF(?, '') WHERE job_id=? AND seq=?`,
+	r, err := s.db.ExecContext(ctx, `UPDATE backfill_windows SET status=?, attempts=?, error=NULLIF(?, '') WHERE job_id=? AND seq=?`,
 		string(st), attempts, errMsg, jobID, seq)
-	return err
+	if err != nil {
+		return err
+	}
+	return requireRow(r, "window "+jobID+"/"+strconv.Itoa(seq))
 }
 
 func (s *Store) SplitWindow(ctx context.Context, w candles.Window, parts []candles.Range) error {
+	if len(parts) == 0 {
+		return fmt.Errorf("candles: split of window %s/%d: no parts", w.JobID, w.Seq)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var prio, attempts int
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT priority, attempts, status FROM backfill_windows WHERE job_id=? AND seq=?`, w.JobID, w.Seq).Scan(&prio, &attempts, &status)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("candles: split of window %s/%d: window not found", w.JobID, w.Seq)
+	}
+	if err != nil {
+		return err
+	}
+	if status != string(candles.WindowRunning) {
+		return fmt.Errorf("candles: split of window %s/%d: status is %s, want running", w.JobID, w.Seq, status)
+	}
 	var max int
 	if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM backfill_windows WHERE job_id=?`, w.JobID).Scan(&max); err != nil {
 		return err
@@ -128,14 +148,19 @@ func (s *Store) SplitWindow(ctx context.Context, w candles.Window, parts []candl
 	if _, err := tx.ExecContext(ctx, `DELETE FROM backfill_windows WHERE job_id=? AND seq=?`, w.JobID, w.Seq); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE backfill_links SET dep_seq=? WHERE dep_job_id=? AND dep_seq=?`, max+1, w.JobID, w.Seq); err != nil {
-		return err
-	}
 	for i, p := range parts {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO backfill_windows(job_id, seq, from_ts, to_ts, priority, status, attempts) VALUES(?,?,?,?,?,'queued',?)`,
-			w.JobID, max+1+i, ts(p.From), ts(p.To), w.Priority, w.Attempts); err != nil {
+			w.JobID, max+1+i, ts(p.From), ts(p.To), prio, attempts); err != nil {
 			return err
 		}
+		// Every job that reused the old window now depends on every part.
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO backfill_links(job_id, dep_job_id, dep_seq)
+			SELECT job_id, dep_job_id, ? FROM backfill_links WHERE dep_job_id=? AND dep_seq=?`, max+1+i, w.JobID, w.Seq); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM backfill_links WHERE dep_job_id=? AND dep_seq=?`, w.JobID, w.Seq); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -158,8 +183,11 @@ func (s *Store) Progress(ctx context.Context, id string) (candles.JobProgress, e
 }
 
 func (s *Store) FinishJob(ctx context.Context, id, status, errMsg string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE backfill_jobs SET status=?, error=NULLIF(?, ''), finished_at=? WHERE id=?`, status, errMsg, at.UnixMilli(), id)
-	return err
+	r, err := s.db.ExecContext(ctx, `UPDATE backfill_jobs SET status=?, error=NULLIF(?, ''), finished_at=? WHERE id=?`, status, errMsg, at.UnixMilli(), id)
+	if err != nil {
+		return err
+	}
+	return requireRow(r, "job "+id)
 }
 
 func (s *Store) OpenJobs(ctx context.Context) ([]candles.Job, error) {
@@ -181,4 +209,15 @@ func (s *Store) OpenJobs(ctx context.Context) ([]candles.Job, error) {
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+func requireRow(r sql.Result, what string) error {
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("candles: %s not found", what)
+	}
+	return nil
 }
