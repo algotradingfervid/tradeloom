@@ -37,6 +37,7 @@ func TestArchitecture(t *testing.T) {
 			vs := CheckImports("tradeloom", Graph(pkgs))
 			vs = append(vs, CheckClock("tradeloom", pkgs)...)
 			vs = append(vs, CheckOrderWrite("tradeloom", pkgs)...)
+			vs = append(vs, CheckKiteIndirect("tradeloom", pkgs)...)
 			for _, v := range vs {
 				t.Error(v)
 			}

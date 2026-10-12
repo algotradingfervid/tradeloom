@@ -3,6 +3,8 @@ package kite_test
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -205,5 +207,61 @@ func TestCanceledContextIsClassifiedCanceledNotNetwork(t *testing.T) { // Task 7
 	}
 	if n := e.srv.Calls(mock.RouteOrders); n != 0 {
 		t.Fatalf("calls = %d, want 0 after cancellation", n)
+	}
+}
+
+// A request already on the wire is aborted when ctx is cancelled (gokiteconnect takes no ctx;
+// the client binds each attempt's requests to it) and reported as canceled, not offline.
+func TestCancelWhileRequestInFlightIsCanceled(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(slow.Close)
+	t.Cleanup(func() { close(release) })
+	clk := clock.New(clock.Options{})
+	lim := ratelimit.New(clk, ratelimit.Options{})
+	lctx, lcancel := context.WithCancel(context.Background())
+	t.Cleanup(lcancel)
+	lim.Run(lctx)
+	cli := kite.New(kite.Options{APIKey: "key", BaseURI: slow.URL, Limiter: lim, Clock: clk,
+		Jitter: func() time.Duration { return time.Millisecond }})
+	cli.SetAccessToken("token")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := cli.Orders(ctx); done <- err }()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if k := kite.Classify(err); k != kite.KindCanceled || kite.IsOffline(err) {
+			t.Fatalf("err = %v (kind %v), want canceled", err, k)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Orders did not return after ctx was cancelled with the request in flight")
+	}
+}
+
+func TestNewPanicsWithoutLimiterOrClock(t *testing.T) {
+	clk := clock.New(clock.Options{})
+	for name, o := range map[string]kite.Options{
+		"Limiter": {Clock: clk},
+		"Clock":   {Limiter: ratelimit.New(clk, ratelimit.Options{})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if s, _ := r.(string); !strings.Contains(s, "Options."+name) {
+					t.Fatalf("recover() = %v, want a panic naming Options.%s", r, name)
+				}
+			}()
+			kite.New(o)
+		})
 	}
 }

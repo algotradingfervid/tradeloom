@@ -39,7 +39,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Latest() != 1 || SupportedSchema() != 1 {
+	if m.Latest() != 2 || SupportedSchema() != 2 {
 		t.Fatalf("latest=%d", m.Latest())
 	}
 }
