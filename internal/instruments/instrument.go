@@ -72,30 +72,45 @@ func toRow(i Instrument, importedAt time.Time) store.InstrumentRow {
 	}
 }
 
-func fromRow(r store.InstrumentRow) Instrument {
+// fromRow rebuilds an Instrument from a stored row. It fails closed: ok=false for rows whose
+// (segment, exchange, type) shape the scope filter would reject, so a corrupt or foreign row can
+// never reach the master. IsIndex is derived from the segment, not the stored column.
+func fromRow(r store.InstrumentRow) (Instrument, bool) {
+	if !inScope(r.Exchange, r.Segment, r.InstrumentType) {
+		return Instrument{}, false
+	}
+	tag, ok := tagOf(r.Exchange, r.Segment)
+	if !ok {
+		return Instrument{}, false
+	}
 	var exp time.Time
 	if r.Expiry != 0 {
 		exp = calendar.DateFromInt(int(r.Expiry)).Midnight()
 	}
 	return Instrument{
 		Token: uint32(r.Token), ExchangeToken: uint32(r.ExchangeToken), Exchange: r.Exchange, Segment: r.Segment,
-		Tag: tagOf(r.Exchange, r.Segment), Tradingsymbol: r.Tradingsymbol, Name: r.Name, Type: r.InstrumentType, Expiry: exp,
+		Tag: tag, Tradingsymbol: r.Tradingsymbol, Name: r.Name, Type: r.InstrumentType, Expiry: exp,
 		TickSizePaise: r.TickSizePaise, LotSize: r.LotSize, DisplayName: r.DisplayName, Underlying: r.Underlying,
-		IsIndex: r.IsIndex, IsWeekly: r.IsWeekly,
-	}
+		IsIndex: r.Segment == "INDICES", IsWeekly: r.IsWeekly,
+	}, true
 }
 
-// tagOf derives the tag from the instrument's own record only (FR-WATCH-014).
-func tagOf(exchange, segment string) Tag {
+// tagOf derives the tag from the instrument's own record only (FR-WATCH-014); ok=false when the
+// record maps to none of the five tags.
+func tagOf(exchange, segment string) (Tag, bool) {
 	switch segment {
 	case "INDICES":
-		return TagIndices
+		return TagIndices, true
 	case "NFO-FUT":
-		return TagNFOFut
+		return TagNFOFut, true
 	case "BFO-FUT":
-		return TagBFOFut
+		return TagBFOFut, true
 	}
-	return Tag(strings.ToUpper(exchange))
+	switch t := Tag(strings.ToUpper(exchange)); t {
+	case TagNSE, TagBSE:
+		return t, true
+	}
+	return "", false
 }
 
 func midnight(t time.Time) time.Time { return clock.MidnightIST(t) }

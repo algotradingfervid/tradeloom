@@ -17,13 +17,25 @@ import (
 // new or inconsistent Kite segment/type never enters the master (and the tag, which the frontend
 // also derives from the exchange, can never disagree with the exchange).
 func keep(r kite.Instrument, today calendar.Date) bool {
+	if !inScope(r.Exchange, r.Segment, r.InstrumentType) {
+		return false
+	}
+	if r.InstrumentType == "FUT" {
+		return !r.Expiry.Time.IsZero() && !calendar.DateOf(r.Expiry.Time).Before(today)
+	}
+	return true
+}
+
+// inScope is the (segment, exchange, instrument type) shape check of keep, without the expiry
+// test; fromRow reuses it so rows loaded from the database obey the same scope guard.
+func inScope(exchange, segment, instrumentType string) bool {
 	switch {
-	case r.Segment == "INDICES":
-		return (r.Exchange == "NSE" || r.Exchange == "BSE") && r.InstrumentType == "EQ"
-	case (r.Segment == "NSE" || r.Segment == "BSE") && r.Exchange == r.Segment:
-		return r.InstrumentType == "EQ"
-	case (r.Segment == "NFO-FUT" && r.Exchange == "NFO") || (r.Segment == "BFO-FUT" && r.Exchange == "BFO"):
-		return r.InstrumentType == "FUT" && !r.Expiry.Time.IsZero() && !calendar.DateOf(r.Expiry.Time).Before(today)
+	case segment == "INDICES":
+		return (exchange == "NSE" || exchange == "BSE") && instrumentType == "EQ"
+	case (segment == "NSE" || segment == "BSE") && exchange == segment:
+		return instrumentType == "EQ"
+	case (segment == "NFO-FUT" && exchange == "NFO") || (segment == "BFO-FUT" && exchange == "BFO"):
+		return instrumentType == "FUT"
 	}
 	return false
 }
@@ -36,9 +48,10 @@ func Filter(rows kite.Instruments, today calendar.Date) []Instrument {
 		if !keep(r, today) {
 			continue
 		}
+		tag, _ := tagOf(r.Exchange, r.Segment) // keep() guarantees a valid tag
 		in := Instrument{
 			Token: uint32(r.InstrumentToken), ExchangeToken: uint32(r.ExchangeToken), Exchange: r.Exchange,
-			Segment: r.Segment, Tag: tagOf(r.Exchange, r.Segment), Tradingsymbol: r.Tradingsymbol,
+			Segment: r.Segment, Tag: tag, Tradingsymbol: r.Tradingsymbol,
 			Name: r.Name, Type: r.InstrumentType, TickSizePaise: int64(math.Round(r.TickSize * 100)),
 			LotSize: int64(math.Round(r.LotSize)), IsIndex: r.Segment == "INDICES",
 		}

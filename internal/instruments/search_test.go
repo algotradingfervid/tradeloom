@@ -1,6 +1,7 @@
 package instruments
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -82,5 +83,48 @@ func TestSearchUnder100msOnFullSizeMaster(t *testing.T) { // FR-WATCH-008 AC3
 	t.Logf("worst query %v", worst)
 	if worst > 100*time.Millisecond {
 		t.Fatalf("search took %v", worst)
+	}
+}
+
+// Search with a limit must equal the head of the unlimited search (top-k heap vs full sort).
+func TestSearchLimitEqualsFullSortPrefix(t *testing.T) {
+	now := ist(2026, 10, 12, 9, 0)
+	m := NewMaster(clock.NewFake(now))
+	var ins []Instrument
+	tok := uint32(1)
+	add := func(in Instrument) { in.Token = tok; tok++; ins = append(ins, in) }
+	for i := 0; i < 40; i++ {
+		sym := "ABC" + string(rune('A'+i%26)) + string(rune('A'+i/26))
+		add(Instrument{Exchange: "NSE", Segment: "NSE", Tag: TagNSE, Type: "EQ", Tradingsymbol: sym, Name: "ABC " + sym + " LIMITED", DisplayName: sym})
+		if i%2 == 0 {
+			add(Instrument{Exchange: "BSE", Segment: "BSE", Tag: TagBSE, Type: "EQ", Tradingsymbol: sym, Name: "ABC " + sym + " LIMITED", DisplayName: sym})
+		}
+	}
+	for i := 0; i < 30; i++ {
+		exp := ist(2026, time.Month(10+i%3), 1+(i*7)%27, 0, 0)
+		ex, seg, tag := "NFO", "NFO-FUT", TagNFOFut
+		if i%3 == 0 {
+			ex, seg, tag = "BFO", "BFO-FUT", TagBFOFut
+		}
+		und := "ABC" + string(rune('A'+i%5))
+		add(Instrument{Exchange: ex, Segment: seg, Tag: tag, Type: "FUT", Tradingsymbol: und + "FUT" + string(rune('A'+i)), Name: und, Underlying: und,
+			Expiry: exp, DisplayName: und + " " + exp.Format("02 Jan") + " FUT"})
+	}
+	m.Replace(ins, now)
+	for _, q := range []string{"a", "abc", "abca", "abc limited", "limited", "fut", "abcb", "zzz"} {
+		full := m.Search(q, 0)
+		for _, k := range []int{1, 2, 5, 17, 50, 500} {
+			got := m.Search(q, k)
+			want := full
+			if k < len(want) {
+				want = want[:k]
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("q=%q k=%d: Search(q,k) != Search(q,0)[:k]\n got %v\nwant %v", q, k, ids(got), ids(want))
+			}
+		}
+		if q == "abc" && len(full) <= 17 {
+			t.Fatalf("q=%q has only %d hits; limit never bites", q, len(full))
+		}
 	}
 }

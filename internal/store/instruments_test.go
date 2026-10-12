@@ -42,3 +42,29 @@ func TestReplaceInstrumentsIsAtomicAndRebuildsFTS(t *testing.T) {
 		t.Fatalf("last import = %+v %v %v", imp, ok, err)
 	}
 }
+
+func TestLoadInstrumentsToleratesNullColumns(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := Open(ctx, filepath.Join(dir, "app.db"), Options{BackupDir: filepath.Join(dir, "backups"), Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.W.ExecContext(ctx, `INSERT INTO instruments(token, exchange_token, tradingsymbol, name, exchange, segment, instrument_type,
+		expiry, tick_size_paise, lot_size, display_name, underlying, is_index, is_weekly, imported_at)
+		VALUES(7, NULL, 'X', NULL, 'NSE', 'NSE', 'EQ', NULL, 5, 1, 'X', NULL, 0, NULL, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.W.ExecContext(ctx, `INSERT INTO instrument_imports(downloaded_at, row_count, kept_count, source) VALUES(NULL, NULL, NULL, NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LoadInstruments(ctx)
+	if err != nil || len(got) != 1 || got[0].Token != 7 || got[0].ExchangeToken != 0 || got[0].Name != "" {
+		t.Fatalf("load = %+v %v", got, err)
+	}
+	imp, ok, err := db.LastInstrumentImport(ctx)
+	if err != nil || !ok || imp != (InstrumentImport{}) {
+		t.Fatalf("last import = %+v %v %v", imp, ok, err)
+	}
+}

@@ -64,7 +64,7 @@ func (db *DB) ReplaceInstruments(ctx context.Context, rows []InstrumentRow, imp 
 
 // LoadInstruments returns the whole master ordered by token.
 func (db *DB) LoadInstruments(ctx context.Context) ([]InstrumentRow, error) {
-	rows, err := db.R.QueryContext(ctx, `SELECT token, exchange_token, tradingsymbol, COALESCE(name,''), exchange, segment,
+	rows, err := db.R.QueryContext(ctx, `SELECT token, COALESCE(exchange_token,0), tradingsymbol, COALESCE(name,''), exchange, segment,
 		instrument_type, COALESCE(expiry,0), tick_size_paise, lot_size, display_name, COALESCE(underlying,''), is_index,
 		COALESCE(is_weekly,0), imported_at FROM instruments ORDER BY token`)
 	if err != nil {
@@ -86,7 +86,7 @@ func (db *DB) LoadInstruments(ctx context.Context) ([]InstrumentRow, error) {
 // LastInstrumentImport returns the newest import, ok=false when none.
 func (db *DB) LastInstrumentImport(ctx context.Context) (InstrumentImport, bool, error) {
 	var imp InstrumentImport
-	err := db.R.QueryRowContext(ctx, `SELECT downloaded_at, row_count, kept_count, source FROM instrument_imports ORDER BY id DESC LIMIT 1`).
+	err := db.R.QueryRowContext(ctx, `SELECT COALESCE(downloaded_at,0), COALESCE(row_count,0), COALESCE(kept_count,0), COALESCE(source,'') FROM instrument_imports ORDER BY id DESC LIMIT 1`).
 		Scan(&imp.DownloadedAt, &imp.RowCount, &imp.KeptCount, &imp.Source)
 	if err == sql.ErrNoRows {
 		return imp, false, nil
