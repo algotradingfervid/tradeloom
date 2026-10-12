@@ -40,6 +40,10 @@ func TestArchitecture(t *testing.T) {
 			vs = append(vs, CheckKiteIndirect("tradeloom", pkgs)...)
 			vs = append(vs, CheckKiteRawWrite("tradeloom", pkgs)...)
 			vs = append(vs, CheckKitePaths("tradeloom", pkgs)...)
+			vs = append(vs, CheckExec("tradeloom", pkgs)...)
+			if missing := ExecNamesMissing(pkgs); len(missing) != 0 {
+				t.Errorf("Ruling 83 g0-exec names not found: %v", missing)
+			}
 			if missing := KiteRawWriteMissing(pkgs); len(missing) != 0 {
 				t.Errorf("Ruling 69 identifiers not found in gokiteconnect: %v", missing)
 			}

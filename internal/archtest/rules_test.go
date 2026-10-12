@@ -61,6 +61,18 @@ func TestCheckImports_Table(t *testing.T) {
 		{"kite imports kite/mock", Pkg{"tradeloom/internal/kite", []string{"tradeloom/internal/kite/mock"}}, "g0-mock"},
 		{"kite/mock/sub imports kite/mock", Pkg{"tradeloom/internal/kite/mock/sub", []string{"tradeloom/internal/kite/mock"}}, ""},
 		{"service imports kite/mockx", Pkg{"tradeloom/internal/service", []string{"tradeloom/internal/kite/mockx"}}, ""},
+		// g0-exec (Ruling 83): syscall and golang.org/x/sys/... only in the allow-listed packages, exactly.
+		{"service imports syscall", Pkg{"tradeloom/internal/service", []string{"syscall"}}, ""},
+		{"service/servicetest imports syscall", Pkg{"tradeloom/internal/service/servicetest", []string{"syscall"}}, "g0-exec"},
+		{"store imports syscall", Pkg{"tradeloom/internal/store", []string{"syscall"}}, "g0-exec"},
+		{"app imports syscall", Pkg{"tradeloom/internal/app", []string{"syscall"}}, "g0-exec"},
+		{"kite imports x/sys/unix", Pkg{"tradeloom/internal/kite", []string{"golang.org/x/sys/unix"}}, "g0-exec"},
+		{"service imports x/sys/unix", Pkg{"tradeloom/internal/service", []string{"golang.org/x/sys/unix"}}, ""},
+		{"cmd imports x/sys/windows", Pkg{"tradeloom/cmd/tradeloom", []string{"golang.org/x/sys/windows"}}, "g0-exec"},
+		{"store imports syscallx", Pkg{"tradeloom/internal/store", []string{"syscallx"}}, ""},
+		// g0-plugin (Ruling 83): plugin nowhere.
+		{"app imports plugin", Pkg{"tradeloom/internal/app", []string{"plugin"}}, "g0-plugin"},
+		{"kite imports plugin", Pkg{"tradeloom/internal/kite", []string{"plugin"}}, "g0-plugin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

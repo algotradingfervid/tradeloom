@@ -444,23 +444,37 @@ func kiteRawWriteObjects(pkgs []*packages.Package) map[types.Object]string {
 			banned[m] = "HTTPClient." + m.Name()
 			methods[m.Name()] = true
 		}
-		for _, n := range scope.Names() {
-			impl, ok := scope.Lookup(n).(*types.TypeName)
-			if !ok || impl == tn {
-				continue
-			}
-			named, ok := impl.Type().(*types.Named)
-			if !ok || types.IsInterface(named) || !types.Implements(types.NewPointer(named), iface) {
-				continue
-			}
-			for i := 0; i < named.NumMethods(); i++ {
-				if m := named.Method(i); methods[m.Name()] {
+		for _, impl := range httpClientImpls(kp, tn, iface) {
+			// The method set, not only the declared methods: a method promoted from an embedded type is
+			// what a selector on the implementation resolves to (Ruling 83).
+			ms := types.NewMethodSet(types.NewPointer(impl.Type()))
+			for i := 0; i < ms.Len(); i++ {
+				if m := ms.At(i).Obj(); methods[m.Name()] {
 					banned[m] = "(*" + impl.Name() + ")." + m.Name()
 				}
 			}
 		}
 	}
 	return banned
+}
+
+// httpClientImpls returns the non-interface types of kp whose pointer implements iface (the HTTPClient
+// interface tn): gokiteconnect's unexported *httpClient, whatever it is called.
+func httpClientImpls(kp *types.Package, tn *types.TypeName, iface *types.Interface) []*types.TypeName {
+	var out []*types.TypeName
+	scope := kp.Scope()
+	for _, n := range scope.Names() {
+		impl, ok := scope.Lookup(n).(*types.TypeName)
+		if !ok || impl == tn || impl.IsAlias() {
+			continue
+		}
+		named, ok := impl.Type().(*types.Named)
+		if !ok || types.IsInterface(named) || !types.Implements(types.NewPointer(named), iface) {
+			continue
+		}
+		out = append(out, impl)
+	}
+	return out
 }
 
 // KiteRawWriteMissing lists the kiteRawWriteNames that no loaded gokiteconnect package declares.
@@ -477,6 +491,7 @@ func KiteRawWriteMissing(pkgs []*packages.Package) []string {
 	}
 	// Ruling 79 M-5: every HTTPClient method must also have resolved on an implementing type
 	// (the unexported *httpClient), or a method value taken from GetClient() would go unreported.
+	// Ruling 83: the entry names the type that really implements HTTPClient, or says that none does.
 	for _, kp := range kitePackages(pkgs) {
 		tn, ok := kp.Scope().Lookup("HTTPClient").(*types.TypeName)
 		if !ok {
@@ -486,17 +501,17 @@ func KiteRawWriteMissing(pkgs []*packages.Package) []string {
 		if !ok {
 			continue
 		}
+		impls := httpClientImpls(kp, tn, iface)
 		for i := 0; i < iface.NumMethods(); i++ {
 			name := iface.Method(i).Name()
-			hit := false
-			for n := range found {
-				if strings.HasPrefix(n, "(*") && strings.HasSuffix(n, ")."+name) {
-					hit = true
-					break
-				}
+			if len(impls) == 0 {
+				out = append(out, "HTTPClient."+name+" (no type implements HTTPClient)")
+				continue
 			}
-			if !hit {
-				out = append(out, "(*httpClient)."+name)
+			for _, impl := range impls {
+				if n := "(*" + impl.Name() + ")." + name; !found[n] {
+					out = append(out, n)
+				}
 			}
 		}
 	}
@@ -640,5 +655,88 @@ func CheckKitePaths(module string, pkgs []*packages.Package) []Violation {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// execFuncs are the process-starting functions outside os/exec that g0-exec bans (Ruling 83), by package
+// path. golang.org/x/sys/unix has Exec (v0.47.0 declares no ForkExec; it is listed in case a version adds
+// it). Every name in os and syscall must resolve (ExecNamesMissing); the x/sys names may be absent.
+var execFuncs = map[string][]string{
+	"os":                    {"StartProcess"},
+	"syscall":               {"Exec", "ForkExec", "StartProcess"},
+	"golang.org/x/sys/unix": {"Exec", "ForkExec"},
+}
+
+// isExecObject reports whether obj is part of os/exec, or one of the execFuncs package-level functions.
+func isExecObject(obj types.Object) (string, bool) {
+	if obj == nil || obj.Pkg() == nil {
+		return "", false
+	}
+	path := obj.Pkg().Path()
+	if path == "os/exec" {
+		if _, isPkg := obj.(*types.PkgName); !isPkg {
+			return "os/exec." + obj.Name(), true
+		}
+		return "", false
+	}
+	fn, ok := obj.(*types.Func)
+	if !ok || fn.Type().(*types.Signature).Recv() != nil || !containsStr(execFuncs[path], fn.Name()) {
+		return "", false
+	}
+	return path + "." + fn.Name(), true
+}
+
+// CheckExec reports every reference outside internal/app to os/exec (functions, types, fields and
+// methods, also when reached through a value another package returns, without importing os/exec) and to
+// the execFuncs (g0-exec, Ruling 83): a package that can start a process can run curl against the Kite
+// order API, which neither the transport deny-list nor the nm check would see. It matches
+// types.Object identity through TypesInfo.Uses, so renamed imports, dot-imports, aliases and function
+// values are caught. Test files are not loaded and are exempt. Residual: raw syscalls (syscall.Syscall
+// with SYS_EXECVE) are confined by the g0-exec import rule (sysImporters), not by this check.
+func CheckExec(module string, pkgs []*packages.Package) []Violation {
+	var out []Violation
+	for _, p := range pkgs {
+		if under(relPkg(module, p.PkgPath), "internal/app") {
+			continue
+		}
+		for id, obj := range p.TypesInfo.Uses {
+			if name, ok := isExecObject(obj); ok {
+				out = append(out, Violation{"g0-exec", position(p.Fset, id.Pos()),
+					name + " starts a process; allowed only in internal/app (the desktop opener)"})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// ExecNamesMissing lists the os and syscall execFuncs, and os/exec itself, that the loaded packages do not
+// declare, so a toolchain change cannot silently drop part of g0-exec. pkgs must include os, os/exec and
+// syscall (loaded directly or as dependencies).
+func ExecNamesMissing(pkgs []*packages.Package) []string {
+	byPath := map[string]*types.Package{}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if p.Types != nil {
+			byPath[p.PkgPath] = p.Types
+		}
+	})
+	var out []string
+	if byPath["os/exec"] == nil || byPath["os/exec"].Scope().Lookup("Command") == nil {
+		out = append(out, "os/exec.Command")
+	}
+	for _, path := range []string{"os", "syscall"} {
+		for _, name := range execFuncs[path] {
+			tp := byPath[path]
+			if tp == nil {
+				out = append(out, path+"."+name)
+				continue
+			}
+			if fn, ok := tp.Scope().Lookup(name).(*types.Func); !ok {
+				out = append(out, path+"."+name)
+			} else if _, ok := isExecObject(fn); !ok {
+				out = append(out, path+"."+name+" (not matched)")
+			}
+		}
+	}
 	return out
 }
