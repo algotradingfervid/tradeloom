@@ -56,7 +56,8 @@ func Detect(secretsFile string, probe func() error) Detection {
 
 // Migrate copies every key of AllKeys present in from into to, verifies each by reading it back,
 // then deletes it from from; when from is an *EncFile its file is removed (FR-ACCT-013 AC3).
-// If any copy fails, keys already copied are removed from to and from is left untouched.
+// If any copy fails, keys already copied are removed from to and from is left untouched. If every key
+// was copied and verified but from could not be cleaned up, the error wraps ErrSourceNotRemoved.
 func Migrate(from, to Store) error {
 	if reflect.TypeOf(from) == reflect.TypeOf(to) && reflect.TypeOf(from).Comparable() && from == to {
 		return errors.New("secrets: migrate source and target are the same store")
@@ -106,13 +107,13 @@ func Migrate(from, to Store) error {
 	}
 	if f, ok := from.(*EncFile); ok {
 		if err := f.Destroy(); err != nil {
-			return fmt.Errorf("secrets: migrated, but removing the source file failed: %w", err)
+			return fmt.Errorf("%w: removing the source file failed: %w", ErrSourceNotRemoved, err)
 		}
 		return nil
 	}
 	for _, k := range copied {
 		if err := from.Delete(k); err != nil {
-			return fmt.Errorf("secrets: migrated, but deleting %s from %s failed: %w", k, from.Backend(), err)
+			return fmt.Errorf("%w: deleting %s from %s failed: %w", ErrSourceNotRemoved, k, from.Backend(), err)
 		}
 	}
 	return nil
