@@ -56,3 +56,16 @@ describe('job.progress notices (P0-3 Ruling 71/74, Task 30)', () => {
     stop();
   });
 });
+
+describe('support bundle jobs (Task 15)', () => {
+  it('a support_bundle failure is never toasted here: the Diagnostics call that started it reports it', () => {
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: () => {} });
+    backend.emit('job.progress', { ...job, kind: 'support_bundle', jobId: 'support_bundle-1', finished: true, error: 'the exports folder does not exist' });
+    beginJobClaim();
+    backend.emit('job.progress', { ...job, kind: 'support_bundle', jobId: 'support_bundle-2', finished: true, error: 'disk full' });
+    endJobClaim();
+    expect(messages()).toEqual([]);
+    stop();
+  });
+});

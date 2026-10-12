@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ShortcutAction } from '../api/backend';
 import { shortcutFixture } from '../api/mock/fixtures';
-import { bindingFromEvent, bindingMatches, formatBinding, isTypingTarget, parseBinding, resolveAction, scopeStackFor } from './registry';
+import { bindingFromEvent, bindingMatches, formatBinding, isSupportedBindingKey, isTypingTarget, parseBinding, resolveAction, scopeStackFor } from './registry';
 
 const ev = (key: string, code: string, mods: Partial<{ ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean }> = {}) => ({
   key, code, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...mods,
@@ -112,6 +112,25 @@ describe('shortcut registry', () => {
     expect(isTypingTarget(box)).toBe(false);
     expect(isTypingTarget(document.createElement('button'))).toBe(false);
     expect(isTypingTarget(null)).toBe(false);
+  });
+});
+
+describe('isSupportedBindingKey (Task 6 carry-forward → Task 15)', () => {
+  it('agrees with Go ParseBinding for keys bindingFromEvent can produce', () => {
+    const events = [
+      ev('k', 'KeyK', { ctrlKey: true }), ev('1', 'Digit1', { altKey: true }), ev('?', 'Slash', { shiftKey: true, ctrlKey: true }),
+      ev('F7', 'F7'), ev('F24', 'F24'), ev(' ', 'Space', { ctrlKey: true }), ev('ArrowUp', 'ArrowUp', { altKey: true }),
+      ev('PageDown', 'PageDown'), ev('+', 'NumpadAdd', { ctrlKey: true }), ev('<', 'IntlBackslash', { altKey: true }),
+      ev('Dead', 'Unidentified', { altKey: true }), ev('AudioVolumeUp', 'AudioVolumeUp'), ev('F25', 'F25'), ev('é', 'Unidentified'),
+      ev('*', 'NumpadMultiply', { ctrlKey: true }), ev('ContextMenu', 'ContextMenu'),
+    ];
+    for (const e of events) {
+      const b = bindingFromEvent(e) as string;
+      expect(isSupportedBindingKey(b), `${e.code} → ${b}`).toBe(goParseBinding(b) !== null);
+    }
+    expect(isSupportedBindingKey('Ctrl++')).toBe(false);
+    expect(isSupportedBindingKey('Ctrl+=')).toBe(true);
+    expect(isSupportedBindingKey('F0')).toBe(false);
   });
 });
 

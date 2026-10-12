@@ -77,6 +77,24 @@ export function bindingFromEvent(e: KeyLike): string | null {
   return parts.join('+');
 }
 
+// Go's key allow-list (internal/settings/shortcuts.go normaliseKey): named keys, A-Z, 0-9, punctuation, F1-F24.
+const NAMED_KEYS = new Set([
+  'Space', 'Escape', 'Enter', 'Tab', 'Backspace', 'Delete', 'Insert', 'Home', 'End', 'PageUp', 'PageDown',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
+
+/**
+ * Whether Go's ParseBinding accepts the key of a binding bindingFromEvent produced. Keys such as NumpadAdd ("+"),
+ * IntlBackslash ("<"), dead keys ("Dead") or media keys are refused by Go, so the rebind UI explains them instead.
+ */
+export function isSupportedBindingKey(binding: string): boolean {
+  const key = binding.slice(binding.lastIndexOf('+', binding.length - 2) + 1);
+  if (NAMED_KEYS.has(key)) return true;
+  if (/^[A-Z0-9]$/.test(key) || (key.length === 1 && '`-=[]\\;\',./'.includes(key))) return true;
+  const fn = /^F([1-9]\d?)$/.exec(key);
+  return fn !== null && Number(fn[1]) <= 24;
+}
+
 export function scopeStackFor(el: Element | null): ShortcutScope[] {
   const inner: ShortcutScope[] = [];
   for (let n: Element | null = el; n; n = n.parentElement) {
