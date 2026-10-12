@@ -89,7 +89,10 @@ type InstrumentDTO struct {
 	IsIndex        bool   `json:"isIndex"`
 	IsFuture       bool   `json:"isFuture"`
 	Underlying     string `json:"underlying"`
-	AlsoOnNSE      bool   `json:"alsoOnNse"` // FR-WATCH-008: a BSE search hit whose company is also listed on NSE
+	// AlsoOnNSE (FR-WATCH-008): a BSE row whose company is also listed on NSE. It is filled on
+	// SearchInstruments results only; InstrumentsByTokens and InstrumentByIdentifier always report false,
+	// because InstrumentFinder's ByToken/ByID do not expose the flag.
+	AlsoOnNSE bool `json:"alsoOnNse"`
 }
 
 // TickDTO is ticker.Tick reduced to what the UI shows; Close is the previous session close.
@@ -166,9 +169,11 @@ func (s *Service) exchangeOf(token uint32) calendar.Exchange {
 	return calendar.NSE
 }
 
-// resolveRange turns a request into [from, to): ToMs 0 is now; TradingDays > 0 starts at the continuous open
-// of the N-th trading day before to (the day of to counts when it is a trading day).
-func (s *Service) resolveRange(token uint32, fromMs, toMs int64, tradingDays int) (time.Time, time.Time, error) {
+// resolveRange turns a request into [from, to): ToMs 0 is now. TradingDays > 0 starts on the N-th trading day
+// before to: at its continuous open for intraday intervals, at its IST midnight for day candles (stored at
+// 00:00 IST). The day of to counts only once its continuous phase has started (Ruling 66). A calendar that
+// cannot supply N trading days is refused, never served as fewer days.
+func (s *Service) resolveRange(token uint32, iv candles.Interval, fromMs, toMs int64, tradingDays int) (time.Time, time.Time, error) {
 	to := s.d.Clock.Now().In(clock.IST)
 	if toMs > 0 {
 		to = time.UnixMilli(toMs).In(clock.IST)
@@ -185,25 +190,37 @@ func (s *Service) resolveRange(token uint32, fromMs, toMs int64, tradingDays int
 	}
 	ex := s.exchangeOf(token)
 	d := calendar.DateOf(to)
-	if !s.d.Calendar.IsTradingDay(ex, d) {
-		p, ok := s.d.Calendar.PrevTradingDay(ex, d)
-		if !ok {
-			return time.Time{}, time.Time{}, refused(chartStage, "invalid_range", "No trading day found before the end of the range.")
-		}
-		d = p
+	steps := tradingDays - 1
+	if !s.toDayCounts(ex, d, to) {
+		steps++
 	}
-	for i := 1; i < tradingDays; i++ {
+	for i := 0; i < steps; i++ {
 		p, ok := s.d.Calendar.PrevTradingDay(ex, d)
 		if !ok {
-			break
+			s.d.Log.Warn("chart range: calendar has no earlier trading day", "exchange", ex, "before", d.Midnight(), "tradingDays", tradingDays)
+			return time.Time{}, time.Time{}, refused(chartStage, "invalid_range",
+				"The market calendar has no trading day before "+d.Midnight().Format("2 Jan 2006")+"; cannot go back that many trading days.")
 		}
 		d = p
 	}
 	from := d.Midnight()
-	if ph, ok := s.d.Calendar.Day(ex, d).Phase(calendar.PhaseContinuous); ok {
-		from = ph.Start
+	if iv != candles.Day {
+		if ph, ok := s.d.Calendar.Day(ex, d).Phase(calendar.PhaseContinuous); ok {
+			from = ph.Start
+		}
 	}
 	return from, to, nil
+}
+
+// toDayCounts reports whether the day of to is one of the trading days of the range: a trading day whose
+// continuous phase has started by to (before the open, e.g. 08:00, the previous trading day is the first).
+func (s *Service) toDayCounts(ex calendar.Exchange, d calendar.Date, to time.Time) bool {
+	day := s.d.Calendar.Day(ex, d)
+	if !day.IsTrading() {
+		return false
+	}
+	ph, ok := day.Phase(calendar.PhaseContinuous)
+	return !ok || to.After(ph.Start)
 }
 
 func (s *Service) readRange(ctx context.Context, token uint32, iv candles.Interval, from, to time.Time) (CandlesResult, error) {
@@ -228,7 +245,7 @@ func (s *Service) Candles(ctx context.Context, req CandlesRequest) (CandlesResul
 	if err != nil {
 		return CandlesResult{}, err
 	}
-	from, to, err := s.resolveRange(req.Token, req.FromMs, req.ToMs, req.TradingDays)
+	from, to, err := s.resolveRange(req.Token, iv, req.FromMs, req.ToMs, req.TradingDays)
 	if err != nil {
 		return CandlesResult{}, err
 	}
@@ -244,7 +261,11 @@ func (s *Service) Candles(ctx context.Context, req CandlesRequest) (CandlesResul
 		res.NeedsDataPlan = true
 	default:
 		in, known := s.d.Instruments.ByToken(req.Token)
-		job := backfill.Job{Token: req.Token, Interval: iv, From: from, To: to, Requester: "chart", Priority: ratelimit.Interactive, OI: known && in.IsFuture()}
+		if !known { // whether open interest is needed is unknown: a non-OI fetch could cover a future for good (Ruling 66)
+			s.d.Log.Warn("chart backfill skipped: token not in the instrument master", "token", req.Token, "interval", iv)
+			return res, nil
+		}
+		job := backfill.Job{Token: req.Token, Interval: iv, From: from, To: to, Requester: "chart", Priority: ratelimit.Interactive, OI: in.IsFuture()}
 		id, err := s.d.Backfill.Submit(ctx, job)
 		if err != nil {
 			return res, s.refuse(chartStage, err)
@@ -266,13 +287,43 @@ func candlesFromHistorical(hs []kite.HistoricalData, iv candles.Interval, oi boo
 	return out
 }
 
+// coveredWindow is P0-2 backfill.store's coverage-stop rule: coverage ends at the first candle that has
+// not ended (Kite returned the forming candle) or, when there is none, before any candle that cannot
+// have ended yet, so the open part is fetched again later.
+func coveredWindow(cs []candles.Candle, iv candles.Interval, from, to, now time.Time) candles.Range {
+	coverTo := to
+	open := false
+	for _, c := range cs {
+		if !c.Complete {
+			if c.Start.Before(coverTo) {
+				coverTo = c.Start
+			}
+			open = true
+			break
+		}
+	}
+	if !open {
+		if lim := now.Add(-iv.Duration()).Add(time.Second); lim.Before(coverTo) {
+			coverTo = lim
+		}
+	}
+	if coverTo.Before(from) {
+		coverTo = from
+	}
+	return candles.Range{From: from, To: coverTo}
+}
+
 // RefreshCandles re-fetches one window from Kite at Interactive priority and upserts it as source manual (FR-CHART-006).
 func (s *Service) RefreshCandles(ctx context.Context, req RefreshRequest) (CandlesResult, error) {
 	iv, err := parseChartInterval(req.Interval)
 	if err != nil {
 		return CandlesResult{}, err
 	}
-	from, to, err := s.resolveRange(req.Token, req.FromMs, req.ToMs, 0)
+	if s.d.Historical == nil || s.d.CandleWriter == nil {
+		s.d.Log.Error("manual candle refresh is not wired", "historical", s.d.Historical != nil, "candleWriter", s.d.CandleWriter != nil)
+		return CandlesResult{}, refused(chartStage, "internal", "Manual refresh is not available in this build.")
+	}
+	from, to, err := s.resolveRange(req.Token, iv, req.FromMs, req.ToMs, 0)
 	if err != nil {
 		return CandlesResult{}, err
 	}
@@ -294,14 +345,19 @@ func (s *Service) RefreshCandles(ctx context.Context, req RefreshRequest) (Candl
 		return CandlesResult{}, refused(chartStage, "refresh_failed", logging.Default.RedactString("Kite did not return candles: "+err.Error()))
 	}
 	if ok {
-		cs := candlesFromHistorical(rows, iv, hreq.OI, s.d.Clock.Now())
-		if err := s.d.CandleWriter.Upsert(ctx, req.Token, iv, cs, candles.SourceManual); err != nil {
+		now := s.d.Clock.Now()
+		cs := candlesFromHistorical(rows, iv, hreq.OI, now)
+		if err := s.d.CandleWriter.UpsertCovered(ctx, req.Token, iv, coveredWindow(cs, iv, from, to, now), cs, candles.SourceManual); err != nil {
 			return CandlesResult{}, s.refuse(chartStage, err)
 		}
 		s.d.Log.Info("candles refreshed manually", "token", req.Token, "interval", iv, "rows", len(cs))
 	}
 	return s.readRange(ctx, req.Token, iv, from, to)
 }
+
+// masterSize is *instruments.Master's Len: an empty master (first run, before the download) cannot tell an
+// unknown token from a valid one, so OpenLive checks tokens only once the master is loaded.
+type masterSize interface{ Len() int }
 
 // OpenLive subscribes a chart to live ticks and candle building for (token, interval); returns the subscription id.
 func (s *Service) OpenLive(_ context.Context, token uint32, interval string) (string, error) {
@@ -311,6 +367,11 @@ func (s *Service) OpenLive(_ context.Context, token uint32, interval string) (st
 	}
 	if s.d.Session.State().DataPlan == kite.PlanNone {
 		return "", refused(chartStage, "no_data_plan", "This API key has no market-data permission; live candles are unavailable.")
+	}
+	if m, ok := s.d.Instruments.(masterSize); ok && m.Len() > 0 {
+		if _, known := s.d.Instruments.ByToken(token); !known {
+			return "", refused(chartStage, "not_found", "This instrument is not in the instrument list.")
+		}
 	}
 	id := s.d.NewID()
 	if err := s.d.Live.Subscribe(ticker.ConsumerChart, id, []uint32{token}, ticker.ModeQuote); err != nil && !errors.Is(err, feed.ErrNotRunning) {

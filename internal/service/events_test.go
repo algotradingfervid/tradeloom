@@ -2,12 +2,19 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"tradeloom/internal/bus"
 	"tradeloom/internal/candles/backfill"
+	"tradeloom/internal/clock"
 	"tradeloom/internal/kite"
+	"tradeloom/internal/kite/ratelimit"
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/orders"
 )
@@ -174,7 +181,7 @@ func TestForwardKeyed_BackfillProgressPerJob(t *testing.T) {
 	bus.Publish(e.bus, backfill.TopicProgress, backfill.Progress{JobID: "b"})
 	bus.Publish(e.bus, backfill.TopicProgress, backfill.Progress{JobID: "a"})
 	time.Sleep(50 * time.Millisecond)
-	if got := advanceUntilEvent(t, e, ch, EvBackfillProgress).payload.([]backfill.Progress); len(got) != 2 {
+	if got := advanceUntilEvent(t, e, ch, EvBackfillProgress).payload.([]BackfillProgressDTO); len(got) != 2 {
 		t.Fatalf("%+v", got)
 	}
 }
@@ -192,11 +199,16 @@ func TestForwardNow_OrderUpdateAndFeedState(t *testing.T) {
 	}
 	bus.Publish(e.bus, ticker.TopicFeed, ticker.FeedState{State: "live", Tokens: 3})
 	time.Sleep(20 * time.Millisecond)
-	if fs := advanceUntilEvent(t, e, ch, EvFeedState).payload.(ticker.FeedState); fs.State != "live" {
+	if fs := advanceUntilEvent(t, e, ch, EvFeedState).payload.(FeedStateDTO); fs.State != "live" || fs.Tokens != 3 {
 		t.Fatalf("%+v", fs)
 	}
 	if e.svc.FeedState().Tokens != 3 {
 		t.Fatalf("feed state not remembered: %+v", e.svc.FeedState())
+	}
+	e.sync.mu.Lock()
+	defer e.sync.mu.Unlock()
+	if len(e.sync.refreshed) != 0 {
+		t.Fatalf("refresh without drops: %v", e.sync.refreshed)
 	}
 }
 
@@ -232,6 +244,8 @@ func TestNavigate_PublishesRoutesOnly(t *testing.T) {
 	e := newSvcEnv(t)
 	ch := startEvents(t, e)
 	e.svc.Navigate("settings")
+	e.svc.Navigate("//x")     // protocol-relative: never a route (settings.ValidateRoute)
+	e.svc.Navigate("/a/../b") // dot-dot segment
 	e.svc.Navigate("/settings/data")
 	if nav := nextEvent(t, ch, EvAppNavigate).payload.(Navigate); nav.Route != "/settings/data" {
 		t.Fatalf("%+v", nav)
@@ -249,6 +263,177 @@ func TestEventSources_ClosedBusEmitsNothing(t *testing.T) {
 	select {
 	case ev := <-ch:
 		t.Fatalf("emitted after the bus closed: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// startSource starts only the named source with its own emit.
+func startSource(t *testing.T, e *svcEnv, name string, emit Emit) context.CancelFunc {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	for _, src := range e.svc.EventSources() {
+		if src.Name == name {
+			src.Start(ctx, emit)
+			return cancel
+		}
+	}
+	t.Fatalf("no source %s", name)
+	return nil
+}
+
+// Ruling 67: no payload carries time.Time or time.Duration. kite.Order is forwarded unchanged; its
+// models.Time fields marshal as strings (json.Marshaler), so the walk stops at marshalers.
+func TestEventPayloads_NoTimeTypes(t *testing.T) {
+	timeT, durT := reflect.TypeOf(time.Time{}), reflect.TypeOf(time.Duration(0))
+	marshaler := reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	seen := map[reflect.Type]bool{}
+	var walk func(ty reflect.Type, path string)
+	walk = func(ty reflect.Type, path string) {
+		if ty == timeT || ty == durT {
+			t.Errorf("%s is %v", path, ty)
+			return
+		}
+		if seen[ty] || ty.Implements(marshaler) || reflect.PointerTo(ty).Implements(marshaler) {
+			return
+		}
+		seen[ty] = true
+		switch ty.Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map, reflect.Pointer:
+			walk(ty.Elem(), path+"[]")
+		case reflect.Struct:
+			for i := 0; i < ty.NumField(); i++ {
+				if f := ty.Field(i); f.IsExported() && f.Tag.Get("json") != "-" {
+					walk(f.Type, path+"."+f.Name)
+				}
+			}
+		}
+	}
+	for _, spec := range EventCatalogue() {
+		walk(spec.Payload, spec.Name)
+	}
+}
+
+func TestPayloadDTOs_UseUnixMillis(t *testing.T) {
+	ts := ist(2026, 10, 12, 10, 5)
+	fs := FeedStateDTOFrom(ticker.FeedState{State: "reconnecting", Attempt: 2, NextRetry: ts, Connections: 1, Tokens: 4})
+	if fs.State != "reconnecting" || fs.Attempt != 2 || fs.NextRetryMs != ts.UnixMilli() || fs.LastTickMs != 0 || fs.Connections != 1 || fs.Tokens != 4 {
+		t.Fatalf("feed %+v", fs)
+	}
+	off := OffsetDTOFrom(clock.Offset{Millis: -12, Source: clock.SourceNone, Samples: 3, Warn: true, UpdatedAt: ts})
+	if off.Millis != -12 || off.Source != string(clock.SourceNone) || off.Samples != 3 || !off.Warn || off.UpdatedAtMs != ts.UnixMilli() {
+		t.Fatalf("offset %+v", off)
+	}
+	u := UsageDTOFrom(ratelimit.Usage{At: ts, Paused: true, PauseReason: "expired", Classes: []ratelimit.ClassUsage{{Class: "quote", RatePerSec: 1, HTTP429: 2, BackoffUntil: ts}, {Class: "hist"}}})
+	if u.AtMs != ts.UnixMilli() || !u.Paused || u.PauseReason != "expired" || len(u.Classes) != 2 || u.Classes[0].BackoffUntilMs != ts.UnixMilli() ||
+		u.Classes[0].HTTP429 != 2 || u.Classes[0].RatePerSec != 1 || u.Classes[1].BackoffUntilMs != 0 {
+		t.Fatalf("usage %+v", u)
+	}
+	p := BackfillProgressDTOFrom(backfill.Progress{JobID: "a", Token: 7, Interval: "day", Done: 1, Failed: 2, Total: 3, ETA: 1500 * time.Millisecond, State: "running"})
+	if p.JobID != "a" || p.Token != 7 || p.Interval != "day" || p.Done != 1 || p.Failed != 2 || p.Total != 3 || p.ETAMs != 1500 || p.State != "running" {
+		t.Fatalf("progress %+v", p)
+	}
+	b, _ := json.Marshal(p)
+	if !json.Valid(b) || !strings.Contains(string(b), `"etaMs":1500`) {
+		t.Fatalf("json %s", b)
+	}
+}
+
+// Ruling 67: a dropped order.update is recovered by refreshing the order book (orders.changed is the truth).
+func TestForwardOrderUpdate_DropsTriggerRefresh(t *testing.T) {
+	e := newSvcEnv(t)
+	release := make(chan struct{})
+	var once sync.Once
+	startSource(t, e, EvOrderUpdate, func(_ string, _ any) { once.Do(func() { <-release }) })
+	for i := 0; i < 400; i++ {
+		bus.Publish(e.bus, kite.TopicOrderUpdate, kite.Order{OrderID: fmt.Sprint(i)})
+	}
+	close(release)
+	eventually(t, "orders refresh after drops", func() bool {
+		e.sync.mu.Lock()
+		defer e.sync.mu.Unlock()
+		return len(e.sync.refreshed) > 0 && e.sync.refreshed[0] == orders.ScopeOrders
+	})
+}
+
+// Ruling 67: when live and polled quotes of one token share a window, the newer quote (higher TsMs) wins,
+// whatever order the two subscriptions deliver them in.
+func TestForwardTicks_KeepsHigherTsMs(t *testing.T) {
+	e := newSvcEnv(t)
+	ch := startEvents(t, e)
+	bus.Publish(e.bus, ticker.TopicTicks, []ticker.Tick{{Token: 5, LTP: 50, ExchangeTS: time.UnixMilli(1000)}, {Token: 6, LTP: 60, ExchangeTS: time.UnixMilli(3000)}})
+	bus.Publish(e.bus, TopicPolledTicks, []TickDTO{{Token: 5, LTP: 51, TsMs: 2000}, {Token: 6, LTP: 61, TsMs: 2000}})
+	time.Sleep(50 * time.Millisecond)
+	got := advanceUntilEvent(t, e, ch, EvTickBatch).payload.([]TickDTO)
+	if len(got) != 2 || got[0].Token != 5 || got[0].LTP != 51 || !got[0].Polled || got[1].Token != 6 || got[1].LTP != 60 || got[1].Polled {
+		t.Fatalf("%+v", got)
+	}
+}
+
+// Ruling 67: at 08:59:30 the clock wakes at the 09:00 pre-open boundary itself. The 1-minute safety poll
+// would wake at 09:00:30, so an event stamped exactly 09:00:00 after a 30 s advance can only come from
+// the boundary timer.
+func TestMarketStatus_PreOpenAtBoundaryNotPoll(t *testing.T) {
+	e := newSvcEnv(t)
+	e.svc.d.Calendar = mustCalendar(t)
+	e.clock.Set(time.Date(2026, 10, 12, 8, 59, 30, 0, clock.IST))
+	ch := startEvents(t, e)
+	if first := nextEvent(t, ch, EvMarketStatus).payload.(MarketStatus); first.Phase != "closed" || first.DayType != "trading" {
+		t.Fatalf("%+v", first)
+	}
+	e.clock.Advance(30 * time.Second)
+	second := nextEvent(t, ch, EvMarketStatus).payload.(MarketStatus)
+	if second.Phase != "pre-open" || second.Label != "Pre-open" || second.AtMs != ist(2026, 10, 12, 9, 0).UnixMilli() {
+		t.Fatalf("%+v", second)
+	}
+}
+
+// On a holiday or a weekend nothing opens at 09:00: no market.status event at the boundary or the poll.
+func TestMarketStatus_HolidayAndWeekendStayClosed(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		day  int
+		typ  string
+	}{{"holiday", 20, "holiday"}, {"weekend", 17, "weekend"}} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newSvcEnv(t)
+			e.svc.d.Calendar = mustCalendar(t)
+			e.clock.Set(time.Date(2026, 10, c.day, 8, 59, 30, 0, clock.IST))
+			ch := startEvents(t, e)
+			if first := nextEvent(t, ch, EvMarketStatus).payload.(MarketStatus); first.Phase != "closed" || first.DayType != c.typ {
+				t.Fatalf("%+v", first)
+			}
+			for i := 0; i < 3; i++ {
+				e.clock.Advance(30 * time.Second)
+				select {
+				case ev := <-ch:
+					if ev.name == EvMarketStatus {
+						t.Fatalf("unexpected %+v", ev)
+					}
+				case <-time.After(30 * time.Millisecond):
+				}
+			}
+		})
+	}
+}
+
+func TestMarketClock_ExitsOnCancel(t *testing.T) {
+	e := newSvcEnv(t)
+	e.svc.d.Calendar = mustCalendar(t)
+	sub := bus.Subscribe(e.bus, TopicMarketStatus, bus.SubOpts[MarketStatus]{Name: "test"})
+	cancel := startSource(t, e, EvMarketStatus, func(string, any) {})
+	if _, ok := <-sub.C(); !ok {
+		t.Fatal("no initial status")
+	}
+	if !e.clock.WaitTimers(1, time.Second) {
+		t.Fatal("market clock armed no timer")
+	}
+	cancel()
+	eventually(t, "market clock timer stopped", func() bool { return e.clock.PendingTimers() == 0 })
+	e.clock.Advance(6 * time.Hour)
+	select {
+	case v := <-sub.C():
+		t.Fatalf("published after cancel: %+v", v)
 	case <-time.After(50 * time.Millisecond):
 	}
 }

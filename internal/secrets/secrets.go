@@ -48,6 +48,9 @@ var (
 	ErrCorruptFile = errors.New("secrets: secrets file is not readable")
 	// ErrFileExists: CreateEncFile refuses to overwrite an existing secrets.enc.
 	ErrFileExists = errors.New("secrets: secrets file already exists")
+	// ErrSourceNotRemoved: Migrate copied and verified every key into the target, but the source could
+	// not be cleaned up (secrets.enc not removed, or a key not deleted). The target holds every secret.
+	ErrSourceNotRemoved = errors.New("secrets: migrated, but the source was not removed")
 )
 
 // none is the "refuse to store credentials" backend (FR-ACCT-013 choice b).
