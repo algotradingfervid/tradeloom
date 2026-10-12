@@ -32,8 +32,32 @@ func TestParseShippedCalendar(t *testing.T) {
 		}
 		byEx[e.Exchange] = append(byEx[e.Exchange], e.Date.String()+string(e.Type))
 	}
-	if len(byEx[NSE]) < 15 || strings.Join(byEx[NSE], ",") != strings.Join(byEx[BSE], ",") {
-		t.Fatalf("NSE %d entries, BSE %d entries; the lists must match", len(byEx[NSE]), len(byEx[BSE]))
+	if strings.Join(byEx[NSE], ",") != strings.Join(byEx[BSE], ",") {
+		t.Fatalf("NSE %v, BSE %v; the lists must match", byEx[NSE], byEx[BSE])
+	}
+	want := []string{"2026-01-15", "2026-01-26", "2026-03-03", "2026-03-26", "2026-03-31", "2026-04-03",
+		"2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26", "2026-09-14", "2026-10-02",
+		"2026-10-20", "2026-11-10", "2026-11-24", "2026-12-25"}
+	var gotHol []string
+	for _, e := range f.Entries {
+		if e.Exchange == NSE && e.Type == DayHoliday {
+			gotHol = append(gotHol, e.Date.String())
+		}
+	}
+	if strings.Join(gotHol, ",") != strings.Join(want, ",") {
+		t.Fatalf("NSE holidays = %v, want %v", gotHol, want)
+	}
+	for _, ex := range []Exchange{NSE, BSE} {
+		var found bool
+		for _, e := range f.Entries {
+			if e.Exchange == ex && e.Date == (Date{2026, 2, 1}) && e.Type == DaySpecial {
+				c, ok := specContinuous(e.Phases)
+				found = ok && c.Start == 9*60+15 && c.End == 15*60+30 && len(e.Phases) == 2
+			}
+		}
+		if !found {
+			t.Errorf("%s: 2026-02-01 Budget-day special session missing or wrong", ex)
+		}
 	}
 }
 

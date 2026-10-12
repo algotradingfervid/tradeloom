@@ -56,6 +56,9 @@ func ParseFile(r io.Reader, source string) (File, error) {
 			}
 		}
 	}
+	if err := sc.Err(); err != nil {
+		return File{}, fmt.Errorf("reading calendar: %w", err)
+	}
 	cr := csv.NewReader(bytes.NewReader(raw))
 	cr.Comment = '#'
 	cr.FieldsPerRecord = -1
