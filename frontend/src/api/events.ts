@@ -5,6 +5,7 @@ import { useSessionStore } from '../store/session';
 import { markSettingsBaseline, useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
 import { useTicksStore } from '../store/ticks';
+import { useWatchlists } from '../store/watchlistsStore';
 import type { Backend, SessionStateName } from './backend';
 import { parseBackendError } from './errors';
 
@@ -48,6 +49,7 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
     backend.on('settings.changed', (c) => useSettingsStore.getState().put(c.key, c.value)),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
     backend.on('job.progress', (p) => notifyUnclaimedJob(p)),
+    backend.on('watchlists.changed', (w) => useWatchlists.getState().applyChanged(w)),
   ];
   return () => {
     for (const off of offs) off();
