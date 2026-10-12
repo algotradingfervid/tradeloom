@@ -3,6 +3,7 @@ import type {
   OrderRow, PositionRow, PositionsSnapshot, Profile, SecretStorageInfo, SessionStatus, ShortcutAction, StatusSnapshot, TickDTO,
 } from '../backend';
 import type { MockState } from './index';
+import { marketSeedState } from './market';
 
 export const DAY_MS = 86_400_000;
 const IST_OFFSET_MS = 19_800_000;
@@ -183,6 +184,7 @@ const deepCopy = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 function base(): MockState {
   return deepCopy<MockState>({
+    ...marketSeedState(),
     session: readySession(), status: statusFixture, profile: profileFixture,
     book: bookOf(ordersFixture), positions: positionsOf([positionOpen, positionClosed], [
       { ...positionOpen, key: 'day|NSE|INFY|MIS' }, { ...positionClosed, key: 'day|NSE|TATAMOTORS|MIS' },
