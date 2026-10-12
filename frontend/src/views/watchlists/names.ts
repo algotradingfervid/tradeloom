@@ -5,7 +5,7 @@ export const WATCHLIST_NAME_MAX = 40;
 const runeCount = (s: string): number => [...s].length;
 /**
  * Case-insensitive comparison. toLowerCase is close to, but not the same as, Go's strings.EqualFold (simple Unicode
- * case folding; e.g. 'K' KELVIN SIGN or 'ſ' fold differently). This check is a UI convenience; Go's duplicate_name
+ * case folding; e.g. Go folds final sigma 'ς' with 'σ' and long s 'ſ' with 's', toLowerCase does not). This check is a UI convenience; Go's duplicate_name
  * refusal is the backstop and the store maps it to the same text.
  */
 const fold = (s: string): string => s.trim().toLowerCase();

@@ -311,7 +311,7 @@ describe('fix round 1 (Ruling 102)', () => {
       return { d, fn: async () => { await d.promise; throw refusal('internal'); } };
     };
     const cases: [string, keyof MockBackend['watchlists'], () => Promise<unknown>, unknown][] = [
-      ['addItem', 'add', () => state().addItem(TCS.token), 'duplicate'],
+      ['addItem', 'add', () => state().addItem(TCS.token), 'cancelled'],
       ['restoreItem', 'add', () => state().restoreItem({ listId: 'a', token: TCS.token, position: 0 }), undefined],
       ['removeItem', 'remove', () => state().removeItem(SBIN.token), null],
       ['setActive', 'setActive', () => state().setActive('b'), undefined],
@@ -415,3 +415,84 @@ describe('the event bridge owns load() (Ruling 102 I3)', () => {
     expect(backend.callsTo('watchlists.list')).toHaveLength(0);
   });
 });
+
+describe('fix round 2 (Ruling 104)', () => {
+  it('I1: addItems stops quietly when a reset lands between tokens', async () => {
+    seed([wl('a', 'A')]);
+    const realAdd = backend.watchlists.add;
+    backend.watchlists.add = async (id, token, position) => {
+      const st = await realAdd(id, token, position);
+      resetOnLogout(); // sign-out between the first and the second token
+      return st;
+    };
+    await expect(state().addItems([TCS.token, INFY.token])).resolves.toBe(0);
+    expect(backend.callsTo('watchlists.add')).toHaveLength(1);
+    expect(state().lists).toEqual([]);
+  });
+
+  it('m1: addItem whose call succeeds after a reset reports "cancelled", not "added" or "duplicate"', async () => {
+    seed([wl('a', 'A')]);
+    const d = deferred<void>();
+    const realAdd = backend.watchlists.add;
+    backend.watchlists.add = async (id, token, position) => { await d.promise; return realAdd(id, token, position); };
+    const p = state().addItem(TCS.token);
+    resetOnLogout();
+    d.resolve();
+    expect(await p).toBe('cancelled');
+  });
+
+  it('m2: a load started before any user is known still completes when the user signs in (null → A)', async () => {
+    const d = deferred<WatchlistsState>();
+    backend.watchlists.list = () => d.promise;
+    const p = state().load();
+    useSessionStore.getState().setSession(readySession({ userId: 'AB1234' }));
+    d.resolve({ lists: [wl('a', 'Mine')], activeId: 'a' });
+    await p;
+    expect(state()).toMatchObject({ status: 'ready', activeId: 'a' });
+  });
+
+  it('m2: a load dropped by a user change (no reset) goes back to idle so it can be loaded again', async () => {
+    useSessionStore.getState().setSession(readySession({ userId: 'AB1234' }));
+    const d = deferred<WatchlistsState>();
+    backend.watchlists.list = () => d.promise;
+    const p = state().load();
+    useSessionStore.getState().setSession(readySession({ userId: 'ZX9876' }));
+    d.resolve({ lists: [wl('a', 'Theirs')], activeId: 'a' });
+    await p;
+    expect(state()).toMatchObject({ status: 'idle', lists: [] });
+  });
+
+  it('m3: a remove that resolves after logout returns null (no Undo offered)', async () => {
+    seed([wl('a', 'A', [SBIN])]);
+    const d = deferred<void>();
+    const realRemove = backend.watchlists.remove;
+    backend.watchlists.remove = async (id, token) => { await d.promise; return realRemove(id, token); };
+    const p = state().removeItem(SBIN.token);
+    resetOnLogout();
+    d.resolve();
+    expect(await p).toBeNull();
+  });
+
+  it('m4: a reset while the stale_order reload is pending stops the retry quietly', async () => {
+    seed([wl('a', 'A', [SBIN, TCS])]);
+    goItemsOf(backend, [SBIN, TCS, RELIANCE]);
+    const d = deferred<void>();
+    const realList = backend.watchlists.list;
+    let reloads = 0;
+    backend.watchlists.list = async () => { reloads++; await d.promise; return realList(); };
+    const p = state().move(TCS.token, -1);
+    // backend.watchlists.list was replaced, so count the reload by the deferred gate being reached.
+    await vi.waitFor(() => expect(reloads).toBe(1));
+    resetOnLogout();
+    // The next user's lists are already showing when the old reload returns: the retry must not touch them.
+    useWatchlists.setState({ lists: [wl('a', 'Next user', [SBIN, TCS])], activeId: 'a', status: 'ready' });
+    d.resolve();
+    await expect(p).resolves.toBeUndefined();
+    expect(backend.callsTo('watchlists.reorder')).toHaveLength(1);
+    expect(tokensOf(state().lists[0])).toEqual([SBIN.token, TCS.token]);
+  });
+});
+
+function goItemsOf(b: MockBackend, insts: Instrument[]) {
+  b.state.watchlists.lists[0].items = insts.map(watchlistItemOf);
+}

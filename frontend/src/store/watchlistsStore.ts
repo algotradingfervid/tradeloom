@@ -21,7 +21,8 @@ interface WatchlistsStore {
   create(name: string, tokens?: readonly number[], activate?: boolean): Promise<string | null>;
   rename(id: string, name: string): Promise<string | null>;
   deleteList(id: string): Promise<void>;
-  addItem(token: number): Promise<'added' | 'duplicate'>;
+  /** 'cancelled': the call finished after a reset (sign-out or user change); the caller shows nothing. */
+  addItem(token: number): Promise<'added' | 'duplicate' | 'cancelled'>;
   addItems(tokens: readonly number[]): Promise<number>;
   removeItem(token: number): Promise<RemovedItem | null>;
   restoreItem(r: RemovedItem): Promise<void>;
@@ -74,9 +75,11 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
     const e = epoch;
     const user = lastUserId;
     const seq = eventSeq;
-    const live = () => e === epoch && user === lastUserId;
+    // A ticket taken before any user was known (null) survives the first sign-in (null → A; Ruling 104 m2).
+    const live = () => e === epoch && (user === null || user === lastUserId);
     return {
       live,
+      wasReset: () => e !== epoch,
       superseded: () => seq !== eventSeq,
       apply: (st: WatchlistsState) => {
         if (live() && seq === eventSeq) set({ lists: st.lists, activeId: resolveActive(st) });
@@ -124,13 +127,17 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
     load: async () => {
       set({ status: 'loading', error: null });
       const t = ticket();
+      // Dropped by a user change without a reset: back to idle so the bridge (or a view) can load again.
+      const dropped = () => {
+        if (!t.wasReset() && get().status === 'loading') set({ status: 'idle' });
+      };
       try {
         const st = await watchlistsApi.list();
-        if (!t.live()) return;
+        if (!t.live()) return dropped();
         t.apply(st);
         set({ status: 'ready' });
       } catch (e) {
-        if (!t.live()) return;
+        if (!t.live()) return dropped();
         set(t.superseded() ? { status: 'ready' } : { status: 'error', error: message(e) });
       }
     },
@@ -224,17 +231,21 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
       const t = ticket();
       try {
         t.apply(await watchlistsApi.add(list.id, token, -1));
-        return 'added';
+        return t.live() ? 'added' : 'cancelled';
       } catch (e) {
-        // After a reset nothing was added as far as this (cleared) store is concerned.
-        if (!t.live() || isCode(e, 'already_in_list')) return 'duplicate';
+        if (!t.live()) return 'cancelled';
+        if (isCode(e, 'already_in_list')) return 'duplicate';
         throw e;
       }
     },
 
     addItems: async (tokens) => {
+      const t = ticket();
       let added = 0;
-      for (const token of tokens) if ((await get().addItem(token)) === 'added') added++;
+      for (const token of tokens) {
+        if (!t.live()) break; // a reset between tokens ends the batch quietly (Ruling 104 I1)
+        if ((await get().addItem(token)) === 'added') added++;
+      }
       return added;
     },
 
@@ -249,7 +260,8 @@ export const useWatchlists = create<WatchlistsStore>()((set, get) => {
       }));
       const t = ticket();
       try {
-        return await watchlistsApi.remove(list.id, token);
+        const removed = await watchlistsApi.remove(list.id, token);
+        return t.live() ? removed : null; // no Undo after a sign-out (Ruling 104 m3)
       } catch (e) {
         if (!t.live()) return null;
         set((s) => ({
