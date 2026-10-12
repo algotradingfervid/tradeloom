@@ -5,14 +5,20 @@ import { Button } from '../../components/Button';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { IconButton } from '../../components/IconButton';
 import { watchlistPanelCopy as copy } from '../../i18n/copy';
+import { registerReset } from '../../store/reset';
 import { pushToast } from '../../store/toasts';
 import { activeList, useWatchlists, type Watchlist } from '../../store/watchlistsStore';
+import { InstrumentPicker } from './InstrumentPicker';
 import { WatchlistRows } from './WatchlistRows';
 import { WatchlistSearch } from './WatchlistSearch';
 import { watchlistTabId, WatchlistTabs } from './WatchlistTabs';
 import './watchlists.css';
 
 const reason = (e: unknown): string => (e instanceof Error ? e.message : parseBackendError(e).reason);
+
+/** Counts resets (sign-out or user switch): a picker batch that finishes after one announces nothing (Ruling 118). */
+let resets = 0;
+registerReset(() => { resets += 1; }, { name: 'watchlistPanelResets', inspect: () => ({ resets }) });
 
 /**
  * FR-WATCH-001/002/003: the watchlist panel — tabs, inline search, delete (with confirmation) and the active list's
@@ -28,6 +34,9 @@ export function WatchlistPanel({ onChartItem }: { onChartItem(item: WatchlistIte
   const [confirming, setConfirming] = useState<Watchlist | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  /** The list the picker was opened for (its name titles the picker and the announcement). */
+  const [pickerFor, setPickerFor] = useState<Watchlist | null>(null);
+  const [notice, setNotice] = useState('');
   // The last load error stays on screen while Retry runs (load() clears the store's error); adjusted during render.
   const [lastError, setLastError] = useState(error);
   if (error && error !== lastError) setLastError(error);
@@ -62,6 +71,18 @@ export function WatchlistPanel({ onChartItem }: { onChartItem(item: WatchlistIte
       });
   };
 
+  // Done in the picker: append the picked instruments to the active list (Task 17 Step 3, Ruling 118 notes).
+  // addItems rejects ("No watchlist", unknown_instrument) — never voided; after a reset it resolves quietly.
+  const addPicked = (list: Watchlist, tokens: number[]) => {
+    setPickerFor(null);
+    if (tokens.length === 0) return;
+    const at = resets;
+    setNotice('');
+    useWatchlists.getState().addItems(tokens)
+      .then((n) => { if (n > 0 && resets === at) setNotice(copy.addedMany(n, list.name)); })
+      .catch((e: unknown) => { if (resets === at) pushToast({ level: 'error', message: copy.addFailed(list.name, reason(e)) }); });
+  };
+
   const showError = status === 'error' || retrying;
 
   return (
@@ -69,7 +90,7 @@ export function WatchlistPanel({ onChartItem }: { onChartItem(item: WatchlistIte
       <WatchlistTabs panelId={active ? panelId : undefined} idPrefix={prefix} />
       <div className="watchlist-panel__tools">
         <WatchlistSearch />
-        {/* MERGE(P0-5 Task 17): add the "Add instruments…" button opening <InstrumentPicker …/> per Task 17 Step 3 */}
+        {active && <IconButton label={copy.addInstruments} tooltip={copy.addTitle(active.name)} icon="plus" onClick={() => setPickerFor(active)} />}
         {active && (
           <IconButton
             label={copy.deleteLabel(active.name)}
@@ -92,6 +113,13 @@ export function WatchlistPanel({ onChartItem }: { onChartItem(item: WatchlistIte
           <WatchlistRows list={active} onChartItem={onChartItem} />
         </div>
       )}
+      <p role="status" className="visually-hidden">{notice}</p>
+      <InstrumentPicker
+        open={pickerFor !== null}
+        title={pickerFor ? copy.addTitle(pickerFor.name) : undefined}
+        onClose={() => setPickerFor(null)}
+        onDone={(sel) => { if (pickerFor) addPicked(pickerFor, sel.map((i) => i.token)); }}
+      />
       <ConfirmDialog
         open={confirming !== null}
         title={copy.deleteTitle}

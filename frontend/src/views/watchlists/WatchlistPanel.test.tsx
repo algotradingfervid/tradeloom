@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../shortcuts/ShortcutProvider', () => ({ useShortcut: vi.fn() }));
 vi.mock('../../market/hooks', () => ({ useSubscription: vi.fn(), usePolled: () => false }));
@@ -9,6 +9,7 @@ vi.mock('../../api/instruments', async () => {
 });
 
 import type { Watchlist } from '../../api/backend';
+import { searchInstruments } from '../../api/instruments';
 import { setBackend } from '../../api/current';
 import { demoSeed } from '../../api/mock/fixtures';
 import { createMockBackend, type MockBackend } from '../../api/mock/index';
@@ -17,6 +18,7 @@ import { WatchlistPanel } from './WatchlistPanel';
 import { useWatchlists } from '../../store/watchlistsStore';
 import { useToastStore } from '../../store/toasts';
 import { SBIN, TCS } from '../../instruments/fixtures';
+import { SEARCH_DEBOUNCE_MS } from '../../instruments/useInstrumentSearch';
 
 let backend: MockBackend;
 const lists = (...names: string[]): Watchlist[] =>
@@ -244,5 +246,57 @@ describe('WatchlistPanel — loading, errors and refusals', () => {
     renderPanel();
     await screen.findByRole('tab', { name: 'A' });
     expect(screen.queryByRole('button', { name: /^(buy|sell|b|s)\b/i })).toBeNull();
+  });
+});
+
+describe('WatchlistPanel — "Add instruments…" (P0-5 Task 17 Step 3, Ruling 118)', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+  /** Runs due timers and the promise callbacks they start, inside act. */
+  const flush = (ms = SEARCH_DEBOUNCE_MS) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  const pickSbin = async () => {
+    vi.mocked(searchInstruments).mockResolvedValueOnce([SBIN]);
+    renderPanel();
+    await flush(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Add instruments…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add to Watchlist 1' });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Search instruments' }), { target: { value: 'sb' } });
+    await flush();
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Select SBIN' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Done' }));
+    await flush(0);
+  };
+
+  it('FR-WATCH-007 via panel: search → pick → Done appends to the active list and says so politely', async () => {
+    await pickSbin();
+    expect(backend.callsTo('watchlists.add')[0]?.args).toEqual(['wl-1', SBIN.token, -1]);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText('Added 1 instrument to Watchlist 1')).toBeInTheDocument();
+  });
+
+  it('a refused add is reported, not swallowed', async () => {
+    backend.failNext('watchlists.add', 'Not in the instrument master', 'unknown_instrument');
+    await pickSbin();
+    expect(useToastStore.getState().visible[0]?.message).toBe('Could not add to Watchlist 1: Not in the instrument master');
+  });
+
+  it('Escape closes the picker, returns focus to "Add instruments…" and adds nothing', async () => {
+    renderPanel();
+    await flush(0);
+    const open = screen.getByRole('button', { name: 'Add instruments…' });
+    open.focus();
+    fireEvent.click(open);
+    const dialog = screen.getByRole('dialog', { name: 'Add to Watchlist 1' });
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: 'Escape' });
+    await flush(0);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add instruments…' })).toHaveFocus();
+    expect(backend.callsTo('watchlists.add')).toHaveLength(0);
+  });
+
+  it('no list yet (store still loading): no "Add instruments…" button', () => {
+    useWatchlists.setState({ status: 'loading' });
+    renderPanel();
+    expect(screen.queryByRole('button', { name: 'Add instruments…' })).toBeNull();
   });
 });
