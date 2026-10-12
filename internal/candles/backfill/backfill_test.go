@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -306,6 +307,7 @@ func TestWindowTooLargeIsHalved(t *testing.T) {
 func TestProgressEventsReachSubscribers(t *testing.T) {
 	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
 	sub := bus.Subscribe(r.bus, TopicProgress, bus.SubOpts[Progress]{Buffer: 64})
+	defer bus.Unsubscribe(r.bus, sub)
 	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) {
 		r.clk.Advance(time.Second)
 		return nil, nil
@@ -392,5 +394,341 @@ func TestDailyCheckForCalendarInference(t *testing.T) { // FR-DATA-001 AC5 (data
 	}
 	if ok, err := check(ctx, calendar.Date{Year: 2026, Month: 10, Day: 14}); err != nil || ok {
 		t.Fatalf("14 Oct: %v %v", ok, err)
+	}
+}
+
+// ---- Fix round 1 (Ruling 51) ----
+
+// spyJobs wraps a JobStore: it counts calls, records the call order shared with spyStore, and can
+// fail FinishWindow / SplitWindow.
+type spyJobs struct {
+	candles.JobStore
+	order       *callOrder
+	best        atomic.Int32
+	claims      atomic.Int32
+	finishCalls atomic.Int32
+	splitCalls  atomic.Int32
+	finishFails atomic.Int32 // FinishWindow fails while > 0 (decremented per failure); -1 = always
+	splitFails  atomic.Int32
+}
+
+type callOrder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (o *callOrder) add(s string) {
+	if o != nil {
+		o.mu.Lock()
+		o.calls = append(o.calls, s)
+		o.mu.Unlock()
+	}
+}
+
+func failNow(n *atomic.Int32) bool {
+	for {
+		v := n.Load()
+		if v == 0 {
+			return false
+		}
+		if v < 0 || n.CompareAndSwap(v, v-1) {
+			return true
+		}
+	}
+}
+
+var errDisk = errors.New("disk I/O error")
+
+func (s *spyJobs) ActiveWindows(ctx context.Context, token uint32, iv candles.Interval) ([]candles.Window, error) {
+	s.order.add("ActiveWindows")
+	return s.JobStore.ActiveWindows(ctx, token, iv)
+}
+func (s *spyJobs) BestQueuedPriority(ctx context.Context) (int, bool, error) {
+	s.best.Add(1)
+	return s.JobStore.BestQueuedPriority(ctx)
+}
+func (s *spyJobs) ClaimNext(ctx context.Context) (candles.Window, bool, error) {
+	s.claims.Add(1)
+	return s.JobStore.ClaimNext(ctx)
+}
+func (s *spyJobs) FinishWindow(ctx context.Context, jobID string, seq int, st candles.WindowStatus, attempts int, msg string) error {
+	s.finishCalls.Add(1)
+	if failNow(&s.finishFails) {
+		return errDisk
+	}
+	return s.JobStore.FinishWindow(ctx, jobID, seq, st, attempts, msg)
+}
+func (s *spyJobs) SplitWindow(ctx context.Context, w candles.Window, parts []candles.Range) error {
+	s.splitCalls.Add(1)
+	if failNow(&s.splitFails) {
+		return errDisk
+	}
+	return s.JobStore.SplitWindow(ctx, w, parts)
+}
+
+type spyStore struct {
+	candles.Store
+	order *callOrder
+}
+
+func (s *spyStore) Missing(ctx context.Context, token uint32, iv candles.Interval, from, to time.Time) ([]candles.Range, error) {
+	s.order.add("Missing")
+	return s.Store.Missing(ctx, token, iv, from, to)
+}
+
+// spy rebuilds the rig's Backfill over spying stores (before Start).
+func (r *rig) spy(workers int) (*spyJobs, *callOrder) {
+	o := &callOrder{}
+	j := &spyJobs{JobStore: r.store, order: o}
+	r.bf = New(Options{Store: &spyStore{Store: r.store, order: o}, Jobs: j, Fetcher: r.fake, Clock: r.clk, Bus: r.bus, Workers: workers})
+	return j, o
+}
+
+// advance moves the fake clock forward until ctx ends (clock-based back-offs and limiter windows).
+func advance(ctx context.Context, clk *clock.Fake, step time.Duration) {
+	go func() {
+		for ctx.Err() == nil {
+			clk.Advance(step)
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+}
+
+// terminalEvents collects progress events for id until the bus has been quiet for idle.
+func terminalEvents(sub *bus.Sub[Progress], id string, idle time.Duration) (n int) {
+	for {
+		select {
+		case p := <-sub.C():
+			if p.JobID == id && p.State != "running" {
+				n++
+			}
+		case <-time.After(idle):
+			return n
+		}
+	}
+}
+
+// Ruling 51 (1): a limiter that refuses entry must not make the workers spin.
+func TestStoppedLimiterDoesNotBusyLoop(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 3, "")
+	spy, _ := r.spy(3)
+	lim := ratelimit.New(r.clk, ratelimit.Options{})
+	lctx, lcancel := context.WithCancel(context.Background())
+	lim.Run(lctx)
+	lcancel() // the limiter stops; the backfill ctx stays alive
+	deadline := time.Now().Add(2 * time.Second)
+	for lim.Acquire(context.Background(), ratelimit.ClassHistorical, ratelimit.Interactive) == nil && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	r.fake.Limiter = lim
+	if _, err := r.bf.Submit(context.Background(), Job{Token: 8, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.bf.Start(r.ctx); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := r.fake.Calls("Historical"); n != 0 {
+		t.Fatalf("historical calls = %d, want 0", n)
+	}
+	if n, c := spy.best.Load(), spy.claims.Load(); n > 20 || c > 20 {
+		t.Fatalf("workers spin: %d BestQueuedPriority, %d ClaimNext calls in 300 ms", n, c)
+	}
+}
+
+// Ruling 51 (2): an input error that is not Kite's window-size limit fails the window at once.
+func TestOtherInputErrorFailsWithoutHalving(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) {
+		return nil, &kite.Err{Kind: kite.KindInput, Code: 400, Type: "InputException", Message: "invalid token"}
+	}
+	_ = r.bf.Start(r.ctx)
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := r.bf.Ensure(wctx, Job{Token: 9, Interval: candles.Day, From: ist(2020, 1, 1, 0, 0), To: ist(2026, 1, 1, 0, 0)})
+	if !errors.Is(err, ErrFailed) {
+		t.Fatalf("Ensure = %v, want ErrFailed", err)
+	}
+	if n := r.fake.Calls("Historical"); n != 2 { // 2 windows (2000 d each), each tried once
+		t.Fatalf("calls = %d, want 2 (one per window, no halving)", n)
+	}
+}
+
+func TestInvalidTokenInputErrorIsOneCall(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) {
+		return nil, &kite.Err{Kind: kite.KindInput, Code: 400, Type: "InputException", Message: "invalid token"}
+	}
+	_ = r.bf.Start(r.ctx)
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := r.bf.Submit(wctx, Job{Token: 10, Interval: candles.Minute, From: ist(2026, 6, 1, 0, 0), To: ist(2026, 7, 31, 0, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.bf.Wait(wctx, id)
+	if err != nil || p.State != "failed" {
+		t.Fatalf("%+v %v, want failed", p, err)
+	}
+	if n := r.fake.Calls("Historical"); n != 1 {
+		t.Fatalf("calls = %d, want exactly 1", n)
+	}
+}
+
+// Ruling 51 (3): a FinishWindow that keeps failing is retried briefly, then the job fails in memory.
+func TestPersistentFinishWindowFailureFailsJobInMemory(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	spy, _ := r.spy(1)
+	spy.finishFails.Store(-1)
+	sub := bus.Subscribe(r.bus, TopicProgress, bus.SubOpts[Progress]{Buffer: 64})
+	defer bus.Unsubscribe(r.bus, sub)
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) { return nil, nil }
+	_ = r.bf.Start(r.ctx)
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	advance(wctx, r.clk, 100*time.Millisecond)
+	id, err := r.bf.Submit(wctx, Job{Token: 11, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.bf.Wait(wctx, id)
+	if err != nil || p.State != "failed" {
+		t.Fatalf("%+v %v, want failed", p, err)
+	}
+	if n := spy.finishCalls.Load(); n != 3 {
+		t.Fatalf("FinishWindow tries = %d, want 3", n)
+	}
+	if n := terminalEvents(sub, id, 200*time.Millisecond); n != 1 {
+		t.Fatalf("terminal events = %d, want 1", n)
+	}
+}
+
+func TestTransientFinishWindowFailureIsRetried(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	spy, _ := r.spy(1)
+	spy.finishFails.Store(2)
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) { return nil, nil }
+	_ = r.bf.Start(r.ctx)
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	advance(wctx, r.clk, 100*time.Millisecond)
+	if err := r.bf.Ensure(wctx, Job{Token: 12, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	if n := spy.finishCalls.Load(); n != 3 {
+		t.Fatalf("FinishWindow tries = %d, want 2 failures + 1 success", n)
+	}
+}
+
+func TestPersistentSplitWindowFailureFailsJobInMemory(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	spy, _ := r.spy(1)
+	spy.splitFails.Store(-1)
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) {
+		return nil, &kite.Err{Kind: kite.KindInput, Code: 400, Type: "InputException", Message: "interval exceeds max limit: 30 days"}
+	}
+	_ = r.bf.Start(r.ctx)
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	advance(wctx, r.clk, 100*time.Millisecond)
+	if err := r.bf.Ensure(wctx, Job{Token: 13, Interval: candles.Minute, From: ist(2026, 6, 1, 0, 0), To: ist(2026, 7, 31, 0, 0)}); !errors.Is(err, ErrFailed) {
+		t.Fatalf("Ensure = %v, want ErrFailed", err)
+	}
+	if n := spy.splitCalls.Load(); n != 3 {
+		t.Fatalf("SplitWindow tries = %d, want 3", n)
+	}
+}
+
+// Ruling 51 (4): Submit reads the active windows before the missing ranges.
+func TestSubmitReadsActiveWindowsBeforeMissing(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	_, order := r.spy(1)
+	if _, err := r.bf.Submit(context.Background(), Job{Token: 14, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	order.mu.Lock()
+	defer order.mu.Unlock()
+	if len(order.calls) < 2 || order.calls[0] != "ActiveWindows" || order.calls[1] != "Missing" {
+		t.Fatalf("call order = %v, want ActiveWindows then Missing", order.calls)
+	}
+}
+
+// Ruling 51 (6): a cancellation error while the worker is alive (a per-call deadline) counts as an
+// attempt, so the window fails after 3 tries instead of looping forever.
+func TestDeadlineWhileAliveCountsAsAttempt(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) {
+		return nil, context.DeadlineExceeded
+	}
+	_ = r.bf.Start(r.ctx)
+	wctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.bf.Ensure(wctx, Job{Token: 15, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)}); !errors.Is(err, ErrFailed) {
+		t.Fatalf("Ensure = %v, want ErrFailed", err)
+	}
+	if n := r.fake.Calls("Historical"); n != 3 {
+		t.Fatalf("calls = %d, want 3", n)
+	}
+}
+
+// Ruling 51 (7): a waiter whose ctx ends is removed; an unknown job id is an error.
+func TestWaitRemovesWaiterAndRejectsUnknownJob(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	id, err := r.bf.Submit(context.Background(), Job{Token: 16, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.bf.Wait(wctx, id); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait = %v, want deadline (workers not started)", err)
+	}
+	r.bf.mu.Lock()
+	n := len(r.bf.waiters[id])
+	r.bf.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d waiters left after ctx ended", n)
+	}
+	if _, err := r.bf.Wait(context.Background(), "no-such-job"); !errors.Is(err, ErrUnknownJob) {
+		t.Fatalf("Wait(unknown) = %v, want ErrUnknownJob", err)
+	}
+}
+
+// Ruling 51 (8): each job's terminal event is published exactly once.
+func TestTerminalEventPublishedOnce(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	sub := bus.Subscribe(r.bus, TopicProgress, bus.SubOpts[Progress]{Buffer: 64})
+	defer bus.Unsubscribe(r.bus, sub)
+	r.fake.HistoricalFunc = func(req kite.HistoricalRequest) ([]kite.HistoricalData, error) { return nil, nil }
+	_ = r.bf.Start(r.ctx)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	j := Job{Token: 17, Interval: candles.Day, From: ist(2026, 1, 1, 0, 0), To: ist(2026, 2, 1, 0, 0)}
+	id, err := r.bf.Submit(ctx, j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ { // later Waits and a second job on the same series re-run update
+		if p, err := r.bf.Wait(ctx, id); err != nil || p.State != "done" {
+			t.Fatalf("%+v %v", p, err)
+		}
+	}
+	j.From = ist(2025, 12, 1, 0, 0)
+	if err := r.bf.Ensure(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	if n := terminalEvents(sub, id, 200*time.Millisecond); n != 1 {
+		t.Fatalf("terminal events for %s = %d, want 1", id, n)
+	}
+}
+
+// Ruling 51 (9): Start is single-use.
+func TestStartIsSingleUse(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 18, 0), 1, "")
+	if err := r.bf.Start(r.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.bf.Start(r.ctx); err == nil {
+		t.Fatal("second Start succeeded")
 	}
 }
