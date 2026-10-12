@@ -9,6 +9,7 @@ import { SEARCH_DEBOUNCE_MS, SymbolSearchDialog } from './SymbolSearchDialog';
 import { BANKNIFTY_OCT_FUT, NIFTY_OPTION, NIFTYBANK, RELIANCE, RELIANCE_OCT_FUT, SBIN, SENSEX } from '../../instruments/fixtures';
 import type { Instrument } from '../../instruments/types';
 import { useInstruments } from '../../store/instrumentsStore';
+import { resetOnLogout } from '../../store/reset';
 
 /** Runs due timers and the promise callbacks they start, inside act. */
 const flush = (ms = SEARCH_DEBOUNCE_MS) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
@@ -121,7 +122,10 @@ describe('SymbolSearchDialog', () => {
     expect(status).toHaveTextContent('2 results');
     await type(input, 'zzz');
     expect(status).toHaveTextContent('No instruments match');
-    expect(screen.getByText('No instruments match')).toBeInTheDocument();
+    // Shown to sighted users too; that copy is aria-hidden so the status region is the only announcement.
+    const visible = screen.getAllByText('No instruments match').filter((el) => el !== status);
+    expect(visible).toHaveLength(1);
+    expect(visible[0]).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('AC4: ArrowDown + Enter selects, caches and closes', async () => {
@@ -171,11 +175,13 @@ describe('SymbolSearchDialog', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('a failed search shows the reason; the next successful search clears it', async () => {
-    vi.mocked(searchInstruments).mockRejectedValueOnce(new BindingError('offline', 'Instrument list not loaded'));
+  it('a transport/binding failure (Go\'s Search itself never refuses) shows the reason and hides the previous rows; the next success clears it', async () => {
     const { input } = setup();
+    await type(input, 'r');
+    vi.mocked(searchInstruments).mockRejectedValueOnce(new BindingError('internal', 'Bridge unavailable'));
     await type(input, 'x');
-    expect(screen.getByRole('alert')).toHaveTextContent('Instrument list not loaded');
+    expect(screen.getByRole('alert')).toHaveTextContent('Bridge unavailable');
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
     await type(input, 'r');
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByText('SBIN')).toBeInTheDocument();
@@ -240,6 +246,102 @@ describe('SymbolSearchDialog', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByText('Type to search')).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Search instruments' })).toHaveValue('');
+  });
+
+  it('I1: the polite count region is always rendered (never display:none while empty) and visually hidden', async () => {
+    const { input } = setup();
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveClass('visually-hidden');
+    expect(status).not.toHaveClass('symbol-search__hint');
+    expect(status).toBeEmptyDOMElement();
+    await type(input, 'r');
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status).toHaveTextContent('2 results');
+  });
+
+  it('I2: answers that arrive after a reset (logout or user switch) select nothing, show nothing and cache nothing', async () => {
+    const search = deferred<Instrument[]>();
+    const chip = deferred<Instrument>();
+    vi.mocked(searchInstruments).mockReturnValue(search.promise);
+    vi.mocked(instrumentByIdentifier).mockReturnValue(chip.promise);
+    const { input, onSelect } = setup();
+    await type(input, 'r');
+    fireEvent.click(screen.getByRole('button', { name: 'SENSEX' }));
+    act(() => resetOnLogout());
+    expect(input).toHaveValue('');
+    await act(async () => { search.resolve([RELIANCE, SBIN]); chip.resolve(SENSEX); });
+    await flush(0);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    expect(useInstruments.getState().byToken[SENSEX.token]).toBeUndefined();
+    expect(useInstruments.getState().byToken[RELIANCE.token]).toBeUndefined();
+    expect(screen.getByText('Type to search')).toBeInTheDocument();
+  });
+
+  it('I2: rows shown before a reset are cleared, so Enter after the reset selects nothing', async () => {
+    const { input, onSelect } = setup();
+    await type(input, 'r');
+    act(() => resetOnLogout());
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+  });
+
+  it('a chip selection is not cached again by the dialog (resolveIdentifier caches it while current)', async () => {
+    vi.mocked(instrumentByIdentifier).mockResolvedValue(SENSEX);
+    const writes = vi.fn();
+    const unsubscribe = useInstruments.subscribe(writes);
+    const { onSelect } = setup();
+    fireEvent.click(screen.getByRole('button', { name: 'SENSEX' }));
+    await flush(0);
+    expect(onSelect).toHaveBeenCalledWith(SENSEX);
+    expect(writes).toHaveBeenCalledTimes(1); // resolveIdentifier's own put only
+    expect(useInstruments.getState().byToken[SENSEX.token]).toEqual(SENSEX);
+    unsubscribe();
+  });
+
+  it('unmount during the debounce leaves no timer and sends nothing', async () => {
+    const { input, view } = setup();
+    fireEvent.change(input, { target: { value: 'r' } });
+    await flush(SEARCH_DEBOUNCE_MS / 2);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    await flush(1_000);
+    expect(searchInstruments).not.toHaveBeenCalled();
+  });
+
+  it('Enter is ignored while the request is in flight after the debounce; the listbox is marked busy', async () => {
+    const { input, onSelect } = setup();
+    await type(input, 'r');
+    const pending = deferred<Instrument[]>();
+    vi.mocked(searchInstruments).mockReturnValue(pending.promise);
+    await type(input, 'sb');
+    expect(searchInstruments).toHaveBeenLastCalledWith('sb', expect.anything(), 50);
+    expect(screen.getByRole('listbox')).toHaveAttribute('aria-busy', 'true');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).not.toHaveBeenCalled();
+    await act(async () => { pending.resolve([SBIN]); });
+    expect(screen.getByRole('listbox')).not.toHaveAttribute('aria-busy');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith(SBIN);
+  });
+
+  it('Enter during IME composition does not select', async () => {
+    const { input, onSelect } = setup();
+    await type(input, 'r');
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('hover highlighting follows mouse movement', async () => {
+    const { input } = setup();
+    await type(input, 'r');
+    const [, second] = screen.getAllByRole('option');
+    fireEvent.mouseMove(second);
+    expect(second).toHaveAttribute('aria-selected', 'true');
+    expect(input).toHaveAttribute('aria-activedescendant', second.id);
   });
 
   it('G-0: offers no order actions', async () => {

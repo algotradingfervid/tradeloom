@@ -419,6 +419,10 @@ export const symbolSearchCopy = {
   results: 'Results',
   colInstrument: 'Instrument',
   colCompany: 'Company name',
+} as const;
+
+/** Shared by every instrument search box (useInstrumentSearch): the polite result-count announcement. */
+export const instrumentSearchCopy = {
   noMatch: 'No instruments match',
   count: (n: number) => (n === 1 ? '1 result' : `${n} results`),
 } as const;

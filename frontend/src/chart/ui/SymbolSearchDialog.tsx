@@ -1,14 +1,14 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { Dialog } from '../../components/Dialog';
 import { InstrumentLabel } from '../../components/instrument/InstrumentLabel';
-import { searchInstruments } from '../../api/instruments';
-import { symbolSearchCopy as copy } from '../../i18n/copy';
-import { displayName, EXCHANGE_TAGS, isInScope } from '../../instruments/naming';
+import { instrumentSearchCopy, symbolSearchCopy as copy } from '../../i18n/copy';
+import { displayName, isInScope } from '../../instruments/naming';
 import type { Instrument } from '../../instruments/types';
+import { useInstrumentSearch } from '../../instruments/useInstrumentSearch';
 import { resolveIdentifier, useInstruments } from '../../store/instrumentsStore';
 import './symbolSearch.css';
 
-export const SEARCH_DEBOUNCE_MS = 120;
+export { SEARCH_DEBOUNCE_MS } from '../../instruments/useInstrumentSearch';
 /** Go's maxSearchLimit (internal/service/chart.go): a larger limit is clamped to it. */
 const SEARCH_LIMIT = 50;
 export const TYPE_TO_SEARCH = 'Type to search';
@@ -44,68 +44,62 @@ export function SymbolSearchDialog({ open, onClose, onSelect }: SymbolSearchDial
 function SymbolSearch({ inputRef, onClose, onSelect }: { inputRef: RefObject<HTMLInputElement | null>; onClose(): void; onSelect(i: Instrument): void }) {
   const listId = useId();
   const [query, setQuery] = useState('');
-  // Answers are keyed by the query they belong to, so a change of query hides them without a reset.
-  const [shown, setShown] = useState<{ q: string; list: Instrument[] } | null>(null);
-  const [searchError, setSearchError] = useState<{ q: string; message: string } | null>(null);
   const [chipError, setChipError] = useState<string | null>(null);
-  const [active, setActive] = useState(0);
-  const seq = useRef(0); // latest search; an older answer is dropped
-  const chipSeq = useRef(0); // latest chip lookup
+  const chipSeq = useRef(0); // latest chip lookup; bumped on unmount and reset
   const alive = useRef(true); // false once the dialog closed: late answers resolve quietly
+
+  // A reset (logout or user switch) silences the chip lookup in flight and empties the box (Ruling 112 I2).
+  const onReset = useCallback(() => {
+    chipSeq.current += 1;
+    setChipError(null);
+    setQuery('');
+  }, []);
+  const search = useInstrumentSearch(query, { limit: SEARCH_LIMIT, onReset });
+  const { q, rows, fresh } = search;
+
+  // The highlight belongs to the rows it was set on: new rows start at the top.
+  const [highlight, setHighlight] = useState<{ rows: readonly Instrument[]; index: number }>({ rows, index: 0 });
+  const current = rows.length === 0 ? -1 : highlight.rows === rows ? Math.min(highlight.index, rows.length - 1) : 0;
+  const setActive = (index: number) => setHighlight({ rows, index });
 
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
-      seq.current += 1;
       chipSeq.current += 1;
     };
   }, []);
 
-  const q = query.trim();
-  useEffect(() => {
-    const my = ++seq.current;
-    if (q === '') return; // Go answers [] for an empty query: never sent
-    const t = setTimeout(() => {
-      searchInstruments(q, EXCHANGE_TAGS, SEARCH_LIMIT).then(
-        (list) => {
-          if (my !== seq.current) return;
-          setShown({ q, list: list.filter(isInScope) }); // NFR-15: never offer an option, MCX or currency row
-          setActive(0);
-        },
-        (e: unknown) => {
-          if (my === seq.current) setSearchError({ q, message: message(e) });
-        },
-      );
-    }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(t);
-  }, [q]);
-
-  const results = q === '' || !shown ? [] : shown.list;
-  const fresh = q !== '' && shown?.q === q;
-  const current = results.length === 0 ? -1 : Math.min(active, results.length - 1);
   const optionId = (i: Instrument) => `${listId}-opt-${i.token}`;
-  const activeOption = current >= 0 ? results[current] : undefined;
+  const activeOption = current >= 0 ? rows[current] : undefined;
   const activeId = activeOption ? optionId(activeOption) : undefined;
-  const error = chipError ?? (searchError && searchError.q === q ? searchError.message : null);
+  const error = chipError ?? search.error;
+  const pending = q !== '' && !fresh && search.error === null;
 
   useEffect(() => {
     const el = activeId ? document.getElementById(activeId) : null;
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' }); // absent in jsdom
   }, [activeId]);
 
-  const choose = (i: Instrument) => {
+  const select = (i: Instrument) => {
     if (!alive.current || !isInScope(i)) return;
-    useInstruments.getState().put([i]);
     onSelect(i);
     onClose();
   };
 
+  /** A search row: cached here, but only while the answer is still current (Ruling 107). */
+  const chooseRow = (i: Instrument) => {
+    if (!search.isCurrent()) return;
+    useInstruments.getState().put([i]);
+    select(i);
+  };
+
+  /** A chip: resolveIdentifier already caches it while current, so it is not put again. */
   const chooseChip = (id: string) => {
     const my = ++chipSeq.current;
     setChipError(null);
     resolveIdentifier(id).then(
-      (i) => { if (my === chipSeq.current) choose(i); },
+      (i) => { if (my === chipSeq.current) select(i); },
       (e: unknown) => { if (my === chipSeq.current) setChipError(message(e)); },
     );
   };
@@ -113,20 +107,18 @@ function SymbolSearch({ inputRef, onClose, onSelect }: { inputRef: RefObject<HTM
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      if (results.length > 0) setActive(Math.min(current + 1, results.length - 1));
+      if (rows.length > 0) setActive(Math.min(current + 1, rows.length - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      if (results.length > 0) setActive(Math.max(current - 1, 0));
+      if (rows.length > 0) setActive(Math.max(current - 1, 0));
     } else if (e.key === 'Enter') {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return; // IME composition: Enter commits the text
       e.preventDefault();
-      // Only rows answering the text in the box: Enter right after typing never picks a row of the previous query.
-      if (fresh && activeOption) choose(activeOption);
+      // Only rows answering the text in the box: Enter while the next query is pending never picks an older row.
+      if (fresh && activeOption) chooseRow(activeOption);
     }
     // Escape is the Dialog's (it closes and returns focus to the opener).
   };
-
-  let status = '';
-  if (fresh) status = results.length === 0 ? copy.noMatch : copy.count(results.length);
 
   return (
     <div className="symbol-search">
@@ -138,7 +130,7 @@ function SymbolSearch({ inputRef, onClose, onSelect }: { inputRef: RefObject<HTM
         aria-label={copy.inputLabel}
         role="combobox"
         aria-autocomplete="list"
-        aria-expanded={results.length > 0}
+        aria-expanded={rows.length > 0}
         aria-controls={listId}
         aria-activedescendant={activeId}
         autoComplete="off"
@@ -154,10 +146,12 @@ function SymbolSearch({ inputRef, onClose, onSelect }: { inputRef: RefObject<HTM
       </div>
       {error && <p role="alert" className="symbol-search__error">{error}</p>}
       {q === '' && <p className="symbol-search__hint">{TYPE_TO_SEARCH}</p>}
-      <p role="status" aria-live="polite" className="symbol-search__hint">{status}</p>
+      {fresh && rows.length === 0 && <p className="symbol-search__hint" aria-hidden="true">{instrumentSearchCopy.noMatch}</p>}
+      {/* Always rendered, so the polite announcement is never lost to display:none (Ruling 112 I1). */}
+      <p role="status" aria-live="polite" className="visually-hidden">{search.status}</p>
       <div className="symbol-search__head" aria-hidden="true"><span>{copy.colInstrument}</span><span>{copy.colCompany}</span></div>
-      <div id={listId} role="listbox" aria-label={copy.results} className="symbol-search__results">
-        {results.map((r, k) => (
+      <div id={listId} role="listbox" aria-label={copy.results} aria-busy={pending || undefined} className="symbol-search__results">
+        {rows.map((r, k) => (
           <div
             key={r.token}
             id={optionId(r)}
@@ -165,8 +159,8 @@ function SymbolSearch({ inputRef, onClose, onSelect }: { inputRef: RefObject<HTM
             aria-selected={k === current}
             className={`symbol-search__row${k === current ? ' is-active' : ''}`}
             onMouseDown={(e) => e.preventDefault()} // keep focus in the input
-            onMouseEnter={() => setActive(k)}
-            onClick={() => choose(r)}
+            onMouseMove={() => { if (k !== current) setActive(k); }}
+            onClick={() => chooseRow(r)}
           >
             <InstrumentLabel instrument={r} />
             {/* Indices carry their symbol as name: the column stays empty rather than repeating it. */}
