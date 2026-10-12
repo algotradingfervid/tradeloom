@@ -244,6 +244,9 @@ func TestKiteRawWrite_NamesResolve(t *testing.T) {
 	if missing := KiteRawWriteMissing(pkgs); len(missing) != 0 {
 		t.Fatalf("Ruling 69 identifiers not found in gokiteconnect: %v", missing)
 	}
+	if missing := KiteConstructMissing(pkgs); len(missing) != 0 {
+		t.Fatalf("Ruling 91 g0-kitenew names not found in gokiteconnect: %v", missing)
+	}
 }
 
 // g0-path (Ruling 69 addendum, Ruling 79 M-1) on the fixture module: literal, folded-concatenation,

@@ -449,8 +449,12 @@ func kiteRawWriteObjects(pkgs []*packages.Package) map[types.Object]string {
 			// what a selector on the implementation resolves to (Ruling 83).
 			ms := types.NewMethodSet(types.NewPointer(impl.Type()))
 			for i := 0; i < ms.Len(); i++ {
+				// impls are sorted by name and the first label is kept, so a method promoted into several
+				// implementations is always labelled with the same one (Ruling 91 M6).
 				if m := ms.At(i).Obj(); methods[m.Name()] {
-					banned[m] = "(*" + impl.Name() + ")." + m.Name()
+					if _, seen := banned[m]; !seen {
+						banned[m] = "(*" + impl.Name() + ")." + m.Name()
+					}
 				}
 			}
 		}
@@ -459,7 +463,8 @@ func kiteRawWriteObjects(pkgs []*packages.Package) map[types.Object]string {
 }
 
 // httpClientImpls returns the non-interface types of kp whose pointer implements iface (the HTTPClient
-// interface tn): gokiteconnect's unexported *httpClient, whatever it is called.
+// interface tn): gokiteconnect's unexported *httpClient, whatever it is called. Sorted by name
+// (Scope.Names is sorted).
 func httpClientImpls(kp *types.Package, tn *types.TypeName, iface *types.Interface) []*types.TypeName {
 	var out []*types.TypeName
 	scope := kp.Scope()
@@ -479,8 +484,9 @@ func httpClientImpls(kp *types.Package, tn *types.TypeName, iface *types.Interfa
 
 // KiteRawWriteMissing lists the kiteRawWriteNames that no loaded gokiteconnect package declares.
 func KiteRawWriteMissing(pkgs []*packages.Package) []string {
+	banned := kiteRawWriteObjects(pkgs)
 	found := map[string]bool{}
-	for _, name := range kiteRawWriteObjects(pkgs) {
+	for _, name := range banned {
 		found[name] = true
 	}
 	var out []string
@@ -509,8 +515,10 @@ func KiteRawWriteMissing(pkgs []*packages.Package) []string {
 				continue
 			}
 			for _, impl := range impls {
-				if n := "(*" + impl.Name() + ")." + name; !found[n] {
-					out = append(out, n)
+				// By object, not label: a promoted method shared by several implementations has one label.
+				obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(impl.Type()), true, kp, name)
+				if _, ok := banned[obj]; obj == nil || !ok {
+					out = append(out, "(*"+impl.Name()+")."+name)
 				}
 			}
 		}
@@ -691,8 +699,10 @@ func isExecObject(obj types.Object) (string, bool) {
 // the execFuncs (g0-exec, Ruling 83): a package that can start a process can run curl against the Kite
 // order API, which neither the transport deny-list nor the nm check would see. It matches
 // types.Object identity through TypesInfo.Uses, so renamed imports, dot-imports, aliases and function
-// values are caught. Test files are not loaded and are exempt. Residual: raw syscalls (syscall.Syscall
-// with SYS_EXECVE) are confined by the g0-exec import rule (sysImporters), not by this check.
+// values are caught. Test files are not loaded and are exempt. Raw syscalls (syscall.Syscall with
+// SYS_EXECVE) are stopped by g0-sys (CheckSysObjects). internal/app must not export os/exec values: their
+// use elsewhere is flagged here, but a wrapper that hides os/exec behind internal/app's own types is not
+// (Ruling 91 M2).
 func CheckExec(module string, pkgs []*packages.Package) []Violation {
 	var out []Violation
 	for _, p := range pkgs {
@@ -738,5 +748,116 @@ func ExecNamesMissing(pkgs []*packages.Package) []string {
 			}
 		}
 	}
+	return out
+}
+
+// isSysPath reports whether path is syscall or a golang.org/x/sys package.
+func isSysPath(path string) bool { return under(path, "syscall") || under(path, "golang.org/x/sys") }
+
+// CheckSysObjects reports every use of a syscall or golang.org/x/sys object (function, constant, type,
+// field, method) in a module package, unless the package is in sysImporters and the object is on its
+// list (g0-sys, Ruling 91 M1a). It blocks raw Syscall/RawSyscall (and SYS_EXECVE) in the allow-listed
+// importers, and syscall objects reached without importing syscall anywhere else.
+func CheckSysObjects(module string, pkgs []*packages.Package) []Violation {
+	var out []Violation
+	for _, p := range pkgs {
+		allowed := sysImporters[relPkg(module, p.PkgPath)].objects
+		for id, obj := range p.TypesInfo.Uses {
+			if _, isPkg := obj.(*types.PkgName); isPkg || obj.Pkg() == nil || !isSysPath(obj.Pkg().Path()) {
+				continue
+			}
+			name := obj.Pkg().Path() + "." + obj.Name()
+			if !containsStr(allowed, name) {
+				out = append(out, Violation{"g0-sys", position(p.Fset, id.Pos()),
+					name + " is not on this package's syscall / golang.org/x/sys allow-list (sysImporters)"})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// kiteConstructFiles are the only files that may build a gokiteconnect client (Ruling 91 M3): both put
+// the write deny-list under it (guardWrites).
+var kiteConstructFiles = []string{"auth.go", "client.go"}
+
+// kiteConstructObjects resolves kiteconnect.New and (*kiteconnect.Client).SetHTTPClient in every loaded
+// gokiteconnect package.
+func kiteConstructObjects(pkgs []*packages.Package) map[types.Object]string {
+	out := map[types.Object]string{}
+	for _, kp := range kitePackages(pkgs) {
+		if fn, ok := kp.Scope().Lookup("New").(*types.Func); ok {
+			out[fn] = "New"
+		}
+		if tn, ok := kp.Scope().Lookup("Client").(*types.TypeName); ok {
+			if m, _, _ := types.LookupFieldOrMethod(types.NewPointer(tn.Type()), true, kp, "SetHTTPClient"); m != nil {
+				out[m] = "(*Client).SetHTTPClient"
+			}
+		}
+	}
+	return out
+}
+
+// KiteConstructMissing lists the g0-kitenew names that no loaded gokiteconnect package declares.
+func KiteConstructMissing(pkgs []*packages.Package) []string {
+	found := map[string]bool{}
+	for _, n := range kiteConstructObjects(pkgs) {
+		found[n] = true
+	}
+	var out []string
+	for _, n := range []string{"New", "(*Client).SetHTTPClient"} {
+		if !found[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// CheckKiteConstruct reports every reference to kiteconnect.New or (*Client).SetHTTPClient outside
+// internal/kite/auth.go and internal/kite/client.go (g0-kitenew, Ruling 91 M3): a client built anywhere
+// else could carry a transport without the write deny-list. Calls, function and method values,
+// renamed and dot-imports are caught (TypesInfo.Uses). Test files are not loaded and are exempt.
+func CheckKiteConstruct(module string, pkgs []*packages.Package) []Violation {
+	banned := kiteConstructObjects(pkgs)
+	var out []Violation
+	for _, p := range pkgs {
+		inKite := relPkg(module, p.PkgPath) == "internal/kite"
+		for id, obj := range p.TypesInfo.Uses {
+			name, ok := banned[obj]
+			if !ok {
+				continue
+			}
+			if inKite && containsStr(kiteConstructFiles, filepath.Base(p.Fset.Position(id.Pos()).Filename)) {
+				continue
+			}
+			out = append(out, Violation{"g0-kitenew", position(p.Fset, id.Pos()),
+				"kiteconnect." + name + " is only allowed in internal/kite/auth.go and internal/kite/client.go"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// CheckOtherFiles reports every non-Go source file (assembly, C/C++/Objective-C/Fortran sources and
+// headers, SWIG files, .syso objects) in a module package, whether this build includes it (OtherFiles)
+// or another GOOS/GOARCH would (IgnoredFiles) (g0-src, Ruling 91 M4): code linked from them is invisible to
+// every type-based G-0 rule. Packages under a testdata directory are exempt.
+func CheckOtherFiles(module string, pkgs []*packages.Package) []Violation {
+	var out []Violation
+	for _, p := range pkgs {
+		rel := relPkg(module, p.PkgPath)
+		if rel == "testdata" || strings.HasPrefix(rel, "testdata/") || strings.Contains(rel, "/testdata/") || strings.HasSuffix(rel, "/testdata") {
+			continue
+		}
+		files := append(append([]string(nil), p.OtherFiles...), p.IgnoredFiles...)
+		for _, f := range files {
+			if strings.HasSuffix(f, ".go") {
+				continue
+			}
+			out = append(out, Violation{"g0-src", filepath.ToSlash(filepath.Base(filepath.Dir(f))) + "/" + filepath.Base(f),
+				"non-Go source file in package " + p.PkgPath + "; only Go files may be linked"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out
 }

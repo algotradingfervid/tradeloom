@@ -65,7 +65,8 @@ func TestCheckImports_Table(t *testing.T) {
 		{"service imports syscall", Pkg{"tradeloom/internal/service", []string{"syscall"}}, ""},
 		{"service/servicetest imports syscall", Pkg{"tradeloom/internal/service/servicetest", []string{"syscall"}}, "g0-exec"},
 		{"store imports syscall", Pkg{"tradeloom/internal/store", []string{"syscall"}}, "g0-exec"},
-		{"app imports syscall", Pkg{"tradeloom/internal/app", []string{"syscall"}}, "g0-exec"},
+		{"app imports syscall", Pkg{"tradeloom/internal/app", []string{"syscall"}}, ""}, // app.ReExec (Ruling 89/91)
+		{"app/api imports syscall", Pkg{"tradeloom/internal/app/api", []string{"syscall"}}, "g0-exec"},
 		{"kite imports x/sys/unix", Pkg{"tradeloom/internal/kite", []string{"golang.org/x/sys/unix"}}, "g0-exec"},
 		{"service imports x/sys/unix", Pkg{"tradeloom/internal/service", []string{"golang.org/x/sys/unix"}}, ""},
 		{"cmd imports x/sys/windows", Pkg{"tradeloom/cmd/tradeloom", []string{"golang.org/x/sys/windows"}}, "g0-exec"},
