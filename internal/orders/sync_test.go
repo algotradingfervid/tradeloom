@@ -24,15 +24,16 @@ import (
 )
 
 type fakeReader struct {
-	mu        sync.Mutex
-	orders    kite.Orders
-	ordersErr error
-	positions kite.Positions
-	holdings  kite.Holdings
-	ltp       kite.QuoteLTP
-	ltpErr    error
-	calls     map[string]int
-	lastPrio  ratelimit.Priority
+	mu          sync.Mutex
+	orders      kite.Orders
+	ordersErr   error
+	positions   kite.Positions
+	holdings    kite.Holdings
+	holdingsErr error
+	ltp         kite.QuoteLTP
+	ltpErr      error
+	calls       map[string]int
+	lastPrio    ratelimit.Priority
 }
 
 func (f *fakeReader) Orders(ctx context.Context) (kite.Orders, error) {
@@ -52,6 +53,9 @@ func (f *fakeReader) Holdings(context.Context) (kite.Holdings, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls["holdings"]++
+	if f.holdingsErr != nil {
+		return nil, f.holdingsErr
+	}
 	return append(kite.Holdings(nil), f.holdings...), nil
 }
 func (f *fakeReader) LTP(context.Context, ...string) (kite.QuoteLTP, error) {
@@ -673,5 +677,22 @@ func TestSync_DropWaitsForInFlightSubscribe(t *testing.T) {
 	<-dropDone
 	if got, want := e.live.snapshot(), subscribedOf(e.sync); !reflect.DeepEqual(got, want) {
 		t.Fatalf("feed %v != sync %v", got, want)
+	}
+}
+
+// Task 20 fix round 1 (Ruling 65): a network failure marks holdings stale, like orders and positions.
+func TestSync_NetworkFailureMarksHoldingsStale(t *testing.T) {
+	e := newSyncEnv(t, kite.PlanConnect)
+	e.reader.set(func(f *fakeReader) { f.holdings = mustJSON[kite.Holdings](t, twoHoldings) })
+	sub := bus.Subscribe(e.bus, TopicHoldings, bus.SubOpts[HoldingsSnapshot]{Name: "t", Buffer: 64})
+	e.start()
+	waitFor(t, sub, "fresh holdings", func(h HoldingsSnapshot) bool { return !h.Stale && len(h.Rows) == 2 })
+	e.reader.set(func(f *fakeReader) { f.holdingsErr = kite.APIError("NetworkException", 503, "Request failed.") })
+	if err := e.sync.Refresh(context.Background(), ScopeHoldings); err == nil {
+		t.Fatal("expected the refresh error")
+	}
+	waitFor(t, sub, "stale holdings", func(h HoldingsSnapshot) bool { return h.Stale && len(h.Rows) == 2 })
+	if !e.sync.Holdings().Stale {
+		t.Fatal("Holdings() not stale after a network failure")
 	}
 }

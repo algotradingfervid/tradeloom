@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"tradeloom/internal/kite"
 	"tradeloom/internal/orders"
@@ -19,18 +21,78 @@ func (s *Service) OrderBook(_ context.Context) BookSnapshot      { return s.d.Or
 func (s *Service) Positions(_ context.Context) PositionsSnapshot { return s.d.Orders.Positions() }
 func (s *Service) Holdings(_ context.Context) HoldingsSnapshot   { return s.d.Orders.Holdings() }
 
+// minRefreshInterval is the minimum gap after a successful refresh of a scope (Ruling 65).
+const minRefreshInterval = 2 * time.Second
+
 // RefreshPortfolio is the views' Refresh button (FR-ORD-001/002/003) and FR-ORD-014's "on demand" reconciliation.
+// It is single-flight per scope (concurrent callers join the in-flight refresh and get its result) and a call
+// within 2 s of a successful refresh of the same scope is a no-op that returns nil.
 func (s *Service) RefreshPortfolio(ctx context.Context, scope string) error {
 	sc, err := orders.ParseScope(scope)
 	if err != nil {
 		return s.refuse(portfolioStage, refused(portfolioStage, "invalid_scope", err.Error()))
 	}
 	if s.d.Session.State().State != kite.StateReady {
-		return refused(portfolioStage, kite.CodeNotLoggedIn, "Log in to Kite to refresh.")
+		return s.refuse(portfolioStage, refused(portfolioStage, kite.CodeNotLoggedIn, "Log in to Kite to refresh."))
 	}
-	if err := s.d.Orders.Refresh(ctx, sc); err != nil {
-		s.d.Log.Warn("service.portfolio_refresh_failed", "scope", scope, "err", err)
-		return s.refuse(portfolioStage, refused(portfolioStage, "refresh_failed", "Could not refresh from Kite: "+err.Error()))
+
+	g := &s.pf
+	g.mu.Lock()
+	if f, ok := g.flights[sc]; ok {
+		f.waiters++
+		g.mu.Unlock()
+		select {
+		case <-f.done:
+			return f.err
+		case <-ctx.Done():
+			return s.refuse(portfolioStage, ctx.Err())
+		}
 	}
-	return nil
+	if last, ok := g.lastOK[sc]; ok && s.d.Clock.Now().Sub(last) < minRefreshInterval {
+		g.mu.Unlock()
+		return nil
+	}
+	f := &refreshFlight{done: make(chan struct{})}
+	if g.flights == nil {
+		g.flights = map[orders.Scope]*refreshFlight{}
+		g.lastOK = map[orders.Scope]time.Time{}
+	}
+	g.flights[sc] = f
+	g.mu.Unlock()
+
+	f.err = s.doRefresh(ctx, scope, sc)
+
+	g.mu.Lock()
+	delete(g.flights, sc)
+	if f.err == nil {
+		g.lastOK[sc] = s.d.Clock.Now()
+	}
+	g.mu.Unlock()
+	close(f.done)
+	return f.err
+}
+
+func (s *Service) doRefresh(ctx context.Context, scope string, sc orders.Scope) error {
+	err := s.d.Orders.Refresh(ctx, sc)
+	if err == nil {
+		return nil
+	}
+	if kite.Classify(err) == kite.KindSession {
+		return s.refuse(portfolioStage, refused(portfolioStage, kite.CodeNotLoggedIn, "Your Kite session has ended. Log in again."))
+	}
+	s.d.Log.Warn("service.portfolio_refresh_failed", "scope", scope, "err", err)
+	return s.refuse(portfolioStage, refused(portfolioStage, "refresh_failed", "Could not refresh from Kite: "+err.Error()))
+}
+
+type refreshFlight struct {
+	done    chan struct{}
+	err     error
+	waiters int
+}
+
+// portfolioGate is the zero-value-usable state behind RefreshPortfolio.
+type portfolioGate struct {
+	mu      sync.Mutex
+	flights map[orders.Scope]*refreshFlight
+	lastOK  map[orders.Scope]time.Time
 }

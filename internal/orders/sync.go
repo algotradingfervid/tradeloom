@@ -296,6 +296,7 @@ func (s *Sync) refresh(ctx context.Context, sc Scope) error {
 	if sc&ScopeHoldings != 0 {
 		if hs, err := s.d.Read.Holdings(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("holdings: %w", err))
+			s.markStaleIfOffline(err, ScopeHoldings)
 		} else {
 			s.setHoldings(hs)
 		}
@@ -303,7 +304,7 @@ func (s *Sync) refresh(ctx context.Context, sc Scope) error {
 	return errors.Join(errs...)
 }
 
-// markStaleIfOffline flags the order book or positions stale when Kite could not be reached (NFR-14)
+// markStaleIfOffline flags the order book, positions or holdings stale when Kite could not be reached (NFR-14)
 // and publishes the stale snapshot so the UI shows it.
 func (s *Sync) markStaleIfOffline(err error, sc Scope) {
 	if kite.Classify(err) != kite.KindNetwork {
@@ -326,6 +327,14 @@ func (s *Sync) markStaleIfOffline(err error, sc Scope) {
 		s.mu.Unlock()
 		if !already {
 			bus.Publish(s.d.Bus, TopicPositions, ps)
+		}
+	case ScopeHoldings:
+		already := s.holdStale
+		s.holdStale = true
+		hs := BuildHoldings(s.hold, s.ltp, s.holdAt, true)
+		s.mu.Unlock()
+		if !already {
+			bus.Publish(s.d.Bus, TopicHoldings, hs)
 		}
 	default:
 		s.mu.Unlock()
