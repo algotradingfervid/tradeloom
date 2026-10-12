@@ -172,3 +172,61 @@ func TestTicksWithoutExchangeTimestampUseAppClock(t *testing.T) {
 		t.Fatalf("start %v", e.Candle.Start)
 	}
 }
+
+func TestRunReturnsWhenTickStreamIsClosed(t *testing.T) { // Manager.Raw closes its channel on cancel
+	r := newRig(t, ist(2026, 10, 12, 10, 0, 0))
+	ticks := make(chan ticker.Tick)
+	done := make(chan struct{})
+	go func() { r.b.Run(context.Background(), ticks); close(done) }()
+	close(ticks)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run kept running on a closed tick stream")
+	}
+}
+
+func TestOutOfOrderTicksNeverRewriteACandle(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 9, 0, 0))
+	r.b.Track(6, candles.Minute5)
+	r.b.OnTick(tick(6, ist(2026, 10, 12, 10, 5, 10), 100, 500))
+	_ = next(t, r.forming)
+	r.b.OnTick(tick(6, ist(2026, 10, 12, 10, 4, 58), 90, 450)) // previous bucket, arrived late
+	if r.b.LateTicks() != 1 {
+		t.Fatalf("tick for an earlier bucket must be dropped as late, late = %d", r.b.LateTicks())
+	}
+	r.b.OnTick(tick(6, ist(2026, 10, 12, 10, 6, 0), 104, 700))
+	_ = next(t, r.forming)
+	r.b.OnTick(tick(6, ist(2026, 10, 12, 10, 5, 30), 102, 600)) // same bucket, older than the last tick
+	e := next(t, r.forming)
+	want := candles.Candle{Start: ist(2026, 10, 12, 10, 5, 0), Open: 100, High: 104, Low: 100, Close: 104, Volume: 700, Source: candles.SourceTick}
+	if e.Candle != want {
+		t.Fatalf("got  %+v\nwant %+v (older tick must not move close or shrink volume)", e.Candle, want)
+	}
+}
+
+func TestCumulativeVolumeRestartsOnANewDay(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 9, 0, 0))
+	r.b.Track(7, candles.Minute5)
+	r.b.OnTick(tick(7, ist(2026, 10, 12, 15, 29, 0), 10, 50000))
+	_ = next(t, r.forming)
+	r.clk.Set(ist(2026, 10, 13, 9, 0, 0))
+	r.b.CloseDue(r.clk.Now())
+	_ = next(t, r.closed)
+	r.b.OnTick(tick(7, ist(2026, 10, 13, 9, 15, 2), 11, 300))
+	r.b.OnTick(tick(7, ist(2026, 10, 13, 9, 16, 0), 12, 420))
+	_ = next(t, r.forming)
+	if e := next(t, r.forming); e.Candle.Volume != 420 || e.Partial {
+		t.Fatalf("first candle of the next day %+v, want volume 420 (day volume restarts)", e)
+	}
+}
+
+func TestZeroPriceTicksAreIgnored(t *testing.T) {
+	r := newRig(t, ist(2026, 10, 12, 9, 0, 0))
+	r.b.Track(8, candles.Minute)
+	r.b.OnTick(tick(8, ist(2026, 10, 12, 10, 0, 1), 0, 10))
+	r.b.OnTick(tick(8, ist(2026, 10, 12, 10, 0, 2), 5, 20))
+	if e := next(t, r.forming); e.Candle.Low != 5 || e.Candle.Open != 5 {
+		t.Fatalf("zero-price tick used: %+v", e.Candle)
+	}
+}

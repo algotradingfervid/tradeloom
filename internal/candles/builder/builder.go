@@ -49,14 +49,16 @@ type forming struct {
 	c       candles.Candle
 	end     time.Time // exclusive bucket end (cut at session end)
 	partial bool
-	base    uint32 // cumulative day volume before this candle
+	base    uint32    // cumulative day volume before this candle
+	last    time.Time // timestamp of the newest tick applied (out-of-order ticks keep Close)
 }
 
 type series struct {
 	iv        candles.Interval
 	trackedAt time.Time
-	lastVol   uint32
-	volKnown  bool
+	lastVol   uint32        // highest cumulative day volume seen on volDay
+	volKnown  bool          // lastVol is a baseline for volDay
+	volDay    calendar.Date // IST day lastVol belongs to (Kite's cumulative volume restarts daily)
 	cur       forming
 	closedEnd time.Time // end of the last closed candle (late-tick guard)
 }
@@ -117,10 +119,14 @@ func (b *Builder) LateTicks() uint64 { b.mu.Lock(); defer b.mu.Unlock(); return 
 // OnTick applies one tick. Its time is the exchange timestamp when present (full mode), else
 // the app-clock arrival time. Ticks outside the continuous phase are ignored.
 func (b *Builder) OnTick(t ticker.Tick) {
+	if t.LTP <= 0 { // no trade yet (illiquid snapshot): carries no price
+		return
+	}
 	ts := t.ExchangeTS
 	if ts.IsZero() {
 		ts = t.Received
 	}
+	day := calendar.DateOf(ts)
 	phase, _ := b.o.Calendar.PhaseAt(b.o.ExchangeOf(t.Token), ts)
 	if phase.Kind != calendar.PhaseContinuous {
 		return
@@ -133,16 +139,19 @@ func (b *Builder) OnTick(t ticker.Tick) {
 			continue
 		}
 		start, end := bucket(s.iv, ts, phase)
-		if !s.closedEnd.IsZero() && ts.Before(s.closedEnd) {
-			b.late++
+		if (!s.closedEnd.IsZero() && ts.Before(s.closedEnd)) || (s.cur.have && start.Before(s.cur.c.Start)) {
+			b.late++ // its candle already closed, or is older than the forming one (out of order)
 			continue
+		}
+		if s.volKnown && s.volDay != day {
+			s.volKnown = false
 		}
 		if s.cur.have && start.After(s.cur.c.Start) {
 			closed = append(closed, b.closeLocked(k, s))
 		}
 		if !s.cur.have {
 			s.cur = forming{have: true, end: end, partial: s.trackedAt.After(start),
-				c: candles.Candle{Start: start, Open: t.LTP, High: t.LTP, Low: t.LTP, Source: candles.SourceTick}}
+				last: ts, c: candles.Candle{Start: start, Open: t.LTP, High: t.LTP, Low: t.LTP, Source: candles.SourceTick}}
 			s.cur.base = s.lastVol
 			if !s.volKnown {
 				s.cur.base = 0
@@ -158,14 +167,22 @@ func (b *Builder) OnTick(t ticker.Tick) {
 		if t.LTP < c.Low {
 			c.Low = t.LTP
 		}
-		c.Close = t.LTP
-		if t.Volume >= s.cur.base {
-			c.Volume = int64(t.Volume - s.cur.base)
+		if !ts.Before(s.cur.last) {
+			c.Close, s.cur.last = t.LTP, ts
+			if t.OI > 0 {
+				c.OI, c.HasOI = int64(t.OI), true
+			}
 		}
-		if t.OI > 0 {
-			c.OI, c.HasOI = int64(t.OI), true
+		// Cumulative day volume only grows; an older (lower) value never shrinks the candle.
+		if !s.volKnown || t.Volume > s.lastVol {
+			s.lastVol = t.Volume
 		}
-		s.lastVol, s.volKnown = t.Volume, true
+		s.volKnown, s.volDay = true, day
+		if s.iv == candles.Day {
+			c.Volume = int64(s.lastVol) // the day candle's volume is the cumulative day volume
+		} else if s.lastVol >= s.cur.base {
+			c.Volume = int64(s.lastVol - s.cur.base)
+		}
 		out = append(out, Event{Token: k.token, Interval: k.iv, Candle: *c, Partial: s.cur.partial})
 	}
 	b.mu.Unlock()
@@ -266,7 +283,13 @@ func (b *Builder) Run(ctx context.Context, ticks <-chan ticker.Tick) {
 				timer.Stop()
 			}
 			return
-		case t := <-ticks:
+		case t, ok := <-ticks:
+			if !ok { // the ticker's Raw stream is closed when its subscription is cancelled
+				if timer != nil {
+					timer.Stop()
+				}
+				return
+			}
 			b.OnTick(t)
 		case now := <-tc:
 			b.CloseDue(now)
