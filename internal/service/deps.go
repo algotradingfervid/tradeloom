@@ -170,6 +170,10 @@ type Service struct {
 	jobMu      sync.Mutex
 	jobRunning string // kind of the running job, "" when idle
 	jobSeq     int
+
+	// Task 31 (calendar façade): serialises override writes so app.db, the coverage setting and the
+	// running calendar.Service change in the same order.
+	calMu sync.Mutex
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
