@@ -17,4 +17,6 @@ export interface Instrument {
   isIndex: boolean;
   isFuture: boolean;
   underlying: string; // futures: the underlying symbol; '' otherwise
+  /** FR-WATCH-008: a BSE row whose company is also listed on NSE. Go sets it on Search results only; absent = false. */
+  alsoOnNse?: boolean;
 }

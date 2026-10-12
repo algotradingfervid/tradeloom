@@ -1,5 +1,6 @@
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { HomeView } from '../views/home/HomeView';
+import { NotFoundView } from '../views/NotFoundView';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
 
@@ -18,7 +19,7 @@ export function buildRoutes(): RouteObject[] {
     {
       path: '/',
       element: <RootLayout />,
-      children: [...rootChildren, { element: <ShellLayout />, children: [...shellChildren] }],
+      children: [...rootChildren, { element: <ShellLayout />, children: [...shellChildren, { path: '*', element: <NotFoundView /> }] }],
     },
   ];
 }
