@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { toastCopy } from '../i18n/copy';
-import { restoreFocusFromToasts, TOAST_DURATION_MS, useToastStore, type Toast, type ToastLevel } from '../store/toasts';
+import { forgetToastFocusOrigin, restoreFocusFromToasts, TOAST_DURATION_MS, useToastStore, type Toast, type ToastLevel } from '../store/toasts';
 import { Icon, type IconName } from './Icon';
 import { IconButton } from './IconButton';
 import './toast.css';
@@ -10,7 +10,15 @@ const ICON: Record<ToastLevel, IconName> = { info: 'info', success: 'check', war
 export function ToastRegion() {
   const visible = useToastStore((s) => s.visible);
   return (
-    <section className="toast-region" aria-label={toastCopy.region} aria-live="polite" data-toast-region>
+    <section
+      className="toast-region"
+      aria-label={toastCopy.region}
+      aria-live="polite"
+      data-toast-region
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) forgetToastFocusOrigin();
+      }}
+    >
       {visible.map((t) => <ToastItem key={t.id} toast={t} />)}
     </section>
   );
@@ -18,7 +26,8 @@ export function ToastRegion() {
 
 function ToastItem({ toast }: { toast: Toast }) {
   const dismiss = useToastStore((s) => s.dismiss);
-  const duration = TOAST_DURATION_MS[toast.level];
+  // A toast with an action stays until dismissed, so the action cannot vanish before it is used.
+  const duration = toast.action ? null : TOAST_DURATION_MS[toast.level];
   const remaining = useRef(duration ?? 0);
   const startedAt = useRef(0);
   const timer = useRef<number | undefined>(undefined);
@@ -48,7 +57,7 @@ function ToastItem({ toast }: { toast: Toast }) {
     if (!hovered.current && !focused.current) run();
   };
 
-  // A closing toast that holds focus hands it to the next toast, or back to where Alt+T took it from.
+  // × on a toast that holds focus hands it to the next toast, or back to where Alt+T took it from.
   const close = () => {
     const el = self.current;
     if (el?.contains(document.activeElement)) {
@@ -77,7 +86,7 @@ function ToastItem({ toast }: { toast: Toast }) {
       <Icon name={ICON[toast.level]} className={`toast__icon toast__icon--${toast.level}`} />
       <span className="toast__message" data-testid="toast-message">{toast.message}</span>
       {toast.action && (
-        <button type="button" className="toast__action" onClick={() => { toast.action?.onSelect(); close(); }}>
+        <button type="button" className="toast__action" onClick={() => { toast.action?.onSelect(); dismiss(toast.id); }}>
           {toast.action.label}
         </button>
       )}
