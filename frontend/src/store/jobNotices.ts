@@ -55,6 +55,10 @@ export function endJobClaim(jobId?: string): void {
  */
 export function notifyUnclaimedJob(p: JobProgress): void {
   if (!p.finished) return;
+  // Diagnostics.CreateSupportBundle returns the path or the refusal to the UI call that started it (Go returns no
+  // job id), and Go publishes job.progress on its own goroutine, so the event can land after the call returned.
+  // The caller already reports the outcome (Task 15); toasting the event too would report a failure twice.
+  if (p.kind === 'support_bundle') return;
   if (claimed.delete(p.jobId)) return;
   if (pending > 0) held.push(p);
   else if (p.error) show(p);
