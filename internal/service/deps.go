@@ -1,0 +1,138 @@
+// internal/service/deps.go
+package service
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"sync"
+	"time"
+
+	"tradeloom/internal/bus"
+	"tradeloom/internal/candles"
+	"tradeloom/internal/candles/backfill"
+	"tradeloom/internal/clock"
+	"tradeloom/internal/instruments"
+	"tradeloom/internal/kite"
+	"tradeloom/internal/kite/ticker"
+	"tradeloom/internal/logging"
+	"tradeloom/internal/orders"
+	"tradeloom/internal/settings"
+	"tradeloom/internal/store"
+)
+
+type SessionAPI interface {
+	State() kite.SessionState
+	CredentialsInfo() kite.CredentialsInfo
+	SaveCredentials(ctx context.Context, apiKey, apiSecret string) (kite.SessionState, error)
+	RemoveCredentials(ctx context.Context) (kite.SessionState, error)
+	SetRedirectPort(port int) (kite.CredentialsInfo, error)
+	BeginLogin(ctx context.Context) (kite.LoginStart, error)
+	CompleteLogin(ctx context.Context, pasted string) (kite.SessionState, error)
+	CancelLogin() kite.SessionState
+	Logout(ctx context.Context) (kite.LogoutResult, error)
+	AckRisk(ctx context.Context) (kite.SessionState, error)
+	Profile(ctx context.Context) (kite.Profile, error)
+	Restore(ctx context.Context) kite.SessionState
+	Run(ctx context.Context)
+}
+
+type PortfolioSync interface {
+	Run(ctx context.Context)
+	SetDataPlan(p kite.DataPlan)
+	Refresh(ctx context.Context, sc orders.Scope) error
+	Book() orders.BookSnapshot
+	Positions() orders.PositionsSnapshot
+	Holdings() orders.HoldingsSnapshot
+}
+
+// CandleReader is the read half of candles.Store (*sqlite.Store).
+type CandleReader interface {
+	Read(ctx context.Context, token uint32, iv candles.Interval, from, to time.Time) ([]candles.Candle, error)
+	Missing(ctx context.Context, token uint32, iv candles.Interval, from, to time.Time) ([]candles.Range, error)
+}
+
+// BackfillSubmitter is *backfill.Backfill.
+type BackfillSubmitter interface {
+	Submit(ctx context.Context, j backfill.Job) (string, error)
+}
+
+// InstrumentFinder is *instruments.Master.
+type InstrumentFinder interface {
+	Search(q string, limit int) []instruments.Result
+	ByToken(token uint32) (instruments.Instrument, bool)
+	ByID(id string) (instruments.Instrument, bool)
+}
+
+// LiveSubscriber is *feed.Feed: subscriptions are owned per (consumer, owner) so two consumers sharing a
+// token never unsubscribe each other.
+type LiveSubscriber interface {
+	Subscribe(c ticker.Consumer, owner string, tokens []uint32, m ticker.Mode) error
+	Unsubscribe(c ticker.Consumer, owner string, tokens []uint32)
+	Release(c ticker.Consumer, owner string)
+}
+
+type Deps struct {
+	Session     SessionAPI
+	Orders      PortfolioSync
+	Settings    *settings.Settings
+	Watchlists  *store.WatchlistsRepo
+	Candles     CandleReader
+	Backfill    BackfillSubmitter
+	Instruments InstrumentFinder
+	Live        LiveSubscriber
+	Clock       clock.Clock
+	Bus         *bus.Bus
+	Log         *slog.Logger
+	NewID       func() string
+}
+
+// Service is the transport-neutral command façade (ARCH §2.2, AD-09). The Wails bindings and (P5) Telegram call only this.
+type Service struct {
+	d Deps
+
+	wlMu sync.Mutex // serialises watchlist read-modify-write
+
+	liveMu sync.Mutex
+	live   map[ticker.Consumer]map[uint32]bool
+}
+
+func New(d Deps) *Service {
+	if d.Log == nil {
+		d.Log = slog.Default()
+	}
+	return &Service{d: d, live: map[ticker.Consumer]map[uint32]bool{}}
+}
+
+func (s *Service) nowMs() int64 { return s.d.Clock.Now().UnixMilli() }
+
+// ErrRefused is the one error type the UI sees; internal/app serialises it as {"code","stage","reason"} (§8.4).
+type ErrRefused struct {
+	Code   string
+	Stage  string
+	Reason string
+}
+
+func (e *ErrRefused) Error() string { return e.Reason }
+
+func refused(stage, code, reason string) error {
+	return &ErrRefused{Code: code, Stage: stage, Reason: reason}
+}
+
+// asRefused maps any error to *ErrRefused. A *kite.LoginError keeps its code unchanged (e.g. secret_store
+// is never folded into no_credentials, Ruling 52). Any other error becomes "internal"; its text passes
+// through the redactor so a registered secret can never reach the UI.
+func asRefused(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var r *ErrRefused
+	if errors.As(err, &r) {
+		return r
+	}
+	var le *kite.LoginError
+	if errors.As(err, &le) {
+		return &ErrRefused{Code: le.Code, Stage: stage, Reason: le.Message}
+	}
+	return &ErrRefused{Code: "internal", Stage: stage, Reason: logging.Default.RedactString(err.Error())}
+}
