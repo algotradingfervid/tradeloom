@@ -96,13 +96,14 @@ describe('FR-HOME-002 Holdings summary card', () => {
     expect(within(c).queryByRole('alert')).not.toBeInTheDocument();
     expect(within(c).getByRole('status')).toHaveTextContent('Network unavailable');
     await user.click(within(c).getByRole('button', { name: 'Retry' }));
-    await vi.waitFor(() => expect(within(c).queryByRole('status')).not.toBeInTheDocument());
+    // Ruling 105 M2: the live region stays mounted; only its contents go.
+    await vi.waitFor(() => expect(within(c).getByRole('status')).toBeEmptyDOMElement());
     expect(within(c).getByText('₹2,050.00')).toBeInTheDocument();
   });
   it('shows no order buttons', async () => {
     renderApp();
     await within(await card()).findByText('₹2,050.00');
-    expect(screen.queryByRole('button', { name: /^(buy|sell|b|s)$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(buy|sell|cancel|modify|exit|convert|b|s)\b/i })).not.toBeInTheDocument();
   });
 });
 
@@ -113,6 +114,8 @@ describe('FR-HOME-001 dashboard layout', () => {
     const { user } = renderApp({ backend });
     const c = await card();
     expect(await within(c).findByRole('alert')).toHaveTextContent('Network unavailable');
+    // Ruling 105: no data held → the alert only, no stale-data notice.
+    expect(within(c).getByRole('status')).toBeEmptyDOMElement();
     expect(screen.getByRole('region', { name: 'Main chart' })).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: 'Watchlists and widgets' })).toBeInTheDocument();
     await user.click(within(c).getByRole('button', { name: 'Retry' }));

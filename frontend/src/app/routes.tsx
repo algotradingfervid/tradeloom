@@ -2,6 +2,8 @@ import { Navigate, type RouteObject } from 'react-router-dom';
 import { HomeView } from '../views/home/HomeView';
 import { HoldingsView } from '../views/holdings/HoldingsView';
 import { NotFoundView } from '../views/NotFoundView';
+import { OrderBookView } from '../views/orders/OrderBookView';
+import { PositionsView } from '../views/positions/PositionsView';
 import { SettingsView } from '../views/settings/SettingsView';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
@@ -10,6 +12,8 @@ import { ShellLayout } from './ShellLayout';
 export const shellChildren: RouteObject[] = [
   { path: 'home', element: <HomeView /> },
   { path: 'holdings', element: <HoldingsView /> },
+  { path: 'positions', element: <PositionsView /> },
+  { path: 'orders', element: <OrderBookView /> },
   { path: 'settings', element: <Navigate to="/settings/kite" replace /> },
   { path: 'settings/:group', element: <SettingsView /> },
 ];

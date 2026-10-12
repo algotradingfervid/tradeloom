@@ -105,6 +105,44 @@ export function positionPnl(row: PositionRow, live?: number): number {
   return rupees(row.pnlPaise + row.qty * mult * (toPaise(live) - row.ltpPaise));
 }
 
+export interface LivePosition {
+  row: PositionRow;
+  ltp: number;
+  pnl: number;
+  open: boolean;
+  /** The same values in paise, so totals are summed without float drift. */
+  ltpPaise: number;
+  pnlPaise: number;
+}
+
+/**
+ * CDS/BCD prices have 4 decimals; Go sends paise, so a live overlay computed from them can differ from Kite's P&L.
+ * Until Go sends the raw LTP (P0-3 follow-up, Ruling 96 M1) those rows keep Go's snapshot LTP and P&L.
+ */
+const SUB_PAISE_EXCHANGES = new Set(['CDS', 'BCD']);
+
+/**
+ * One position at the newest LTP. Mirrors Go `orders.positionRow`: P&L = Go P&L + qty × multiplier × (LTP − Go LTP)
+ * (a non-positive live price is ignored; Go already maps multiplier 0 → 1); closed means qty 0.
+ */
+export function livePosition(row: PositionRow, live?: number): LivePosition {
+  const usable = live !== undefined && live > 0 && !SUB_PAISE_EXCHANGES.has(row.exchange);
+  const mult = row.multiplier > 0 ? row.multiplier : 1;
+  const ltpPaise = usable ? toPaise(live) : row.ltpPaise;
+  const pnlPaise = usable ? row.pnlPaise + row.qty * mult * (ltpPaise - row.ltpPaise) : row.pnlPaise;
+  return { row, ltp: rupees(ltpPaise), pnl: rupees(pnlPaise), open: !row.closed, ltpPaise, pnlPaise };
+}
+
+/**
+ * FR-ORD-002 AC1 total P&L: Go's `netTotalPnlPaise` / `dayTotalPnlPaise` (every row, incl. out-of-scope ones) plus
+ * each row's live difference, in integer paise.
+ */
+export function positionsTotalPnl(goTotalPaise: number, rows: LivePosition[]): number {
+  let total = goTotalPaise;
+  for (const r of rows) total += r.pnlPaise - r.row.pnlPaise;
+  return rupees(total);
+}
+
 export function positionNetChangePct(row: PositionRow, ltp: number): number | null {
   return row.qty !== 0 ? ratioPct(toPaise(ltp) - row.avgPaise, row.avgPaise) : null;
 }
