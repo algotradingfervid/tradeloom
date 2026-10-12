@@ -504,6 +504,24 @@ export const tickerCopy = {
   flat: 'unchanged',
 } as const;
 
+export const profileCopy = {
+  title: 'Profile',
+  description: 'Your Zerodha account details as returned by Kite.',
+  loading: 'Loading profile',
+  fields: { name: 'Name', email: 'Email', clientId: 'Client ID', broker: 'Broker', exchanges: 'Exchanges', products: 'Products', orderTypes: 'Order types' },
+  session: 'Session',
+  loggedInAt: (t: string) => `Logged in at ${t}`,
+  expires: (t: string) => `Expires ${t}`,
+  logOut: 'Log out',
+  confirmTitle: 'Log out of Kite?',
+  confirmMessage: 'Live prices and the order book stop updating until you log in again. Your watchlists, settings and cached candles stay on this computer.',
+  // Task 13 adaptations: a failed load (Ruling 90 M1) and an expired session are said in text, never an endless skeleton.
+  loadFailed: 'Your profile could not be loaded from Kite.',
+  retry: 'Retry',
+  expired: 'Your Kite session has ended. Log in again to see your profile.',
+  logIn: 'Log in',
+} as const;
+
 /** Chart symbol search (FR-CHART-005, P0-5 Task 9). */
 export const symbolSearchCopy = {
   title: 'Search instruments',

@@ -8,6 +8,7 @@ import { SetupView } from '../views/onboarding/SetupView';
 import { RestoreLastRoute } from './RestoreLastRoute';
 import { OrderBookView } from '../views/orders/OrderBookView';
 import { PositionsView } from '../views/positions/PositionsView';
+import { ProfileView } from '../views/profile/ProfileView';
 import { SettingsView, visibleSettingsGroups } from '../views/settings/SettingsView';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
@@ -20,6 +21,7 @@ export const shellChildren: RouteObject[] = [
   { path: 'orders', element: <OrderBookView /> },
   { path: 'settings', element: <Navigate to="/settings/kite" replace /> },
   { path: 'settings/:group', element: <SettingsView /> },
+  { path: 'profile', element: <ProfileView /> },
 ];
 
 /** Whether this build has a shell view at `path` (the not-found catch-all excluded) — Ruling 94 M4. */
