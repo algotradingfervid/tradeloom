@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -29,6 +30,9 @@ func TestRunKeyringAvailable(t *testing.T) {
 	var buf bytes.Buffer
 	if err := write(&buf, r); err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "s0-4-") {
+		t.Fatalf("output leaks probe values: %s", buf.String())
 	}
 	var back map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
@@ -56,5 +60,18 @@ func TestRunKeyringUnavailable(t *testing.T) {
 	}
 	if r.EncCreateMillis < 0 || r.EncOpenMillis < 0 {
 		t.Fatalf("bad timings: %+v", r)
+	}
+}
+
+func TestRunRefusesExistingEntry(t *testing.T) {
+	keyring.MockInit()
+	if err := keyring.Set(secrets.KeyringService, string(secrets.KeyTelegramToken), "real-user-token"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(func() error { return nil }); !errors.Is(err, errEntryExists) {
+		t.Fatalf("err = %v, want errEntryExists", err)
+	}
+	if v, _ := keyring.Get(secrets.KeyringService, string(secrets.KeyTelegramToken)); v != "real-user-token" {
+		t.Fatalf("existing entry was modified: %q", v)
 	}
 }

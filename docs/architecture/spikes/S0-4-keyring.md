@@ -20,7 +20,7 @@ against the macOS login Keychain (it would write to the user's real keychain). N
 
 Tool: `internal/secrets/keyringprobe`. It refuses to run (exit 2) unless `TRADELOOM_SPIKE_DISPOSABLE=1`, because it writes and deletes the real `tradeloom/telegram.bot_token` entry. Use only in throwaway containers/VMs. It prints one JSON object (env, mode, probe_error, probe_ms, keyring_roundtrip_ok/error/ms, encfile_create_ms, encfile_open_ms, migrate_file_to_keyring). Unit tests (go-keyring `MockInit`) cover the available and unavailable paths: `go test -tags noorders ./internal/secrets/keyringprobe`.
 
-Build once (static): `docker run --rm -e CGO_ENABLED=0 -v "$PWD":/src -w /src tradeloom-build:p0 go build -o build/bin/keyringprobe ./internal/secrets/keyringprobe`. Cross-compile with `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` was verified to build on macOS.
+Prerequisite: the `tradeloom-build:p0` image from Task 16 (`make` target / Dockerfile for the Linux build). Build once (static): `mkdir -p build/bin && docker run --rm -e CGO_ENABLED=0 -v "$PWD":/src -w /src tradeloom-build:p0 go build -o build/bin/keyringprobe ./internal/secrets/keyringprobe`. Safety: `secrets.KeyringService` is a fixed constant, so the probe cannot use an isolated service name. Instead, before any write it does a `Get` of `tradeloom/telegram.bot_token`; if that entry already exists it aborts with exit code 3 and touches nothing. Cross-compile with `CGO_ENABLED=0 GOOS=linux GOARCH=amd64` was verified to build on macOS.
 
 ```bash
 # (a) GNOME Keyring, unlocked (Secret Service present)
@@ -41,6 +41,20 @@ docker run --rm -v "$PWD":/src -w /src ubuntu:24.04 bash -c '
     TRADELOOM_SPIKE_DISPOSABLE=1 build/bin/keyringprobe"'
 ```
 Manual VM rows: (e) KDE Plasma desktop VM (Kubuntu 24.04 or Fedora KDE) with KWallet's Secret Service enabled, run from a desktop terminal; (f) the same GNOME VM reached over `ssh` (no desktop session in the SSH shell); (g) the reference laptop (record CPU) for `encfile_create_ms` / `encfile_open_ms`. Record every JSON output verbatim.
+
+Concrete commands for the manual rows (replace `<arch>` with the VM's `uname -m` mapped to amd64/arm64, and `vm` with its host):
+```bash
+# e (KDE VM) and f/g: build for the target, copy, run
+GOOS=linux GOARCH=<arch> CGO_ENABLED=0 go build -o build/bin/keyringprobe-linux ./internal/secrets/keyringprobe
+# e: run from a terminal INSIDE the KDE desktop session
+scp build/bin/keyringprobe-linux user@kde-vm:/tmp/keyringprobe && ssh -t user@kde-vm 'echo run it in the desktop terminal: TRADELOOM_SPIKE_DISPOSABLE=1 /tmp/keyringprobe'
+# f: GNOME VM over plain ssh (no desktop session); first verify the env is really bare
+scp build/bin/keyringprobe-linux user@gnome-vm:/tmp/keyringprobe && ssh user@gnome-vm 'env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR TRADELOOM_SPIKE_DISPOSABLE=1 /tmp/keyringprobe'
+# f env check (must print nothing): ssh user@gnome-vm 'env | grep -E "^(DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR)="'
+# g: reference laptop (Linux) - run locally, note CPU from `lscpu | grep "Model name"`
+TRADELOOM_SPIKE_DISPOSABLE=1 build/bin/keyringprobe-linux
+```
+Row f is only valid if `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` are unset in the ssh shell (the `env -u` above enforces it; the JSON `env` block records the rest).
 
 Expected shape: (a) `mode: keyring`, `keyring_roundtrip_ok: true`, `migrate_file_to_keyring: "ok (secrets.enc removed: true)"`; (b) and (c) `mode: choose` with a `probe_error` naming `org.freedesktop.secrets` / the missing bus; (d) `mode: choose` with `probe_error` containing `no answer from the Secret Service within 3s` (or an immediate locked error), never a hang.
 

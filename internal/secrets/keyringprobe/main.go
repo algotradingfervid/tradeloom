@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +30,10 @@ type result struct {
 	MigrateToKeyring string            `json:"migrate_file_to_keyring"`
 }
 
+// errEntryExists: secrets.KeyringService is a fixed constant, so the probe cannot use an isolated
+// service name; instead it refuses to touch a real tradeloom/telegram.bot_token entry (exit 3).
+var errEntryExists = errors.New("tradeloom/telegram.bot_token already exists in the keyring; refusing to overwrite or delete it")
+
 func ms(start time.Time) int64 { return clock.SystemNow().Sub(start).Milliseconds() }
 
 func main() {
@@ -37,6 +42,10 @@ func main() {
 		os.Exit(2)
 	}
 	r, err := run(func() error { return secrets.ProbeKeyringWithin(secrets.ProbeTimeout) })
+	if errors.Is(err, errEntryExists) {
+		fmt.Fprintln(os.Stderr, "keyringprobe:", err)
+		os.Exit(3)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "keyringprobe:", err)
 		os.Exit(1)
@@ -75,6 +84,9 @@ func run(probe func() error) (result, error) {
 		r.ProbeError = d.ProbeError.Error()
 	}
 	if d.KeyringAvailable {
+		if _, gerr := secrets.NewKeyring().Get(secrets.KeyTelegramToken); gerr == nil {
+			return r, errEntryExists
+		}
 		t = clock.SystemNow()
 		kr := secrets.NewKeyring()
 		err := kr.Set(secrets.KeyTelegramToken, "s0-4-probe-value")
