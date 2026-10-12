@@ -13,6 +13,11 @@ describe('FR-SHELL-019 window state — last view', () => {
     expect(safeLastRoute(42)).toBe('/home');
     expect(safeLastRoute('/orders')).toBe('/orders');
   });
+  it('Ruling 94 M4: an allow-listed view whose route this build lacks falls back to Home', () => {
+    const exists = (p: string) => p === '/holdings';
+    expect(safeLastRoute('/orders', exists)).toBe('/home');
+    expect(safeLastRoute('/holdings', exists)).toBe('/holdings');
+  });
   it('writes ui.last_route as the user moves and ignores unknown views', async () => {
     const { backend, router } = renderApp({ route: '/home' });
     await waitFor(() => expect(backend.state.settings['ui.last_route']).toBe('"/home"'));

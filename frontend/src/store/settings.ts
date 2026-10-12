@@ -66,7 +66,7 @@ registerReset(
     touched = new Set();
     useSettingsStore.setState(initial);
   },
-  { onLogout: false },
+  { onLogout: false, name: 'settings', inspect: () => ({ ...useSettingsStore.getState(), touched }) },
 );
 
 /**

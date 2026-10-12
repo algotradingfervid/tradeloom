@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import type { CredentialsInfo, SecretStorageInfo } from '../../api/backend';
 import { useBackend } from '../../api/BackendContext';
+import { logOut } from '../../app/logout';
 import { parseBackendError } from '../../api/errors';
 import { Button } from '../../components/Button';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -63,9 +64,13 @@ function ChangeCredentialsDialog({ logoutFirst, onClose }: { logoutFirst: boolea
         return;
       }
       if (logoutFirst && useSessionStore.getState().session?.state === 'ready') {
-        const res = await backend.session.logout();
+        // Ruling 108 M12: the shared logout (app/logout.ts) shows the LogoutResult as a gentle info note.
+        const failure = await logOut(backend);
+        if (failure) {
+          setError(failure.reason);
+          return;
+        }
         loggedOut = true;
-        if (res.message) pushToast({ level: 'warning', message: res.message });
       }
       await backend.session.saveCredentials({ apiKey: apiKey.trim(), apiSecret: secret });
       saved = true;

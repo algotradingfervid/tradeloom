@@ -475,3 +475,22 @@ describe('Settings → About', () => {
     expect(screen.getByRole('link', { name: 'Risk disclosure' })).toHaveAttribute('href', '/legal/risk');
   });
 });
+
+describe('P0-4 Task 9 fix round 1 (Ruling 108 M12)', () => {
+  it('Change while logged in logs out through logOut(): a failed remote invalidation is a gentle info note', async () => {
+    const msg = 'Logged out of Tradeloom. Kite could not be reached to invalidate the token; it stops working at 06:00 IST.';
+    const backend = createMockBackend(demoSeed());
+    const realLogout = backend.session.logout;
+    backend.session.logout = async () => {
+      await realLogout();
+      return { remoteInvalidated: false, message: msg };
+    };
+    const { user } = renderApp({ route: '/settings/kite', backend });
+    const dialog = await openChangeDialog(user);
+    await user.type(within(dialog).getByLabelText('API key'), 'newkey77aa');
+    await user.type(within(dialog).getByLabelText('API secret'), 'newsecret42');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Kite credentials saved. Log in again to use them.')).toBeInTheDocument();
+    expect(useToastStore.getState().visible.find((t) => t.message === msg)?.level).toBe('info');
+  });
+});

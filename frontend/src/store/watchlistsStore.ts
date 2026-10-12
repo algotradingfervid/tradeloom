@@ -325,4 +325,4 @@ registerReset(() => {
   epoch++;
   lastUserId = null;
   useWatchlists.setState(initial);
-});
+}, { name: 'watchlists', inspect: () => ({ ...useWatchlists.getState(), epoch, lastUserId }) });
