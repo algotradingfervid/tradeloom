@@ -138,3 +138,86 @@ export const profileMenuCopy = {
   retry: 'Retry loading profile',
   themeFailed: (reason: string) => `The theme could not be saved: ${reason}`,
 } as const;
+
+// --- Settings (P0-4 Task 14)
+export const settingsViewCopy = {
+  nav: 'Settings groups',
+  groups: {
+    kite: 'Kite connection', trading: 'Trading', appearance: 'Appearance', chart: 'Chart', home: 'Home',
+    universes: 'Universes & baskets', calendar: 'Market calendar', data: 'Data', notifications: 'Notifications',
+    shortcuts: 'Shortcuts', limits: 'Limits', updates: 'Updates', diagnostics: 'Diagnostics', tours: 'Tours', about: 'About',
+  },
+  wholeNumber: 'Enter a whole number',
+} as const;
+
+export const kiteSettingsCopy = {
+  credentials: 'Credentials',
+  apiKey: 'API key',
+  apiSecret: 'API secret',
+  dataPlan: 'Data plan',
+  plan: { connect: 'Kite Connect (market data available)', none: 'Orders and portfolio only (no data plan)', unknown: 'Checked after the next login' },
+  secretStorage: 'Secret storage',
+  // Keys are P0-1 secrets backends as `CredentialsInfo.secretBackend` / `SecretStorageInfo.backend` report them.
+  backend: { keyring: 'System keyring', file: 'Encrypted file (secrets.enc)', locked: 'Encrypted file (locked)', none: 'Not stored' } as Record<string, string>,
+  change: 'Change',
+  changeTitle: 'Change Kite credentials',
+  changeConfirmTitle: 'Change Kite credentials?',
+  changeConfirmMessage: 'Changing the API key logs you out of Tradeloom; you will log in to Kite again.',
+  changeConfirm: 'Log out and continue',
+  changeLoginBusy: 'Finish or cancel the current login before changing credentials.',
+  // Same wording as Go's refusals (internal/kite/credentials.go, session.go), checked here before logging out.
+  invalidKey: 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.',
+  invalidSecret: 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.',
+  identical: 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.',
+  loggedOutKept: 'You are logged out; your previous credentials are still saved.',
+  save: 'Save',
+  saved: 'Kite credentials saved. Log in again to use them.',
+  remove: 'Remove credentials',
+  removeTitle: 'Remove Kite credentials?',
+  removeMessage: "The API key, the API secret and today's access token are deleted from this computer. You will need to set them up again before using Kite.",
+  migrate: 'Move secrets to the system keyring',
+  migrated: 'Secrets moved to the system keyring; the encrypted file was deleted.',
+  fileNotRemovedTitle: 'Old secrets file not removed',
+  fileNotRemoved: 'Your secrets are now in the system keyring, but the old encrypted file (secrets.enc) is still on disk.',
+  fileNotRemovedRetry: 'Try removing it again',
+  leftoverFileInfo: 'An old encrypted secrets file (secrets.enc) is still on disk. Tradeloom uses the system keyring and does not read it.',
+  loadFailed: 'The Kite connection details could not be loaded.',
+  loadFailedRetry: 'Retry loading Kite connection',
+  login: 'Login',
+  redirectUrl: 'Redirect URL',
+  port: 'Login callback port',
+  portHint: 'Register the matching redirect URL in the Kite developer console after changing this.',
+  portChangedTitle: 'Redirect URL changed',
+  portChanged: (url: string) => `Update the redirect URL of your app in the Kite developer console to ${url}, or the next login will fail.`,
+} as const;
+
+export const appearanceCopy = {
+  title: 'Theme and layout',
+  darkTheme: 'Dark theme',
+  followSystem: 'Follow system theme',
+  followSystemHint: 'Use the light or dark preference of your desktop.',
+  followingHint: 'Controlled by your desktop while "Follow system theme" is on.',
+  sidebarCollapsed: 'Collapse the sidebar to icons',
+  saveFailed: (reason: string) => `The setting could not be saved: ${reason}`,
+} as const;
+
+export const chartSettingsCopy = {
+  title: 'Chart defaults',
+  timeframe: 'Default chart timeframe',
+  hint: 'Used the first time an instrument is charted; afterwards each chart remembers its own timeframe.',
+} as const;
+
+export const aboutCopy = {
+  app: 'Tradeloom',
+  version: 'Version',
+  build: 'Build',
+  schema: 'Database schema',
+  legal: 'Legal',
+  terms: 'Terms of use',
+  privacy: 'Privacy notice',
+  risk: 'Risk disclosure',
+  licences: 'Third-party licences',
+  component: 'Component',
+  licenceVersion: 'Version',
+  licence: 'Licence',
+} as const;

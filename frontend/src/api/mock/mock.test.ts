@@ -43,7 +43,7 @@ describe('mock backend', () => {
   });
   it('moves through setup → paste login → ready (risk disclosure still required)', async () => {
     const m = createMockBackend(freshSeed());
-    await m.session.saveCredentials({ apiKey: 'kiteapikey9f2c', apiSecret: 'secret-value' });
+    await m.session.saveCredentials({ apiKey: 'kiteapikey9f2c', apiSecret: 'secretvalue1' });
     expect(m.state.session.state).toBe('logged_out');
     expect(m.state.session.credentials.apiKeyMasked).toBe('••••9f2c');
     const status = await m.session.completeLogin('http://127.0.0.1:7420/kite/callback?request_token=abc123XYZ&status=success');
@@ -51,8 +51,18 @@ describe('mock backend', () => {
   });
   it('never keeps the API secret in its state (only a masked key)', async () => {
     const m = createMockBackend(freshSeed());
-    await m.session.saveCredentials({ apiKey: 'kiteapikey9f2c', apiSecret: 'secret-value' });
-    expect(JSON.stringify(m.state)).not.toContain('secret-value');
+    await m.session.saveCredentials({ apiKey: 'kiteapikey9f2c', apiSecret: 'secretvalue1' });
+    expect(JSON.stringify(m.state)).not.toContain('secretvalue1');
+  });
+  it('saveCredentials applies Go\'s format checks (normalised, 6–64 letters and digits, key ≠ secret)', async () => {
+    const m = createMockBackend(freshSeed());
+    const refuse = (apiKey: string, apiSecret: string) => m.session.saveCredentials({ apiKey, apiSecret }).catch((e: unknown) => parseBackendError(e));
+    expect(await refuse('abc', 'secretvalue1')).toMatchObject({ code: 'invalid_credentials', reason: expect.stringContaining('The API key should be 6–64 letters and digits') });
+    expect(await refuse('kiteapikey9f2c', 'bad-secret')).toMatchObject({ code: 'invalid_credentials', reason: expect.stringContaining('The API secret should be 6–64 letters and digits') });
+    expect(await refuse('kiteapikey9f2c', ' "kiteapikey9f2c" ')).toMatchObject({ code: 'invalid_credentials', reason: expect.stringContaining('identical') });
+    expect(m.state.session.state).toBe('no_credentials');
+    await m.session.saveCredentials({ apiKey: ' kiteapikey9f2c\n', apiSecret: "'secretvalue1'" });
+    expect(m.state.session.credentials.apiKeyMasked).toBe('••••9f2c');
   });
   it('the personal seed is a ready session without a data plan', () => {
     expect(personalSeed().session).toMatchObject({ state: 'ready', dataPlan: 'none' });
