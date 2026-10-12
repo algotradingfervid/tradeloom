@@ -16,7 +16,7 @@ type Pkg struct {
 
 // Violation is one broken rule.
 type Violation struct {
-	Rule   string // "rule1" … "rule8", "g0-import", "g0-call"
+	Rule   string // "rule1" … "rule8", "g0-import", "g0-http", "g0-call", "g0-kitehttp", …
 	Pkg    string // package import path (or file for AST rules)
 	Detail string
 }
@@ -25,6 +25,15 @@ func (v Violation) String() string { return fmt.Sprintf("%s: %s: %s", v.Rule, v.
 
 // under reports whether path is p or below p ("a/b" is under "a", "ab" is not).
 func under(path, p string) bool { return path == p || strings.HasPrefix(path, p+"/") }
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
 
 func underAny(path string, ps []string) bool {
 	for _, p := range ps {
@@ -35,11 +44,13 @@ func underAny(path string, ps []string) bool {
 	return false
 }
 
-// importRule: importers of any path under Targets must be under one of Allowed (module-relative).
+// importRule: importers of any path under targets (or equal to one, when exact) must be under one of
+// allowed (module-relative). An empty allowed list bans the import everywhere in the module.
 type importRule struct {
 	name    string
 	targets []string
 	allowed []string // module-relative package prefixes
+	exact   bool     // targets match only themselves, not their sub-packages ("net" but not "net/url")
 }
 
 var ioPackages = []string{"database/sql", "modernc.org/sqlite", "net/http", "github.com/zerodha/gokiteconnect", "github.com/wailsapp/wails"}
@@ -52,12 +63,26 @@ var bypassForbidden = []string{"internal/model", "internal/indicators", "interna
 	"internal/universe", "internal/live", "internal/orders", "internal/candles", "internal/instruments", "internal/kite"}
 
 var importRules = []importRule{
-	{"rule2", []string{"github.com/wailsapp/wails"}, []string{"internal/app", "cmd/tradeloom"}},
-	{"rule3", []string{"github.com/zerodha/gokiteconnect"}, []string{"internal/kite"}},
-	{"rule4", []string{"database/sql", "modernc.org/sqlite"}, []string{"internal/store", "internal/candles/sqlite"}},
-	{"rule5", []string{"github.com/go-telegram/bot"}, []string{"internal/telegram"}},
-	{"rule6", []string{"github.com/zalando/go-keyring", "golang.org/x/crypto"}, []string{"internal/secrets"}},
-	{"g0-import", []string{"internal/kite/orderwrite"}, []string{"internal/orders", "internal/kite/orderwrite"}},
+	{"rule2", []string{"github.com/wailsapp/wails"}, []string{"internal/app", "cmd/tradeloom"}, false},
+	{"rule3", []string{"github.com/zerodha/gokiteconnect"}, []string{"internal/kite"}, false},
+	{"rule4", []string{"database/sql", "modernc.org/sqlite"}, []string{"internal/store", "internal/candles/sqlite"}, false},
+	{"rule5", []string{"github.com/go-telegram/bot"}, []string{"internal/telegram"}, false},
+	{"rule6", []string{"github.com/zalando/go-keyring", "golang.org/x/crypto"}, []string{"internal/secrets"}, false},
+	{"g0-import", []string{"internal/kite/orderwrite"}, []string{"internal/orders", "internal/kite/orderwrite"}, false},
+	// g0-http (Ruling 69): only packages under internal/kite may speak HTTP, so a hand-rolled order
+	// POST cannot be written elsewhere (the nm check sees only gokiteconnect's write methods). It
+	// covers net/http's sub-packages (httptest, httputil, …) too. Test files are exempt: Load does
+	// not load them (packages.Config.Tests is false), and they are not linked into the binary.
+	// golang.org/x/net/... (http2, websocket, proxy, …) is an HTTP stack too (Ruling 79 I-2).
+	{"g0-http", []string{"net/http", "golang.org/x/net"}, []string{"internal/kite"}, false},
+	// g0-net (Ruling 79 I-2): raw sockets and TLS only under internal/kite; unsafe nowhere (it can reach
+	// unexported gokiteconnect state); os/exec only under internal/app (the browser opener), so no other
+	// package can shell out to curl. Exact targets: net/url, net/netip and crypto/tlsx are not affected.
+	{"g0-net", []string{"net", "crypto/tls"}, []string{"internal/kite"}, true},
+	{"g0-net", []string{"unsafe"}, nil, true},
+	{"g0-net", []string{"os/exec"}, []string{"internal/app"}, true},
+	// g0-mock (Ruling 79 M-3): the recording fake is for tests only; non-test code may not import it.
+	{"g0-mock", []string{"internal/kite/mock"}, []string{"internal/kite/mock"}, false},
 }
 
 // CheckImports applies rules 1–7 and the G-0 import rule to pkgs. module is the module path ("tradeloom").
@@ -87,8 +112,16 @@ func CheckImports(module string, pkgs []Pkg) []Violation {
 				out = append(out, Violation{"rule1", p.Path, "imports I/O package " + imp})
 			}
 			for _, r := range importRules {
-				if underAny(target, r.targets) && !underAny(self, r.allowed) {
-					out = append(out, Violation{r.name, p.Path, "imports " + imp + " (allowed only in " + strings.Join(r.allowed, ", ") + ")"})
+				hit := underAny(target, r.targets)
+				if r.exact {
+					hit = containsStr(r.targets, target)
+				}
+				if hit && !underAny(self, r.allowed) {
+					where := "allowed only in " + strings.Join(r.allowed, ", ")
+					if len(r.allowed) == 0 {
+						where = "not allowed in this module"
+					}
+					out = append(out, Violation{r.name, p.Path, "imports " + imp + " (" + where + ")"})
 				}
 			}
 			if internal && (under(self, "internal/app") || under(self, "internal/telegram")) && underAny(impRel, bypassForbidden) {

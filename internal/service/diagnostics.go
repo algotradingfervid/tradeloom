@@ -27,6 +27,10 @@ var (
 	bundleMaxCrashFiles       = 20       // newest crash-*.json files by name (their timestamp)
 )
 
+// stageOpenHook runs before each log or crash report is opened for staging; tests use it to make a file
+// vanish or change between the directory listing and the read.
+var stageOpenHook = func(path string) {}
+
 // bundleMaxCrashBytes is the per-report cap; a larger crash report is replaced by a note (a cut JSON
 // document could split a secret the redactor would then not recognise).
 const bundleMaxCrashBytes int64 = 1 << 20
@@ -66,9 +70,10 @@ func (s *Service) CreateSupportBundle(ctx context.Context) (string, error) {
 	step("collecting", 1)
 	exports := s.d.Layout.ExportsDir
 	if fi, err := os.Stat(exports); exports == "" || !filepath.IsAbs(exports) || err != nil || !fi.IsDir() {
-		return "", fail("collecting", 1, fmt.Errorf("the exports folder %q does not exist", exports))
+		return "", fail("collecting", 1, errors.New("the exports folder does not exist"))
 	}
-	mask := s.clientIDMasker()
+	s.sweepBundleLeftovers(exports)
+	mask := s.bundleMasker()
 	var files []logging.BundleFile
 	if s.d.DB != nil {
 		dbFiles, err := s.d.DB.SupportFiles(ctx)
@@ -102,7 +107,7 @@ func (s *Service) CreateSupportBundle(ctx context.Context) (string, error) {
 	}
 	defer func() {
 		if err := os.RemoveAll(staging); err != nil {
-			s.d.Log.Warn("support bundle staging not removed", "path", staging, "err", err)
+			s.d.Log.Warn("support bundle staging not removed", "name", filepath.Base(staging), "err", err)
 		}
 	}()
 	if err := s.stageLogs(ctx, staging, mask); err != nil {
@@ -115,20 +120,54 @@ func (s *Service) CreateSupportBundle(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fail("writing", 2, err)
 	}
-	s.d.Log.Info("support bundle written", "path", path)
+	s.d.Log.Info("support bundle written", "name", filepath.Base(path))
 	s.progress(JobProgress{JobID: id, Kind: JobSupportBundle, Stage: "done", Done: 3, Total: 3, Finished: true, ResultPath: path})
 	return path, nil
 }
 
-// clientIDMasker masks the signed-in Kite client id ("AB1234" → "AB****") wherever it appears.
-// Logs already mask it at the source; this is defence in depth for stray lines and app.db rows.
-func (s *Service) clientIDMasker() func([]byte) []byte {
-	id := s.d.Session.State().UserID
-	if len(id) < 4 {
-		return func(b []byte) []byte { return b }
+// bundleMasker shortens the home directory (it carries the OS user name, Ruling 78 I1) to "~", raw and
+// JSON-escaped, and masks the signed-in Kite client id ("AB1234" → "AB****") wherever they appear.
+// Logs already mask the client id at the source; this is defence in depth for stray lines and app.db rows.
+func (s *Service) bundleMasker() func([]byte) []byte {
+	var pairs [][2][]byte
+	if home, err := os.UserHomeDir(); err == nil {
+		home = filepath.Clean(home)
+		if filepath.IsAbs(home) && home != filepath.Dir(home) { // never "/" or a volume root
+			pairs = append(pairs, [2][]byte{[]byte(home), []byte("~")})
+			if esc, err := json.Marshal(home); err == nil && string(esc[1:len(esc)-1]) != home {
+				pairs = append(pairs, [2][]byte{esc[1 : len(esc)-1], []byte("~")})
+			}
+		}
 	}
-	raw, masked := []byte(id), []byte(kite.MaskUserID(id))
-	return func(b []byte) []byte { return bytes.ReplaceAll(b, raw, masked) }
+	if id := s.d.Session.State().UserID; len(id) >= 4 {
+		pairs = append(pairs, [2][]byte{[]byte(id), []byte(kite.MaskUserID(id))})
+	}
+	return func(b []byte) []byte {
+		for _, p := range pairs {
+			b = bytes.ReplaceAll(b, p[0], p[1])
+		}
+		return b
+	}
+}
+
+// sweepBundleLeftovers removes staging folders and temp zips an interrupted run left in the exports
+// folder (Ruling 78 M4). The single job slot guarantees no bundle is being written right now.
+func (s *Service) sweepBundleLeftovers(exports string) {
+	des, err := os.ReadDir(exports)
+	if err != nil {
+		return
+	}
+	for _, de := range des {
+		n := de.Name()
+		stage, _ := filepath.Match(".support-stage-*", n)
+		tmp, _ := filepath.Match(".support-*.zip.tmp", n)
+		if !stage && !tmp {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(exports, n)); err != nil {
+			s.d.Log.Warn("support bundle leftover not removed", "name", n, "err", err)
+		}
+	}
 }
 
 type logCandidate struct {
@@ -188,7 +227,11 @@ func (s *Service) stageLogs(ctx context.Context, dir string, mask func([]byte) [
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		stageOpenHook(filepath.Join(src, c.name))
 		data, err := readLogTail(filepath.Join(src, c.name), c.fi, bundleMaxFileBytes)
+		if skipped(err) {
+			data, err = []byte(fmt.Sprintf("[%s was rotated or removed while the support bundle was written; skipped]\n", c.name)), nil
+		}
 		if err != nil {
 			return err
 		}
@@ -198,19 +241,29 @@ func (s *Service) stageLogs(ctx context.Context, dir string, mask func([]byte) [
 	}
 	crashCap := min(bundleMaxFileBytes, bundleMaxCrashBytes)
 	for _, c := range crashes {
-		data := []byte(fmt.Sprintf("{\"omitted\":\"crash report larger than %d bytes\"}\n", crashCap))
-		if c.fi.Size() <= crashCap {
-			b, err := readRegular(filepath.Join(src, c.name), c.fi, crashCap)
-			if err != nil {
-				return err
-			}
-			data = b
+		stageOpenHook(filepath.Join(src, c.name))
+		data, err := readCrash(filepath.Join(src, c.name), c.fi, crashCap)
+		if skipped(err) {
+			data, err = []byte(`{"omitted":"crash report was removed or replaced while the support bundle was written"}`+"\n"), nil
+		}
+		if err != nil {
+			return err
 		}
 		if err := copyOne(c, data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// errFileChanged: the file at a listed name is no longer the regular file the listing saw (rotated,
+// replaced or swapped for a symlink).
+var errFileChanged = errors.New("file changed while the support bundle was being written")
+
+// skipped reports whether a staging read failed because the file vanished or changed after the
+// listing; such a file is skipped with a note instead of failing the bundle (Ruling 78 M2).
+func skipped(err error) bool {
+	return errors.Is(err, errFileChanged) || errors.Is(err, os.ErrNotExist)
 }
 
 // openRegular opens path and checks it is still the regular file seen by Lstat (no symlink swap).
@@ -222,19 +275,35 @@ func openRegular(path string, seen os.FileInfo) (*os.File, error) {
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() || !os.SameFile(fi, seen) {
 		f.Close()
-		return nil, fmt.Errorf("%s changed while the support bundle was being written", filepath.Base(path))
+		return nil, errFileChanged
 	}
 	return f, nil
 }
 
-// readRegular reads at most limit bytes of a regular file.
-func readRegular(path string, seen os.FileInfo, limit int64) ([]byte, error) {
+// readCrash reads a whole crash report, or returns a note when the opened file is larger than limit
+// (checked on the open file, Ruling 78 M3, and again on the bytes read in case it grew meanwhile).
+func readCrash(path string, seen os.FileInfo, limit int64) ([]byte, error) {
+	note := []byte(fmt.Sprintf("{\"omitted\":\"crash report larger than %d bytes\"}\n", limit))
 	f, err := openRegular(path, seen)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, limit))
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > limit {
+		return note, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return note, nil
+	}
+	return b, nil
 }
 
 // readLogTail returns the newest whole lines of a log file, at most limit bytes. Cutting only at line
@@ -348,6 +417,6 @@ func (s *Service) DismissCrash(_ context.Context) error {
 			break
 		}
 	}
-	s.d.Log.Info("crash report dismissed", "path", p)
+	s.d.Log.Info("crash report dismissed", "name", filepath.Base(p))
 	return nil
 }

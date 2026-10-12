@@ -3,13 +3,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"tradeloom/internal/kite"
-	"tradeloom/internal/service"
 	"tradeloom/internal/service/servicetest"
 )
 
@@ -70,11 +70,11 @@ func allBound(t *testing.T) []any {
 		NewSession(svc, context.Background, noOpen), NewPortfolio(svc, context.Background), NewSettings(svc, context.Background),
 		NewChart(svc, context.Background), NewInstruments(svc, context.Background), NewQuotes(svc, context.Background),
 		NewWatchlists(svc, context.Background), NewData(svc, context.Background, dialogs), NewCalendar(svc, context.Background, dialogs),
-		NewDiagnostics(svc, context.Background, noOpen), NewSystem(svc, context.Background),
+		NewDiagnostics(svc, context.Background, func(string) error { return nil }), NewSystem(svc, context.Background),
 	}
 }
 
-// ARCH §8.4: bound methods take/return JSON-friendly structs only (no time.Time outside the P0-2 payloads, no interfaces), error last.
+// ARCH §8.4: bound methods take/return JSON-friendly structs only (no time.Time, no interfaces), error last.
 func TestBindings_AreJSONFriendly(t *testing.T) {
 	bound := allBound(t)
 	if len(bound) != 11 {
@@ -103,7 +103,6 @@ func TestBindings_AreJSONFriendly(t *testing.T) {
 			}
 		}
 	}
-	_ = service.SessionStatus{}
 }
 
 // The dialog bindings pass the runtime's answer through; "" (cancelled) is not an error.
@@ -137,16 +136,22 @@ func TestDialogs_PassThrough(t *testing.T) {
 func TestDiagnostics_OpensLogsFolder(t *testing.T) {
 	svc, _, _ := servicetest.New(t)
 	var opened []string
-	d := NewDiagnostics(svc, context.Background, func(u string) { opened = append(opened, u) })
+	var openErr error
+	d := NewDiagnostics(svc, context.Background, func(p string) error { opened = append(opened, p); return openErr })
 	if err := d.OpenLogsFolder(); err != nil {
 		t.Fatal(err)
 	}
 	dir, _ := svc.OpenLogsFolder(context.Background())
-	if len(opened) != 1 || opened[0] != "file://"+dir {
-		t.Fatalf("opened %v", opened)
+	if len(opened) != 1 || opened[0] != dir {
+		t.Fatalf("opened %v (want the plain path %q for the file opener)", opened, dir)
 	}
 	if err := d.OpenCrashReport(); err == nil || len(opened) != 1 {
 		t.Fatalf("no crash report: err %v opened %v", err, opened)
+	}
+	// Ruling 82 (I1): an opener failure reaches the caller; no silent success.
+	openErr = errors.New("no file manager")
+	if err := d.OpenLogsFolder(); err == nil {
+		t.Fatal("opener failure was swallowed")
 	}
 }
 

@@ -2,6 +2,7 @@
 package mock
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,11 +11,18 @@ import (
 	"testing"
 )
 
-// Request is one call the app made to the fake Kite API.
+// Request is one call the app made to the fake Kite API. Header, RawQuery and Body keep what Form does
+// not show (a DELETE body is never parsed into Form), so a test can scan everything that was sent.
+// BodyErr is the error that cut reading the body short (Body then holds only what was read), so a
+// test can fail closed instead of scanning a partial body.
 type Request struct {
-	Method string
-	Path   string
-	Form   url.Values
+	Method   string
+	Path     string
+	Form     url.Values
+	Header   http.Header
+	RawQuery string
+	Body     []byte
+	BodyErr  error
 }
 
 // Recorder is a recording Kite HTTP fake: canned envelopes per route, 404 GeneralException otherwise.
@@ -74,8 +82,11 @@ func (r *Recorder) Unmatched() []Request {
 }
 
 func (r *Recorder) serve(w http.ResponseWriter, req *http.Request) {
+	body, bodyErr := io.ReadAll(req.Body)
+	req.Body = io.NopCloser(bytes.NewReader(body))
 	_ = req.ParseForm()
-	rq := Request{Method: req.Method, Path: req.URL.Path, Form: req.Form}
+	rq := Request{Method: req.Method, Path: req.URL.Path, Form: req.Form, Header: req.Header.Clone(),
+		RawQuery: req.URL.RawQuery, Body: body, BodyErr: bodyErr}
 	r.mu.Lock()
 	r.reqs = append(r.reqs, rq)
 	rt, ok := r.routes[req.Method+" "+req.URL.Path]

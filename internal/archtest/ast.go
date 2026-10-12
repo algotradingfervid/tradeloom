@@ -1,8 +1,10 @@
 package archtest
 
 import (
+	"fmt"
 	"go/ast"
 	"go/build/constraint"
+	"go/constant"
 	"go/token"
 	"go/types"
 	"path/filepath"
@@ -158,7 +160,11 @@ func isKiteClient(t types.Type) bool {
 	return kitePkg.MatchString(named.Obj().Pkg().Path()) && named.Obj().Name() == "Client"
 }
 
-// requiresOrdersTag is true when the file's //go:build line is satisfied with "orders" but not without it.
+// requiresOrdersTag reports whether the file's //go:build expression links only in orders builds
+// (Ruling 79 I-1): it must be false for EVERY assignment of the tags it names in which orders is false
+// or noorders is true. Every other tag (go1.x, GOOS, cgo, custom) is a free variable, so a term such as
+// "|| go1.1" or "|| linux" that is true without the orders tag disqualifies the file. A file without a
+// //go:build line, an unparsable one, or one naming more than maxFreeTags tags is not orders-only.
 func requiresOrdersTag(f *ast.File) bool {
 	for _, cg := range f.Comments {
 		if cg.Pos() > f.Package {
@@ -172,14 +178,52 @@ func requiresOrdersTag(f *ast.File) bool {
 			if err != nil {
 				return false
 			}
-			with := expr.Eval(func(tag string) bool { return tag == "orders" })
-			without := expr.Eval(func(tag string) bool { return false })
-			// Must link only with orders and never when noorders is also set.
-			both := expr.Eval(func(tag string) bool { return tag == "orders" || tag == "noorders" })
-			return with && !without && !both
+			return ordersOnly(expr)
 		}
 	}
 	return false
+}
+
+const maxFreeTags = 16
+
+func ordersOnly(expr constraint.Expr) bool {
+	seen := map[string]bool{"orders": true, "noorders": true}
+	tags := []string{"orders", "noorders"}
+	var walk func(constraint.Expr)
+	walk = func(e constraint.Expr) {
+		switch e := e.(type) {
+		case *constraint.TagExpr:
+			if !seen[e.Tag] {
+				seen[e.Tag] = true
+				tags = append(tags, e.Tag)
+			}
+		case *constraint.NotExpr:
+			walk(e.X)
+		case *constraint.AndExpr:
+			walk(e.X)
+			walk(e.Y)
+		case *constraint.OrExpr:
+			walk(e.X)
+			walk(e.Y)
+		}
+	}
+	walk(expr)
+	if len(tags) > maxFreeTags {
+		return false
+	}
+	for mask := 0; mask < 1<<len(tags); mask++ {
+		val := map[string]bool{}
+		for i, tag := range tags {
+			val[tag] = mask&(1<<i) != 0
+		}
+		if val["orders"] && !val["noorders"] {
+			continue // an orders build: the file may link here
+		}
+		if expr.Eval(func(tag string) bool { return val[tag] }) {
+			return false // links in a build without orders, or with noorders
+		}
+	}
+	return true
 }
 
 func position(fset *token.FileSet, pos token.Pos) string {
@@ -343,4 +387,258 @@ func mentionsKiteClient(t types.Type, seen map[types.Type]bool) bool {
 		}
 	}
 	return false
+}
+
+// kiteRawWriteNames are the gokiteconnect identifiers that send a request without one of its
+// order-write methods (Ruling 69): the raw HTTP client (NewHTTPClient, the HTTPClient type and its
+// methods) and the write endpoint paths. A write sent through them links no (*Client).PlaceOrder etc.,
+// so the nm check cannot see it. The names are verified against gokiteconnect v4.4.3 (connect.go,
+// alerts.go, http.go); TestKiteRawWrite_NamesResolve fails if a module bump drops one.
+var kiteRawWriteNames = []string{"NewHTTPClient", "HTTPClient",
+	"URIPlaceOrder", "URIModifyOrder", "URICancelOrder", "URIConvertPosition", "URIInitHoldingsAuth",
+	"URIPlaceGTT", "URIModifyGTT", "URIDeleteGTT", "URIAlerts", "URIAlert",
+	"URIPlaceMFOrder", "URICancelMFOrder", "URIPlaceMFSIP", "URIModifyMFSIP", "URICancelMFSIP"}
+
+// kitePackages returns every loaded gokiteconnect package (any major version), deduplicated.
+func kitePackages(pkgs []*packages.Package) []*types.Package {
+	seen := map[*types.Package]bool{}
+	var out []*types.Package
+	for _, p := range pkgs {
+		if p.Types == nil {
+			continue
+		}
+		cands := append([]*types.Package{p.Types}, p.Types.Imports()...)
+		for _, tp := range cands {
+			if !seen[tp] && kitePkg.MatchString(tp.Path()) {
+				seen[tp] = true
+				out = append(out, tp)
+			}
+		}
+	}
+	return out
+}
+
+// kiteRawWriteObjects resolves kiteRawWriteNames to their types.Objects in the loaded gokiteconnect
+// packages, adding every method of the HTTPClient interface and the same-named methods of each
+// package type that implements it (the unexported *httpClient that NewHTTPClient returns).
+func kiteRawWriteObjects(pkgs []*packages.Package) map[types.Object]string {
+	banned := map[types.Object]string{}
+	for _, kp := range kitePackages(pkgs) {
+		scope := kp.Scope()
+		for _, name := range kiteRawWriteNames {
+			if obj := scope.Lookup(name); obj != nil {
+				banned[obj] = name
+			}
+		}
+		tn, ok := scope.Lookup("HTTPClient").(*types.TypeName)
+		if !ok {
+			continue
+		}
+		iface, ok := tn.Type().Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		methods := map[string]bool{}
+		for i := 0; i < iface.NumMethods(); i++ {
+			m := iface.Method(i)
+			banned[m] = "HTTPClient." + m.Name()
+			methods[m.Name()] = true
+		}
+		for _, n := range scope.Names() {
+			impl, ok := scope.Lookup(n).(*types.TypeName)
+			if !ok || impl == tn {
+				continue
+			}
+			named, ok := impl.Type().(*types.Named)
+			if !ok || types.IsInterface(named) || !types.Implements(types.NewPointer(named), iface) {
+				continue
+			}
+			for i := 0; i < named.NumMethods(); i++ {
+				if m := named.Method(i); methods[m.Name()] {
+					banned[m] = "(*" + impl.Name() + ")." + m.Name()
+				}
+			}
+		}
+	}
+	return banned
+}
+
+// KiteRawWriteMissing lists the kiteRawWriteNames that no loaded gokiteconnect package declares.
+func KiteRawWriteMissing(pkgs []*packages.Package) []string {
+	found := map[string]bool{}
+	for _, name := range kiteRawWriteObjects(pkgs) {
+		found[name] = true
+	}
+	var out []string
+	for _, n := range kiteRawWriteNames {
+		if !found[n] {
+			out = append(out, n)
+		}
+	}
+	// Ruling 79 M-5: every HTTPClient method must also have resolved on an implementing type
+	// (the unexported *httpClient), or a method value taken from GetClient() would go unreported.
+	for _, kp := range kitePackages(pkgs) {
+		tn, ok := kp.Scope().Lookup("HTTPClient").(*types.TypeName)
+		if !ok {
+			continue
+		}
+		iface, ok := tn.Type().Underlying().(*types.Interface)
+		if !ok {
+			continue
+		}
+		for i := 0; i < iface.NumMethods(); i++ {
+			name := iface.Method(i).Name()
+			hit := false
+			for n := range found {
+				if strings.HasPrefix(n, "(*") && strings.HasSuffix(n, ")."+name) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				out = append(out, "(*httpClient)."+name)
+			}
+		}
+	}
+	if len(kitePackages(pkgs)) == 0 {
+		out = append(out, "(gokiteconnect not loaded)")
+	}
+	return out
+}
+
+// CheckKiteRawWrite reports every reference to a kiteRawWriteObjects identifier outside files of
+// internal/kite/orderwrite whose build constraint requires the orders tag (g0-kitehttp, Ruling 69;
+// the same file rule as g0-call). It matches types.Object identity through TypesInfo.Uses, so qualified,
+// renamed-import, dot-import, method-value, promoted and alias-declaration references are all caught;
+// a later use of a local alias resolves to the alias, but declaring the alias is itself flagged.
+// Test files are not loaded and are exempt. Residual: a hand-written path string ("/orders/regular")
+// sent through net/http under internal/kite is not visible here; g0-http confines net/http to
+// internal/kite and the mock-Kite recording suite is the dynamic backstop.
+func CheckKiteRawWrite(module string, pkgs []*packages.Package) []Violation {
+	banned := kiteRawWriteObjects(pkgs)
+	if len(banned) == 0 {
+		return nil
+	}
+	var out []Violation
+	for _, p := range pkgs {
+		inPkg := relPkg(module, p.PkgPath) == "internal/kite/orderwrite"
+		allowedFile := map[*token.File]bool{}
+		for _, f := range p.Syntax {
+			if inPkg && requiresOrdersTag(f) {
+				allowedFile[p.Fset.File(f.Pos())] = true
+			}
+		}
+		for id, obj := range p.TypesInfo.Uses {
+			name, ok := banned[obj]
+			if !ok || allowedFile[p.Fset.File(id.Pos())] {
+				continue
+			}
+			out = append(out, Violation{"g0-kitehttp", position(p.Fset, id.Pos()),
+				"kiteconnect." + name + " is only allowed in internal/kite/orderwrite files built with the orders tag"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// writePathPrefixes are the Kite REST paths that change account state (Ruling 69 addendum, g0-path):
+// orders, GTT, alerts, mutual funds, position conversion and holdings authorisation. /orders and
+// /portfolio/positions also prefix read endpoints; the rule bans those too outside the mock, because
+// production code reaches Kite only through gokiteconnect's read methods. The entries omit the leading
+// "/" (writePathPrefix adds it) so this list does not trip g0-path itself without exempting archtest.
+var writePathPrefixes = []string{"orders", "gtt", "alerts", "mf/", "portfolio/positions", "portfolio/holdings/authorise"}
+
+// kitePath trims leading whitespace and a host ("https://api.kite.trade/x" or "api.kite.trade/x")
+// from s, leaving the path.
+func kitePath(s string) string {
+	s = strings.TrimLeft(s, " \t\r\n")
+	if i := strings.Index(s, "://"); i > 0 && !strings.ContainsAny(s[:i], "/ \t") {
+		s = s[i+3:]
+		if j := strings.IndexByte(s, '/'); j >= 0 {
+			return s[j:]
+		}
+		return ""
+	}
+	if !strings.HasPrefix(s, "/") {
+		if j := strings.IndexByte(s, '/'); j > 0 && strings.ContainsAny(s[:j], ".:") && !strings.ContainsAny(s[:j], " \t") {
+			return s[j:]
+		}
+	}
+	return s
+}
+
+// writePathPrefix returns the write-path prefix s starts with (case-folded), or "".
+func writePathPrefix(s string) string {
+	p := strings.ToLower(kitePath(s))
+	if !strings.HasPrefix(p, "/") {
+		return ""
+	}
+	for _, w := range writePathPrefixes {
+		// A prefix ending in "/" also matches its bare form: "/mf" is "/mf/" without the slash (Ruling 79 M-1).
+		if strings.HasPrefix(p[1:], w) || (strings.HasSuffix(w, "/") && p[1:] == strings.TrimSuffix(w, "/")) {
+			return p[:1] + w
+		}
+	}
+	return ""
+}
+
+// CheckKitePaths reports every string constant expression whose folded value is a Kite write path
+// (g0-path, Ruling 69 addendum). It reads constant values from TypesInfo.Types, so a write path built by
+// concatenating constants ("/" + seg) is caught like a literal; an expression nested in a reported one is
+// not reported again. Exempt: internal/kite/mock (the fake Kite), orders-tagged files of
+// internal/kite/orderwrite, packages under a testdata directory, and test files (not loaded).
+// Residual: a path assembled at run time (fmt.Sprintf, strings.Join, byte slices) is not a constant;
+// g0-http confines net/http to internal/kite and the mock-Kite recording suite is the dynamic backstop.
+func CheckKitePaths(module string, pkgs []*packages.Package) []Violation {
+	type hit struct {
+		pos, end token.Pos
+		val, pre string
+	}
+	var out []Violation
+	for _, p := range pkgs {
+		rel := relPkg(module, p.PkgPath)
+		if under(rel, "internal/kite/mock") || rel == "testdata" || strings.HasPrefix(rel, "testdata/") ||
+			strings.Contains(rel, "/testdata/") || strings.HasSuffix(rel, "/testdata") {
+			continue
+		}
+		allowedFile := map[*token.File]bool{}
+		if rel == "internal/kite/orderwrite" {
+			for _, f := range p.Syntax {
+				if requiresOrdersTag(f) {
+					allowedFile[p.Fset.File(f.Pos())] = true
+				}
+			}
+		}
+		var hits []hit
+		for e, tv := range p.TypesInfo.Types {
+			if tv.Value == nil || tv.Value.Kind() != constant.String || allowedFile[p.Fset.File(e.Pos())] {
+				continue
+			}
+			v := constant.StringVal(tv.Value)
+			if pre := writePathPrefix(v); pre != "" {
+				hits = append(hits, hit{e.Pos(), e.End(), v, pre})
+			}
+		}
+		sort.Slice(hits, func(i, j int) bool {
+			if hits[i].pos != hits[j].pos {
+				return hits[i].pos < hits[j].pos
+			}
+			return hits[i].end > hits[j].end
+		})
+		var outerEnd token.Pos
+		for _, h := range hits {
+			if h.pos < outerEnd { // nested in the last reported expression
+				continue
+			}
+			outerEnd = h.end
+			val := h.val
+			if len(val) > 60 {
+				val = val[:60] + "…"
+			}
+			out = append(out, Violation{"g0-path", position(p.Fset, h.pos),
+				fmt.Sprintf("string constant %q is a Kite write path (%s…); allowed only in internal/kite/mock and orders-tagged internal/kite/orderwrite files", val, h.pre)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
 }

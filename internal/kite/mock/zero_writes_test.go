@@ -4,12 +4,14 @@ package mock_test
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -35,10 +37,17 @@ const (
 	secret = "s3cr3tvalue0987654321zyxwvutsrq"
 	rtok1  = "rtok12345678"
 	rtok2  = "rtok87654321"
+	rtok3  = "rtok11223344"
 )
 
 // allowedRoutes is the complete set of (method, path) pairs the session/sync/service layer may send to Kite
 // during a full cycle. Fail closed: anything else (any other method, any other path, a GET included) fails.
+//
+// It deliberately duplicates the default routes of mock.NewRecorder instead of being derived from them:
+// the recorder's routes say what the fake can answer, this list says what the app may send. Deriving one
+// from the other would let a route added to the recorder (or a test's rec.Route call) silently widen what
+// the G-0 proof accepts. Keep the two in sync by hand; the "every allowed route exercised" check at the
+// end of TestFullSessionCycle_SendsNoOrderWrites catches an entry here that the cycle no longer uses.
 var allowedRoutes = map[string]bool{
 	"POST /session/token":                    true, // login exchange
 	"DELETE /session/token":                  true, // logout
@@ -50,10 +59,14 @@ var allowedRoutes = map[string]bool{
 	"GET /quote/ltp":                         true, // Personal-plan LTP fallback
 }
 
+// leakSource reports requests that bypassed the recorder, as finished violation messages.
+type leakSource interface{ Leaks() []string }
+
 // violations lists every request that breaks G-0: a write (anything but GET, except POST/DELETE
-// /session/token), a request no recorder route answered, a route outside allowedRoutes, the API secret in
-// any form value, and any request that reached a host other than the recorder.
-func violations(rec *mock.Recorder, g *hostGuard) []string {
+// /session/token), a request no recorder route answered, a route outside allowedRoutes, the API secret
+// anywhere in a request (form, headers, query string, raw body, path), and every request a leak source saw
+// (a host other than the recorder, anything sent through http.DefaultTransport).
+func violations(rec *mock.Recorder, leaks ...leakSource) []string {
 	var out []string
 	unmatched := map[string]bool{}
 	for _, r := range rec.Unmatched() {
@@ -70,18 +83,51 @@ func violations(rec *mock.Recorder, g *hostGuard) []string {
 		if !allowedRoutes[id] {
 			out = append(out, "request outside the allowed route set: "+id)
 		}
-		for _, vs := range r.Form {
-			for _, v := range vs {
-				if strings.Contains(v, secret) {
-					out = append(out, "API secret sent to Kite in "+id)
-				}
-			}
+		if r.BodyErr != nil {
+			out = append(out, "request body not read in full, secret scan incomplete: "+id)
+		}
+		out = append(out, secretLeaks(r, id)...)
+	}
+	for _, l := range leaks {
+		out = append(out, l.Leaks()...)
+	}
+	return out
+}
+
+// secretLeaks reports the API secret in any part of r, raw or percent-decoded, in a fixed order.
+func secretLeaks(r mock.Request, id string) []string {
+	has := func(v string) bool {
+		if strings.Contains(v, secret) {
+			return true
+		}
+		u, err := url.QueryUnescape(v)
+		return err == nil && strings.Contains(u, secret)
+	}
+	var out []string
+	for k, vs := range r.Form {
+		if has(k) || has(strings.Join(vs, "\x00")) {
+			out = append(out, "API secret sent to Kite in a form value: "+id)
+			break
 		}
 	}
-	if g != nil {
-		for _, h := range g.Foreign() {
-			out = append(out, "request to a host other than the recorder: "+h)
+	names := make([]string, 0, len(r.Header))
+	for k := range r.Header {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	for _, k := range names {
+		if has(k) || has(strings.Join(r.Header[k], "\x00")) {
+			out = append(out, "API secret sent to Kite in header "+k+": "+id)
 		}
+	}
+	if has(r.RawQuery) {
+		out = append(out, "API secret sent to Kite in the query string: "+id)
+	}
+	if has(string(r.Body)) {
+		out = append(out, "API secret sent to Kite in the request body: "+id)
+	}
+	if has(r.Path) {
+		out = append(out, "API secret sent to Kite in the path: "+id)
 	}
 	return out
 }
@@ -114,10 +160,55 @@ func (g *hostGuard) RoundTrip(req *http.Request) (*http.Response, error) {
 	return g.next.RoundTrip(req)
 }
 
-func (g *hostGuard) Foreign() []string {
+func (g *hostGuard) Leaks() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return append([]string(nil), g.bad...)
+	out := make([]string, 0, len(g.bad))
+	for _, b := range g.bad {
+		out = append(out, "request to a host other than the recorder: "+b)
+	}
+	return out
+}
+
+// refusingTransport replaces http.DefaultTransport during the full cycle: every request that reaches it
+// (http.Get, http.DefaultClient, a client or transport built with a nil RoundTripper) bypassed the
+// allow-list transport and the recorder. It is refused and recorded.
+type refusingTransport struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+var errDefaultTransport = errors.New("zero-writes test: http.DefaultTransport is refused")
+
+func (d *refusingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	d.mu.Lock()
+	d.seen = append(d.seen, req.Method+" "+req.URL.String())
+	d.mu.Unlock()
+	return nil, errDefaultTransport
+}
+
+func (d *refusingTransport) Leaks() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, 0, len(d.seen))
+	for _, s := range d.seen {
+		out = append(out, "request through http.DefaultTransport (refused): "+s)
+	}
+	return out
+}
+
+// refuseDefaultTransport swaps http.DefaultTransport for a refusingTransport until the test ends. Tests
+// in this package do not run in parallel, so the global swap is not observed by another test.
+func refuseDefaultTransport(t *testing.T) *refusingTransport {
+	t.Helper()
+	orig := http.DefaultTransport
+	d := &refusingTransport{}
+	http.DefaultTransport = d
+	t.Cleanup(func() { http.DefaultTransport = orig })
+	return d
 }
 
 type memSecrets struct {
@@ -297,9 +388,15 @@ func loginState(t *testing.T, loginURL string) string {
 //	day 1: startup restore (nothing stored) → credentials → login by paste → Connect-plan probe → risk ack
 //	       → profile → initial sync → 30 s and 5 min polls → manual refresh → 06:00 IST expiry → silence;
 //	day 2: login by the loopback callback → Personal-plan probe → LTP polling → app restart (token restored
-//	       through /user/profile) → logout → silence.
+//	       through /user/profile) → logout → silence;
+//	day 3: login by paste in market hours → sync running → Kite revokes the token (TokenException on the
+//	       order poll) → session ends mid-session → silence.
+//
+// http.DefaultTransport is replaced by a refusing recorder for the whole cycle, so a request sent by any
+// path that bypasses the allow-list transport is refused and fails the test.
 func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 	rec := mock.NewRecorder(t)
+	dflt := refuseDefaultTransport(t)
 	db := storetest.Open(t)
 	recURL, err := url.Parse(rec.URL())
 	if err != nil {
@@ -310,7 +407,7 @@ func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 	clk := clock.NewFake(time.Date(2026, 10, 12, 9, 2, 0, 0, clock.IST))
 	ctx := context.Background()
 	defer func() {
-		for _, v := range violations(rec, guard) {
+		for _, v := range violations(rec, guard, dflt) {
 			t.Error(v)
 		}
 	}()
@@ -387,7 +484,10 @@ func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.Get(ls.RedirectURL + "?request_token=" + rtok2 + "&action=login&status=success&state=" + loginState(t, ls.LoginURL))
+	// The browser's GET to the loopback callback goes through its own transport: http.DefaultTransport refuses.
+	browser := &http.Client{Transport: &http.Transport{}}
+	defer browser.CloseIdleConnections()
+	resp, err := browser.Get(ls.RedirectURL + "?request_token=" + rtok2 + "&action=login&status=success&state=" + loginState(t, ls.LoginURL))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,6 +518,37 @@ func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 	}
 	settleThenAssertNoTraffic(t, rec, clk, 10*time.Minute, "the logout")
 
+	// ---- day 3: Kite revokes the token mid-session (TokenException on a read) ----
+	clk.Set(time.Date(2026, 10, 13, 9, 20, 0, 0, clock.IST)) // market hours: the 30 s order poll runs
+	rec.Route(http.MethodPost, "/session/token", http.StatusOK,
+		`{"status":"success","data":{"user_id":"AB1234","user_name":"Asha Bhat","api_key":"k","access_token":"acc-mock-0003"}}`)
+	ls, err = b.svc.BeginLogin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordersBefore := count(rec, http.MethodGet, "/orders")
+	pasted = ls.RedirectURL + "?request_token=" + rtok3 + "&action=login&status=success&state=" + loginState(t, ls.LoginURL)
+	if st, err := b.svc.CompleteLogin(ctx, pasted); err != nil || st.State != string(kite.StateReady) {
+		t.Fatalf("day-3 paste login: %+v, %v", st, err)
+	}
+	eventually(t, "day-3 initial sync", func() bool { return count(rec, http.MethodGet, "/orders") > ordersBefore })
+	_, stopsBefore := b.feed.counts()
+	rec.Route(http.MethodGet, "/orders", http.StatusForbidden,
+		`{"status":"error","error_type":"TokenException","message":"Incorrect api_key or access_token."}`)
+	advanceUntil(t, clk, 5*time.Second, "TokenException ends the session", func() bool {
+		return b.svc.SessionStatus(ctx).State == string(kite.StateExpired)
+	})
+	if st := b.svc.SessionStatus(ctx); st.ErrorCode != kite.CodeTokenRejected {
+		t.Fatalf("after TokenException %+v", st)
+	}
+	if _, stops := b.feed.counts(); stops <= stopsBefore {
+		t.Fatalf("feed not stopped after TokenException (stops %d → %d)", stopsBefore, stops)
+	}
+	if _, err := sec.Get(secrets.KeyAccessToken); err != secrets.ErrNotFound {
+		t.Fatalf("token not deleted after TokenException: %v", err)
+	}
+	settleThenAssertNoTraffic(t, rec, clk, 10*time.Minute, "the TokenException")
+
 	// ---- what Kite saw ----
 	var logins, logouts int
 	for _, r := range rec.Requests() {
@@ -426,6 +557,7 @@ func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 			want := map[string]string{
 				rtok1: fmt.Sprintf("%x", sha256.Sum256([]byte(key+rtok1+secret))),
 				rtok2: fmt.Sprintf("%x", sha256.Sum256([]byte(key+rtok2+secret))),
+				rtok3: fmt.Sprintf("%x", sha256.Sum256([]byte(key+rtok3+secret))),
 			}[r.Form.Get("request_token")]
 			if want == "" || r.Form.Get("checksum") != want {
 				t.Errorf("login exchange with request_token %q and a wrong checksum", r.Form.Get("request_token"))
@@ -438,8 +570,8 @@ func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 			logouts++
 		}
 	}
-	if logins != 2 || logouts != 1 {
-		t.Errorf("logins=%d logouts=%d, want 2 and 1", logins, logouts)
+	if logins != 3 || logouts != 1 {
+		t.Errorf("logins=%d logouts=%d, want 3 and 1", logins, logouts)
 	}
 	for id := range allowedRoutes {
 		m, p, _ := strings.Cut(id, " ")
@@ -451,18 +583,22 @@ func TestFullSessionCycle_SendsNoOrderWrites(t *testing.T) {
 
 // TestRecorder_DetectsEveryWrite is the RED proof: each order-write route of Kite (orders, GTT, alerts,
 // mutual funds, position conversion, holdings authorisation), any other method on the session endpoint and
-// any unknown path, sent through the mock, is reported by the same check the full cycle uses.
+// any unknown path, sent through the mock, is reported by the same check the full cycle uses, and the
+// report names the entry that tripped: the write, the unmocked route and the route outside the allow-list.
 func TestRecorder_DetectsEveryWrite(t *testing.T) {
-	cases := []struct{ method, path string }{
-		{"POST", "/orders/regular"}, {"POST", "/orders/amo"}, {"POST", "/orders/co"}, {"POST", "/orders/iceberg"}, {"POST", "/orders/auction"},
-		{"PUT", "/orders/regular/1"}, {"DELETE", "/orders/regular/1"}, {"DELETE", "/orders/co/1"},
-		{"PUT", "/portfolio/positions"}, {"POST", "/portfolio/holdings/authorise"},
-		{"POST", "/gtt/triggers"}, {"PUT", "/gtt/triggers/5"}, {"DELETE", "/gtt/triggers/5"},
-		{"POST", "/alerts"}, {"PUT", "/alerts/0f3a"}, {"DELETE", "/alerts"},
-		{"POST", "/mf/orders"}, {"DELETE", "/mf/orders/1"}, {"POST", "/mf/sips"}, {"PUT", "/mf/sips/1"}, {"DELETE", "/mf/sips/1"},
-		{"PUT", "/session/token"}, {"PATCH", "/session/token"}, {"POST", "/session/token/"}, {"POST", "/session/token/x"},
-		{"PATCH", "/orders"}, {"OPTIONS", "/orders"}, {"HEAD", "/orders"},
-		{"GET", "/gtt/triggers"}, {"GET", "/no/such/route"},
+	cases := []struct {
+		method, path string
+		write        bool // the "write request sent to Kite" entry is expected
+	}{
+		{"POST", "/orders/regular", true}, {"POST", "/orders/amo", true}, {"POST", "/orders/co", true}, {"POST", "/orders/iceberg", true}, {"POST", "/orders/auction", true},
+		{"PUT", "/orders/regular/1", true}, {"DELETE", "/orders/regular/1", true}, {"DELETE", "/orders/co/1", true},
+		{"PUT", "/portfolio/positions", true}, {"POST", "/portfolio/holdings/authorise", true},
+		{"POST", "/gtt/triggers", true}, {"PUT", "/gtt/triggers/5", true}, {"DELETE", "/gtt/triggers/5", true},
+		{"POST", "/alerts", true}, {"PUT", "/alerts/0f3a", true}, {"DELETE", "/alerts", true},
+		{"POST", "/mf/orders", true}, {"DELETE", "/mf/orders/1", true}, {"POST", "/mf/sips", true}, {"PUT", "/mf/sips/1", true}, {"DELETE", "/mf/sips/1", true},
+		{"PUT", "/session/token", true}, {"PATCH", "/session/token", true}, {"POST", "/session/token/", true}, {"POST", "/session/token/x", true},
+		{"PATCH", "/orders", true}, {"OPTIONS", "/orders", true}, {"HEAD", "/orders", true},
+		{"GET", "/gtt/triggers", false}, {"GET", "/no/such/route", false},
 	}
 	for _, c := range cases {
 		t.Run(c.method+" "+c.path, func(t *testing.T) {
@@ -477,33 +613,117 @@ func TestRecorder_DetectsEveryWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = resp.Body.Close()
-			if v := violations(rec, nil); len(v) == 0 {
-				t.Fatalf("%s %s through the mock was not detected", c.method, c.path)
+			id := c.method + " " + c.path
+			var want []string
+			if c.write {
+				want = append(want, "write request sent to Kite: "+id)
 			}
+			want = append(want, "request to an unmocked route: "+id, "request outside the allowed route set: "+id)
+			assertViolations(t, violations(rec), want)
 		})
 	}
 	// A deliberate order write that the test itself routes (so the recorder answers it) is still a write.
-	rec := mock.NewRecorder(t)
-	rec.Route(http.MethodPost, "/orders/regular", http.StatusOK, `{"status":"success","data":{"order_id":"1"}}`)
-	resp, err := rec.Client().PostForm(rec.URL()+"/orders/regular", url.Values{"tradingsymbol": {"INFY"}, "transaction_type": {"BUY"}})
-	if err != nil {
-		t.Fatal(err)
+	t.Run("routed order POST", func(t *testing.T) {
+		rec := mock.NewRecorder(t)
+		rec.Route(http.MethodPost, "/orders/regular", http.StatusOK, `{"status":"success","data":{"order_id":"1"}}`)
+		resp, err := rec.Client().PostForm(rec.URL()+"/orders/regular", url.Values{"tradingsymbol": {"INFY"}, "transaction_type": {"BUY"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		assertViolations(t, violations(rec), []string{
+			"write request sent to Kite: POST /orders/regular", "request outside the allowed route set: POST /orders/regular"})
+	})
+	// The API secret on an allowed route, in each part of the request the recorder keeps.
+	secretCases := []struct {
+		name  string
+		build func(base string) (*http.Request, error)
+		want  []string
+	}{
+		{"header", func(base string) (*http.Request, error) {
+			r, err := http.NewRequest(http.MethodGet, base+"/orders", nil)
+			if err == nil {
+				r.Header.Set("X-Api-Secret", secret)
+			}
+			return r, err
+		}, []string{"API secret sent to Kite in header X-Api-Secret: GET /orders"}},
+		{"query", func(base string) (*http.Request, error) {
+			return http.NewRequest(http.MethodGet, base+"/orders?api_secret="+secret, nil)
+		}, []string{"API secret sent to Kite in a form value: GET /orders", "API secret sent to Kite in the query string: GET /orders"}},
+		// A DELETE body is not parsed into Form: only the raw-body scan sees it.
+		{"raw body", func(base string) (*http.Request, error) {
+			r, err := http.NewRequest(http.MethodDelete, base+"/session/token", strings.NewReader("api_key=k&api_secret="+secret))
+			if err == nil {
+				r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
+			return r, err
+		}, []string{"API secret sent to Kite in the request body: DELETE /session/token"}},
 	}
-	_ = resp.Body.Close()
-	if v := violations(rec, nil); len(v) == 0 || !strings.HasPrefix(v[0], "write request sent to Kite: POST /orders/regular") {
-		t.Fatalf("routed order POST: %v", v)
+	for _, c := range secretCases {
+		t.Run("secret in "+c.name, func(t *testing.T) {
+			rec := mock.NewRecorder(t)
+			req, err := c.build(rec.URL())
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := rec.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			assertViolations(t, violations(rec), c.want)
+		})
 	}
 	// A request that left the recorder's host is reported too.
-	g := &hostGuard{next: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, kite.ErrHostNotAllowed }), host: "127.0.0.1:1"}
-	if _, err := (&http.Client{Transport: g}).Get("https://api.kite.trade/orders"); err == nil {
-		t.Fatal("foreign request succeeded")
-	}
-	if v := violations(mock.NewRecorder(t), g); len(v) != 1 {
-		t.Fatalf("foreign host: %v", v)
-	}
+	t.Run("foreign host", func(t *testing.T) {
+		g := &hostGuard{next: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, kite.ErrHostNotAllowed }), host: "127.0.0.1:1"}
+		if _, err := (&http.Client{Transport: g}).Get("https://api.kite.trade/orders"); err == nil {
+			t.Fatal("foreign request succeeded")
+		}
+		assertViolations(t, violations(mock.NewRecorder(t), g), []string{"request to a host other than the recorder: GET https://api.kite.trade/orders"})
+	})
+	// An order POST through http.DefaultClient (any path that bypasses the allow-list transport) is refused and reported.
+	t.Run("default transport", func(t *testing.T) {
+		d := refuseDefaultTransport(t)
+		// kite.invalid (RFC 6761) never resolves: if the swap failed, the request could not reach Kite.
+		if _, err := http.PostForm("https://kite.invalid/orders/regular", url.Values{"quantity": {"1"}}); !errors.Is(err, errDefaultTransport) {
+			t.Fatalf("POST through http.DefaultClient: %v", err)
+		}
+		assertViolations(t, violations(mock.NewRecorder(t), d), []string{"request through http.DefaultTransport (refused): POST https://kite.invalid/orders/regular"})
+	})
+	// A body cut short (here: Content-Length larger than what arrives) is recorded with its read error and
+	// reported, because the secret scan only saw part of it.
+	t.Run("unreadable body", func(t *testing.T) {
+		rec := mock.NewRecorder(t)
+		u, err := url.Parse(rec.URL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := net.Dial("tcp", u.Host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.WriteString(conn, "POST /session/token HTTP/1.1\r\nHost: "+u.Host+"\r\n"+
+			"Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 100\r\n\r\napi_key=k")
+		_ = conn.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the truncated request is recorded", func() bool { return len(rec.Requests()) == 1 })
+		if r := rec.Requests()[0]; r.BodyErr == nil || string(r.Body) != "api_key=k" {
+			t.Fatalf("body %q, err %v", r.Body, r.BodyErr)
+		}
+		assertViolations(t, violations(rec), []string{"request body not read in full, secret scan incomplete: POST /session/token"})
+	})
 	// And a clean recorder reports nothing.
-	if v := violations(mock.NewRecorder(t), nil); len(v) != 0 {
-		t.Fatalf("clean recorder: %v", v)
+	assertViolations(t, violations(mock.NewRecorder(t)), nil)
+}
+
+// assertViolations compares the exact violation list, so a RED case proves which entry tripped.
+func assertViolations(t *testing.T, got, want []string) {
+	t.Helper()
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("violations\n got %q\nwant %q", got, want)
 	}
 }
 

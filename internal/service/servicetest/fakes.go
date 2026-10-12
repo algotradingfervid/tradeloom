@@ -26,6 +26,7 @@ type FakeSession struct {
 	St        kite.SessionState
 	Err       error
 	LoginURL  string
+	RunBlock  chan struct{} // non-nil: Run keeps running after ctx is cancelled until RunBlock is closed (slow-exit tests)
 	completed []string
 	forwarded []string
 }
@@ -77,7 +78,12 @@ func (f *FakeSession) Logout(context.Context) (kite.LogoutResult, error) {
 func (f *FakeSession) AckRisk(context.Context) (kite.SessionState, error) { return f.State(), f.Err }
 func (f *FakeSession) Profile(context.Context) (kite.Profile, error)      { return kite.Profile{}, f.Err }
 func (f *FakeSession) Restore(context.Context) kite.SessionState          { return f.State() }
-func (f *FakeSession) Run(ctx context.Context)                            { <-ctx.Done() }
+func (f *FakeSession) Run(ctx context.Context) {
+	<-ctx.Done()
+	if f.RunBlock != nil {
+		<-f.RunBlock
+	}
+}
 
 type noSync struct{}
 
