@@ -52,7 +52,7 @@ func TestSetSetting_StoreFailureIsInternal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := New(Deps{Settings: st, Clock: e.clock, Bus: e.bus, Log: slog.Default()})
+	svc := New(Deps{Session: e.session, Orders: e.sync, Settings: st, Clock: e.clock, Bus: e.bus, Log: slog.Default()})
 	_, err = svc.SetSetting(context.Background(), "appearance.theme", `"dark"`)
 	if c := refusedCode(t, err); c != "internal" {
 		t.Fatalf("code %q, want internal", c)
