@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { GlobalShortcuts } from '../shortcuts/GlobalShortcuts';
+import { showOnDashboard } from '../store/chartContextsStore';
 import { useSetting } from '../store/settings';
 import { AppShell } from './AppShell';
 import { visibleNavEntries } from './features';
@@ -17,7 +18,7 @@ export function ShellLayout() {
   useRememberLastRoute();
   return (
     <AppShell
-      topBar={<TopBar ticker={<IndexTickerStrip />} status={<StatusIndicator />} links={<QuickLinks />} profile={<ProfileMenu />} />}
+      topBar={<TopBar ticker={<IndexTickerStrip onShow={showOnDashboard} />} status={<StatusIndicator />} links={<QuickLinks />} profile={<ProfileMenu />} />}
       banner={<ShellBanners />}
       sidebar={<Sidebar entries={visibleNavEntries()} collapsed={collapsed} onToggleCollapsed={() => void setCollapsed(!collapsed)} />}
     >
