@@ -8,3 +8,6 @@ var ErrNoRow = errors.New("store: no such row")
 
 // ErrDuplicate is returned when an insert would duplicate a unique key.
 var ErrDuplicate = errors.New("store: duplicate")
+
+// ErrConflict is returned when a reorder input is not exactly the current live set (stale client view).
+var ErrConflict = errors.New("store: conflict")
