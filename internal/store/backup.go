@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -120,7 +121,9 @@ func (db *DB) Backup(ctx context.Context, o BackupOptions) (string, error) {
 	files := []struct{ name, path string }{{archiveAppDB, appSnap}}
 	includes := false
 	if o.IncludeCandles {
-		if _, err := os.Stat(o.CandlesDB); err == nil {
+		if _, err := os.Stat(o.CandlesDB); err != nil && !os.IsNotExist(err) {
+			return "", err
+		} else if err == nil {
 			snap := filepath.Join(stage, "candles.db")
 			if err := vacuumInto(ctx, o.CandlesDB, snap); err != nil {
 				return "", fmt.Errorf("store: snapshot candles.db: %w", err)
@@ -186,6 +189,12 @@ func writeArchive(w io.Writer, manifest []byte, files []struct{ name, path strin
 	if err != nil {
 		return err
 	}
+	closed := false
+	defer func() {
+		if !closed {
+			zw.Close() // stop encoder goroutines on the error path
+		}
+	}()
 	tw := tar.NewWriter(zw)
 	if err := tw.WriteHeader(&tar.Header{Name: manifestName, Mode: 0o600, Size: int64(len(manifest)), ModTime: mod}); err != nil {
 		return err
@@ -201,6 +210,7 @@ func writeArchive(w io.Writer, manifest []byte, files []struct{ name, path strin
 	if err := tw.Close(); err != nil {
 		return err
 	}
+	closed = true
 	return zw.Close()
 }
 
@@ -223,32 +233,57 @@ func addFile(tw *tar.Writer, name, path string, mod time.Time) error {
 
 // PruneBackups keeps the newest keep archives named tradeloom-backup-*.tar.zst in dir (by name) and
 // deletes the rest, oldest first. It returns the deleted paths.
-func PruneBackups(dir string, keep int) ([]string, error) {
+func PruneBackups(dir string, keep int) ([]string, error) { return pruneBackups(dir, keep, "") }
+
+// pruneBackups is PruneBackups that never deletes protect (the archive just written): protect takes
+// one of the keep slots and the others go to the newest remaining archives.
+func pruneBackups(dir string, keep int, protect string) ([]string, error) {
 	if keep < 1 {
-		return nil, errors.New("store: keep must be ≥ 1")
+		return nil, errors.New("store: keep must be >= 1")
 	}
-	all, err := filepath.Glob(filepath.Join(dir, backupPrefix+"*"+backupSuffix))
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
+	var all []string
+	for _, e := range ents {
+		n := e.Name()
+		if e.Type().IsRegular() && strings.HasPrefix(n, backupPrefix) && strings.HasSuffix(n, backupSuffix) {
+			all = append(all, filepath.Join(dir, n))
+		}
+	}
 	sort.Strings(all)
+	others := all[:0:0]
+	for _, p := range all {
+		if p != protect {
+			others = append(others, p)
+		}
+	}
+	slots := keep
+	if protect != "" {
+		slots--
+	}
 	var removed []string
-	for len(all) > keep {
-		if err := os.Remove(all[0]); err != nil {
+	for len(others) > slots {
+		if err := os.Remove(others[0]); err != nil {
 			return removed, err
 		}
-		removed = append(removed, all[0])
-		all = all[1:]
+		removed = append(removed, others[0])
+		others = others[1:]
 	}
 	return removed, nil
 }
 
-// ScheduledBackup writes a backup to o.Dir and, only if that succeeded, prunes to keep archives (FR-DATA-005 AC5).
+// ScheduledBackup writes a backup to o.Dir and, only if that succeeded, prunes to keep archives
+// (FR-DATA-005 AC5). The archive just written is never pruned.
 func (db *DB) ScheduledBackup(ctx context.Context, o BackupOptions, keep int) (string, []string, error) {
+	if keep < 1 {
+		return "", nil, errors.New("store: keep must be >= 1")
+	}
 	path, err := db.Backup(ctx, o)
 	if err != nil {
 		return "", nil, err
 	}
-	removed, err := PruneBackups(o.Dir, keep)
+	removed, err := pruneBackups(o.Dir, keep, path)
 	return path, removed, err
 }

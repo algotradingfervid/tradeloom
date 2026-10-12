@@ -93,8 +93,12 @@ func TestBackup_ContentsAndNoSecrets(t *testing.T) {
 	if filepath.Base(path) != "tradeloom-backup-20261012-100000.tar.zst" {
 		t.Fatalf("name %s", path)
 	}
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
-		t.Fatalf("archive mode %v err %v (want 0600)", st.Mode().Perm(), err)
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("archive mode %v (want 0600)", st.Mode().Perm())
 	}
 	ents := archiveEntries(t, path)
 	if len(ents) != 2 || ents["manifest.json"] == nil || ents["app.db"] == nil {
@@ -216,3 +220,41 @@ func TestScheduledBackup_Retention(t *testing.T) {
 }
 
 func twoDigits(i int) string { return string([]byte{byte('0' + i/10), byte('0' + i%10)}) }
+
+func TestPruneBackups_BracketDirName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bk [old")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"20261001", "20261002", "20261003"} {
+		os.WriteFile(filepath.Join(dir, "tradeloom-backup-"+n+"-160000.tar.zst"), []byte("x"), 0o600)
+	}
+	removed, err := PruneBackups(dir, 1)
+	if err != nil || len(removed) != 2 {
+		t.Fatalf("removed %v err %v", removed, err)
+	}
+}
+
+func TestScheduledBackup_NeverPrunesNewArchive(t *testing.T) {
+	l, db := seedDataDir(t)
+	defer db.Close()
+	dest := t.TempDir()
+	future := filepath.Join(dest, "tradeloom-backup-29990101-000000.tar.zst")
+	os.WriteFile(future, []byte("x"), 0o600)
+	path, removed, err := db.ScheduledBackup(context.Background(), backupOpts(l, dest, false), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("new backup was pruned: %v (removed %v)", err, removed)
+	}
+	if len(removed) != 1 || removed[0] != future {
+		t.Fatalf("removed %v", removed)
+	}
+	if _, _, err := db.ScheduledBackup(context.Background(), backupOpts(l, dest, false), 0); err == nil {
+		t.Fatal("keep=0 must fail")
+	}
+	if got, _ := filepath.Glob(filepath.Join(dest, "*.tar.zst")); len(got) != 1 {
+		t.Fatalf("keep=0 must not take a backup: %v", got)
+	}
+}
