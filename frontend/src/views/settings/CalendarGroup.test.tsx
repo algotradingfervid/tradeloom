@@ -13,6 +13,13 @@ const staleSeed = (): MockState => {
 };
 
 describe('FR-DATA-001 Settings → Market calendar', () => {
+  it('is the Market calendar group of the Settings view (Task 14 shell)', async () => {
+    renderApp({ route: '/settings/calendar' });
+    expect(await screen.findByRole('heading', { level: 1, name: 'Market calendar' })).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Settings groups' });
+    expect(within(nav).getByRole('link', { name: 'Market calendar' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('heading', { level: 2, name: 'Trading days and special sessions' })).toBeInTheDocument();
+  });
   it('lists entries with DD-MM-YYYY dates, type and session window', async () => {
     renderApp({ route: '/settings/calendar' });
     const holiday = await screen.findByRole('row', { name: /^20-10-2026/ });

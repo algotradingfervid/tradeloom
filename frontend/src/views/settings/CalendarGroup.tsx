@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
   CalendarDayType, CalendarEntryDTO, CalendarEntryInput, CalendarExchange, CalendarInfo, CalendarListedDayType, PhaseDTO, PhaseKind,
 } from '../../api/backend';
@@ -13,28 +13,7 @@ import { TextField } from '../../components/TextField';
 import { calendarCopy as copy, componentCopy } from '../../i18n/copy';
 import { DASH, formatDateLong } from '../../i18n/format';
 import { pushToast } from '../../store/toasts';
-
-// MERGE(P0-4 Task 14): replace these two with `SettingSection` and `Fact` from './SettingRow' (same markup and
-// class names); Task 14's settings.css styles `.settings__section`, `.facts`, `.fact`, `.settings__actions` and
-// `.settings__notice--warn`. They are local only because Task 14 is not on this branch.
-function SettingSection({ title, children }: { title: string; children: ReactNode }) {
-  const id = useId();
-  return (
-    <section className="settings__section" aria-labelledby={id}>
-      <h2 id={id}>{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="fact">
-      <dt>{label}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
-}
+import { Fact, SettingSection } from './SettingRow';
 
 export const isoToDisplay = (iso: string): string => iso.split('-').reverse().join('-');
 

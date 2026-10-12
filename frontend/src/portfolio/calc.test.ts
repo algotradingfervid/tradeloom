@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { holdingA, holdingB, holdingsOf, positionClosed, positionOpen, tickFixture } from '../api/mock/fixtures';
 import { holdingRow, isTerminalStatus, liveLtp, orderStatusLabel, positionNetChangePct, positionPnl, rupees, summarizeHoldings, toPaise } from './calc';
+import { setRunStartedMs } from '../market/quotes';
 
 describe('portfolio arithmetic (paise from Go → rupees in the view)', () => {
   it('converts paise to rupees', () => {
@@ -54,11 +55,12 @@ describe('portfolio arithmetic (paise from Go → rupees in the view)', () => {
     expect(isTerminalStatus('COMPLETE')).toBe(true);
     expect(isTerminalStatus('OPEN')).toBe(false);
   });
-  it('carry-forward: a quote older than the current session is stale and never used as the live LTP', () => {
+  it('carry-forward (Ruling 93): a quote from a previous run is stale and never used as the live LTP', () => {
     const tick = tickFixture(holdingA.token, 120);
-    expect(liveLtp(tick, tick.tsMs - 1)).toBe(120);
-    expect(liveLtp(tick, tick.tsMs + 1)).toBeUndefined();
-    expect(liveLtp(tick, 0)).toBeUndefined();
-    expect(liveLtp(undefined, 1)).toBeUndefined();
+    setRunStartedMs(tick.tsMs);
+    expect(liveLtp(tick)).toBe(120);
+    setRunStartedMs(tick.tsMs + 1);
+    expect(liveLtp(tick)).toBeUndefined();
+    expect(liveLtp(undefined)).toBeUndefined();
   });
 });
