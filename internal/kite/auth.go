@@ -24,7 +24,8 @@ type AuthAPI interface {
 }
 
 // NewAuth returns a factory of AuthAPI bound to an API key. baseURI "" keeps https://api.kite.trade (tests pass a fake).
-// hc nil gets authHTTPClient(nil): the NFR-04 allow-list transport, never gokiteconnect's default client.
+// hc nil gets authHTTPClient(nil): the NFR-04 allow-list transport, never gokiteconnect's default client;
+// any other hc gets the write deny-list added to its transport (Ruling 83).
 func NewAuth(hc *http.Client, baseURI string) func(apiKey string) AuthAPI {
 	hc = authHTTPClient(hc)
 	return func(apiKey string) AuthAPI {
@@ -37,12 +38,16 @@ func NewAuth(hc *http.Client, baseURI string) func(apiKey string) AuthAPI {
 	}
 }
 
-// authHTTPClient returns hc, or for nil a 10 s client on NewAllowListTransport(http.DefaultTransport, AllowedHosts).
+// authHTTPClient returns, for nil, a 10 s client on NewAllowListTransport(http.DefaultTransport, AllowedHosts);
+// otherwise a copy of hc whose transport (nil = http.DefaultTransport) is behind the write deny-list
+// (Ruling 83). The caller's client is not modified.
 func authHTTPClient(hc *http.Client) *http.Client {
-	if hc != nil {
-		return hc
+	if hc == nil {
+		return &http.Client{Timeout: 10 * time.Second, Transport: NewAllowListTransport(http.DefaultTransport, AllowedHosts)}
 	}
-	return &http.Client{Timeout: 10 * time.Second, Transport: NewAllowListTransport(http.DefaultTransport, AllowedHosts)}
+	c := *hc
+	c.Transport = guardWrites(hc.Transport)
+	return &c
 }
 
 type kcAuth struct{ c *kiteconnect.Client }

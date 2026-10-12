@@ -3,10 +3,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"tradeloom/internal/clock"
 	"tradeloom/internal/kite"
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/store"
@@ -97,5 +101,105 @@ func TestParseNotices_IgnoresFencedLicenceText(t *testing.T) {
 	}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("%+v want %+v", got, want)
+	}
+}
+
+// Only an exact column-0 ``` toggles the fence: an indented ``` inside a licence text does not end it, and
+// an empty input still yields a non-nil (JSON []) slice.
+func TestParseNotices_ExactFenceAndNonNil(t *testing.T) {
+	md := "## a.example/m v1.0.0 — MIT\n\n```\nText\n    ```\n## evil v6.6.6 — MIT\n ```\n```\n\n## b.example/m v2.0.0 — ISC\n"
+	got := ParseNotices([]byte(md))
+	want := []Licence{{Name: "a.example/m", Version: "v1.0.0", Licence: "MIT"}, {Name: "b.example/m", Version: "v2.0.0", Licence: "ISC"}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("%+v want %+v", got, want)
+	}
+	for _, in := range [][]byte{nil, []byte("# nothing here\n")} {
+		l := ParseNotices(in)
+		if l == nil {
+			t.Fatalf("ParseNotices(%q) is nil", in)
+		}
+		if b, _ := json.Marshal(l); string(b) != "[]" {
+			t.Fatalf("ParseNotices(%q) marshals to %s", in, b)
+		}
+	}
+}
+
+// Status carries ms-only DTOs (Ruling 71): non-zero NextRetry/LastTick and the clock offset's UpdatedAt
+// become Unix ms, and no time.Time reaches the JSON.
+func TestStatus_DTOsAreUnixMs(t *testing.T) {
+	e := newSvcEnv(t)
+	e.svc.d.Calendar = mustCalendar(t)
+	retry, last, upd := ist(2026, 10, 12, 10, 1), ist(2026, 10, 12, 9, 59), ist(2026, 10, 12, 9, 58)
+	e.svc.rememberFeed(ticker.FeedState{State: "reconnecting", Attempt: 2, NextRetry: retry, LastTick: last, Connections: 1, Tokens: 4})
+	e.clock.SetOffset(clock.Offset{Value: 1500 * time.Millisecond, Millis: 1500, Source: clock.SourceTicks, Samples: 7, Warn: true, UpdatedAt: upd})
+	st := e.svc.Status(context.Background())
+	if want := (FeedStateDTO{State: "reconnecting", Attempt: 2, NextRetryMs: retry.UnixMilli(), LastTickMs: last.UnixMilli(), Connections: 1, Tokens: 4}); st.Feed != want {
+		t.Fatalf("feed %+v want %+v", st.Feed, want)
+	}
+	if want := (OffsetDTO{Millis: 1500, Source: "ticks", Samples: 7, Warn: true, UpdatedAtMs: upd.UnixMilli()}); st.Clock != want {
+		t.Fatalf("clock %+v want %+v", st.Clock, want)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{`"nextRetry"`, `"lastTick"`, `"updatedAt"`, "2026-10-12T"} {
+		if strings.Contains(string(b), bad) {
+			t.Fatalf("status JSON contains %s: %s", bad, b)
+		}
+	}
+}
+
+// A data plan that cannot carry a feed (Personal plan, or the probe not finished) refuses "unavailable"
+// without touching the feed.
+func TestReconnectFeed_NoFeedPlan(t *testing.T) {
+	e := newSvcEnv(t)
+	fc := &fakeFeedCtl{}
+	e.svc.d.FeedCtl = fc
+	for _, p := range []kite.DataPlan{kite.PlanNone, kite.PlanUnknown} {
+		e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: p})
+		if err := e.svc.ReconnectFeed(context.Background()); refusedCode(t, err) != "unavailable" {
+			t.Fatalf("%s: %v", p, err)
+		}
+	}
+	if fc.reconnects != 0 {
+		t.Fatalf("reconnects = %d", fc.reconnects)
+	}
+}
+
+// rememberFeed (the feed.state forwarder) and Status (a binding call) run concurrently; -race covers it.
+func TestStatus_ConcurrentWithRememberFeed(t *testing.T) {
+	e := newSvcEnv(t)
+	e.svc.d.Calendar = mustCalendar(t)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			e.svc.rememberFeed(ticker.FeedState{State: "live", Tokens: i})
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if st := e.svc.Status(context.Background()); st.Feed.State != "stopped" && st.Feed.State != "live" {
+				t.Errorf("state %q", st.Feed.State)
+			}
+		}
+	}()
+	wg.Wait()
+	if st := e.svc.Status(context.Background()); st.Feed.Tokens != 199 {
+		t.Fatalf("last feed %+v", st.Feed)
+	}
+}
+
+// A probe that has not finished says so, rather than claiming the Connect plan is missing.
+func TestReconnectFeed_UnknownPlanMessage(t *testing.T) {
+	e := newSvcEnv(t)
+	e.svc.d.FeedCtl = &fakeFeedCtl{}
+	e.session.setState(kite.SessionState{State: kite.StateReady, DataPlan: kite.PlanUnknown})
+	err := e.svc.ReconnectFeed(context.Background())
+	if r, ok := err.(*ErrRefused); !ok || r.Code != "unavailable" || !strings.Contains(r.Reason, "Still checking") {
+		t.Fatalf("got %v", err)
 	}
 }

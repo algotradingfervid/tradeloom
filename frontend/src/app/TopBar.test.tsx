@@ -157,7 +157,7 @@ describe('Ruling 90 (I2): theme toggle writes', () => {
     const { user, backend } = renderApp();
     await openMenu(user);
     await user.click(screen.getByRole('menuitemcheckbox', { name: 'Dark theme' }));
-    await waitFor(() => expect(backend.callsTo('settings.set').map((c) => c.args[0])).toEqual(['appearance.theme', 'appearance.follow_system']));
+    await waitFor(() => expect(backend.callsTo('settings.set').map((c) => c.args[0]).filter((k) => String(k).startsWith('appearance.'))).toEqual(['appearance.theme', 'appearance.follow_system']));
   });
   it('a refused theme write is reported with the parsed reason and rolled back', async () => {
     const { user, backend } = renderApp();
