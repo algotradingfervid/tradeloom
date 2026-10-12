@@ -199,7 +199,10 @@ type Session struct {
 	// tokGen is the token generation (Client.TokenGen) of the current session's token, set with rec at
 	// each commit; 0 = unknown. HandleTokenError ignores errors from any other generation (Ruling 70).
 	tokGen uint64
-	runCtx context.Context
+	// hookEndAtRestore is a test-only seam (nil in production): endSessionAtRestore calls it right after
+	// its gen check, with feedMu and mu held (Ruling 72 (a) test). It must not take mu itself.
+	hookEndAtRestore func()
+	runCtx           context.Context
 	// cancelBase cancels the base run context made by NewSession (Ruling 58 (2)): login timers and
 	// probes started before Run wait on it, and Close (also at the end of Run) cancels it.
 	cancelBase context.CancelFunc
@@ -523,8 +526,12 @@ func (s *Session) endSessionAtRestore(gen int, rec TokenRecord, code string) Ses
 	defer s.feedMu.Unlock()
 	s.mu.Lock()
 	if s.gen == gen {
-		s.mu.Unlock()
-		return s.endSessionLocked(rec, code)
+		// Ruling 72 (a): the gen check and the state write share one mu critical section, so a BeginLogin
+		// cannot slip in between and be overwritten with expired.
+		if s.hookEndAtRestore != nil {
+			s.hookEndAtRestore()
+		}
+		return s.endSessionMuLocked(rec, code)
 	}
 	cur, corrected := s.correctNoCredentialsLocked()
 	s.mu.Unlock()
@@ -686,8 +693,14 @@ func (s *Session) endSession(rec TokenRecord, code string) SessionState {
 // running finishes first and is stopped. Ruling 58 (1): when a newer session committed while this call
 // waited for feedMu, only rec's row is ended; the new session's state, feed and token are left alone.
 func (s *Session) endSessionLocked(rec TokenRecord, code string) SessionState {
-	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	s.mu.Lock()
+	return s.endSessionMuLocked(rec, code)
+}
+
+// endSessionMuLocked is endSessionLocked entered with mu held as well (feedMu, then mu); it releases mu
+// once the state is written, before the side effects.
+func (s *Session) endSessionMuLocked(rec TokenRecord, code string) SessionState {
+	st := SessionState{State: StateExpired, UserID: rec.UserID, DataPlan: PlanUnknown, ErrorCode: code, ErrorMessage: msgExpired}
 	if s.supersededLocked(rec.SessionID) {
 		cur := s.st
 		s.mu.Unlock()
