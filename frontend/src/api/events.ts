@@ -6,6 +6,7 @@ import { useSessionStore } from '../store/session';
 import { markSettingsBaseline, useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
 import { useTicksStore } from '../store/ticks';
+import { applyShortcutsEvent, SHORTCUTS_CHANGE_KEY } from '../shortcuts/store';
 import type { Backend, SessionStateName } from './backend';
 import { parseBackendError } from './errors';
 
@@ -46,7 +47,9 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
       useStatusStore.getState().setClock(c);
     }),
     backend.on('tick.batch', (t) => useTicksStore.getState().applyBatch(t)),
-    backend.on('settings.changed', (c) => useSettingsStore.getState().put(c.key, c.value)),
+    // Go publishes the shortcut list under settings.changed key "shortcuts"; it is not a setting.
+    backend.on('settings.changed', (c) =>
+      c.key === SHORTCUTS_CHANGE_KEY ? applyShortcutsEvent(c.value) : useSettingsStore.getState().put(c.key, c.value)),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
     backend.on('job.progress', (p) => notifyUnclaimedJob(p)),
     backend.on('order.update', (o) => usePortfolioStore.getState().applyOrderUpdate(o)),
@@ -89,8 +92,9 @@ export async function bootstrap(backend: Backend, opts: BootstrapOptions = {}): 
 
   const slices: [BootSlice, PromiseSettledResult<unknown>][] = [['session', session], ['status', status], ['settings', settings], ['info', info]];
   const rejected = slices.filter((s): s is [BootSlice, PromiseRejectedResult] => s[1].status === 'rejected');
-  useAppStore.getState().setBootError(
-    rejected.length === 0 ? null : { failed: rejected.map(([slice]) => slice), reason: parseBackendError(rejected[0][1].reason).reason },
+  // Only this bootstrap's slices: the shortcut provider reports the `shortcuts` slice itself (Ruling 94 I3).
+  useAppStore.getState().reportBoot(
+    Object.fromEntries(slices.map(([slice, r]) => [slice, r.status === 'rejected' ? parseBackendError(r.reason).reason : null])),
   );
   return { failed: rejected.map(([slice]) => slice), aborted: false };
 }

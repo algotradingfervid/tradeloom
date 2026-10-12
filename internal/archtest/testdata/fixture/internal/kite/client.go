@@ -17,3 +17,10 @@ func (c *Client) Call(ctx context.Context, op string, fn func(kc *kiteconnect.Cl
 func (c *Client) Session(ctx context.Context) error {
 	return c.Call(ctx, "session", func(kc *kiteconnect.Client) error { _, err := kc.GetOrders(); return err })
 }
+
+// NewClient is allowed: kiteconnect.New and SetHTTPClient in internal/kite/client.go (g0-kitenew).
+func NewClient() *Client {
+	kc := kiteconnect.New("k")
+	kc.SetHTTPClient(nil)
+	return &Client{api: kc}
+}

@@ -16,7 +16,7 @@ type Pkg struct {
 
 // Violation is one broken rule.
 type Violation struct {
-	Rule   string // "rule1" … "rule8", "g0-import", "g0-http", "g0-call", "g0-kitehttp", …
+	Rule   string // "rule1" … "rule8", "g0-import", "g0-http", "g0-call", "g0-kitehttp", "g0-exec", …
 	Pkg    string // package import path (or file for AST rules)
 	Detail string
 }
@@ -47,10 +47,11 @@ func underAny(path string, ps []string) bool {
 // importRule: importers of any path under targets (or equal to one, when exact) must be under one of
 // allowed (module-relative). An empty allowed list bans the import everywhere in the module.
 type importRule struct {
-	name    string
-	targets []string
-	allowed []string // module-relative package prefixes
-	exact   bool     // targets match only themselves, not their sub-packages ("net" but not "net/url")
+	name       string
+	targets    []string
+	allowed    []string // module-relative package prefixes
+	exact      bool     // targets match only themselves, not their sub-packages ("net" but not "net/url")
+	allowExact bool     // allowed names packages exactly, not their sub-packages
 }
 
 var ioPackages = []string{"database/sql", "modernc.org/sqlite", "net/http", "github.com/zerodha/gokiteconnect", "github.com/wailsapp/wails"}
@@ -63,26 +64,62 @@ var bypassForbidden = []string{"internal/model", "internal/indicators", "interna
 	"internal/universe", "internal/live", "internal/orders", "internal/candles", "internal/instruments", "internal/kite"}
 
 var importRules = []importRule{
-	{"rule2", []string{"github.com/wailsapp/wails"}, []string{"internal/app", "cmd/tradeloom"}, false},
-	{"rule3", []string{"github.com/zerodha/gokiteconnect"}, []string{"internal/kite"}, false},
-	{"rule4", []string{"database/sql", "modernc.org/sqlite"}, []string{"internal/store", "internal/candles/sqlite"}, false},
-	{"rule5", []string{"github.com/go-telegram/bot"}, []string{"internal/telegram"}, false},
-	{"rule6", []string{"github.com/zalando/go-keyring", "golang.org/x/crypto"}, []string{"internal/secrets"}, false},
-	{"g0-import", []string{"internal/kite/orderwrite"}, []string{"internal/orders", "internal/kite/orderwrite"}, false},
+	{"rule2", []string{"github.com/wailsapp/wails"}, []string{"internal/app", "cmd/tradeloom"}, false, false},
+	{"rule3", []string{"github.com/zerodha/gokiteconnect"}, []string{"internal/kite"}, false, false},
+	{"rule4", []string{"database/sql", "modernc.org/sqlite"}, []string{"internal/store", "internal/candles/sqlite"}, false, false},
+	{"rule5", []string{"github.com/go-telegram/bot"}, []string{"internal/telegram"}, false, false},
+	{"rule6", []string{"github.com/zalando/go-keyring", "golang.org/x/crypto"}, []string{"internal/secrets"}, false, false},
+	{"g0-import", []string{"internal/kite/orderwrite"}, []string{"internal/orders", "internal/kite/orderwrite"}, false, false},
 	// g0-http (Ruling 69): only packages under internal/kite may speak HTTP, so a hand-rolled order
 	// POST cannot be written elsewhere (the nm check sees only gokiteconnect's write methods). It
 	// covers net/http's sub-packages (httptest, httputil, …) too. Test files are exempt: Load does
 	// not load them (packages.Config.Tests is false), and they are not linked into the binary.
 	// golang.org/x/net/... (http2, websocket, proxy, …) is an HTTP stack too (Ruling 79 I-2).
-	{"g0-http", []string{"net/http", "golang.org/x/net"}, []string{"internal/kite"}, false},
+	{"g0-http", []string{"net/http", "golang.org/x/net"}, []string{"internal/kite"}, false, false},
 	// g0-net (Ruling 79 I-2): raw sockets and TLS only under internal/kite; unsafe nowhere (it can reach
 	// unexported gokiteconnect state); os/exec only under internal/app (the browser opener), so no other
-	// package can shell out to curl. Exact targets: net/url, net/netip and crypto/tlsx are not affected.
-	{"g0-net", []string{"net", "crypto/tls"}, []string{"internal/kite"}, true},
-	{"g0-net", []string{"unsafe"}, nil, true},
-	{"g0-net", []string{"os/exec"}, []string{"internal/app"}, true},
+	// package can shell out to curl. internal/app must not export os/exec values (an *exec.Cmd, a func
+	// wrapping exec.Command, a struct embedding one): CheckExec flags the use of such a value elsewhere,
+	// but a wrapper that hides os/exec behind its own types would bypass both rules (Ruling 91 M2). Exact targets: net/url, net/netip and crypto/tlsx are not affected.
+	{"g0-net", []string{"net", "crypto/tls"}, []string{"internal/kite"}, true, false},
+	{"g0-net", []string{"unsafe"}, nil, true, false},
+	{"g0-net", []string{"os/exec"}, []string{"internal/app"}, true, false},
 	// g0-mock (Ruling 79 M-3): the recording fake is for tests only; non-test code may not import it.
-	{"g0-mock", []string{"internal/kite/mock"}, []string{"internal/kite/mock"}, false},
+	{"g0-mock", []string{"internal/kite/mock"}, []string{"internal/kite/mock"}, false, false},
+	// g0-exec (Ruling 83): syscall and golang.org/x/sys/... can start processes (Exec, ForkExec,
+	// CreateProcess) and make raw system calls, so only the packages in sysImporters may import them,
+	// matched exactly (not their sub-packages); CheckSysObjects (g0-sys) limits them to the listed objects.
+	// The types-based CheckExec bans the process-starting functions themselves outside internal/app.
+	{"g0-exec", []string{"syscall", "golang.org/x/sys"}, sysImporterPaths(), false, true},
+	// g0-plugin (Ruling 83): plugin loads code at run time that no archtest rule or nm check can see.
+	{"g0-plugin", []string{"plugin"}, nil, true, false},
+}
+
+// sysAllowance is what one allow-listed package may use from syscall / golang.org/x/sys: the objects
+// (package path + "." + name) and the reason. CheckSysObjects enforces the object list (g0-sys).
+type sysAllowance struct {
+	objects []string
+	reason  string
+}
+
+// sysImporters is the explicit allow-list of non-test importers of syscall or golang.org/x/sys/...
+// (Ruling 83), with the objects each may use and why (Ruling 91 M1a). Found with go list (tags
+// webkit2_41,noorders / webkit2_41,orders / desktop,production,webkit2_41,noorders; GOOS darwin, linux,
+// windows) and grep on 2026-10-12. Adding a package or an object is a G-0 review item.
+var sysImporters = map[string]sysAllowance{
+	"internal/service": {[]string{"syscall.O_NONBLOCK"},
+		"calendar.go opens the calendar import file with syscall.O_NONBLOCK, so a FIFO or device cannot hang the import (Ruling 77)"},
+	"internal/app": {[]string{"syscall.Exec"},
+		"app.ReExec (Task 23, Ruling 89) re-executes the binary after a restore; internal/app is the sanctioned process-spawning package"},
+}
+
+func sysImporterPaths() []string {
+	out := make([]string, 0, len(sysImporters))
+	for k := range sysImporters {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CheckImports applies rules 1–7 and the G-0 import rule to pkgs. module is the module path ("tradeloom").
@@ -116,7 +153,11 @@ func CheckImports(module string, pkgs []Pkg) []Violation {
 				if r.exact {
 					hit = containsStr(r.targets, target)
 				}
-				if hit && !underAny(self, r.allowed) {
+				allowed := underAny(self, r.allowed)
+				if r.allowExact {
+					allowed = containsStr(r.allowed, self)
+				}
+				if hit && !allowed {
 					where := "allowed only in " + strings.Join(r.allowed, ", ")
 					if len(r.allowed) == 0 {
 						where = "not allowed in this module"

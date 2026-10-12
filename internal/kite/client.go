@@ -24,7 +24,7 @@ type Options struct {
 	Clock          clock.Clock        // required
 	DateSink       func(date, sent, received time.Time)
 	OnSessionError func(e *Err)      // called after all queues are paused on a TokenException
-	Transport      http.RoundTripper // nil = http.DefaultTransport (P0-1/P0-3 pass the allow-list transport)
+	Transport      http.RoundTripper // nil = http.DefaultTransport (P0-1/P0-3 pass the allow-list transport); New always adds the write deny-list
 	Jitter         func() time.Duration
 	Log            *slog.Logger
 }
@@ -50,7 +50,8 @@ type Client struct {
 var _ ReadClient = (*Client)(nil)
 var _ HistoricalPicker = (*Client)(nil)
 
-// New builds a Client. It makes no network call. It panics when Limiter or Clock is nil.
+// New builds a Client. It makes no network call. It panics when Limiter or Clock is nil. Every request
+// passes the write deny-list (refuseWrite), whatever Options.Transport is (Ruling 83).
 func New(o Options) *Client {
 	if o.Limiter == nil {
 		panic("kite.New: Options.Limiter is required")
@@ -58,9 +59,9 @@ func New(o Options) *Client {
 	if o.Clock == nil {
 		panic("kite.New: Options.Clock is required")
 	}
-	if o.Transport == nil {
-		o.Transport = http.DefaultTransport
-	}
+	// Ruling 83: whatever transport the caller passed (nil = http.DefaultTransport), every request goes
+	// through the write deny-list; no Options yields an unguarded client.
+	o.Transport = guardWrites(o.Transport)
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}

@@ -256,10 +256,13 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
         const clash = binding === '' ? undefined : state.shortcuts.find((a) => a.id !== actionId && a.binding === binding && overlaps(a.scope, target.scope));
         if (clash) throw refusal('conflict', 'shortcuts', clash.label);
         target.binding = binding;
+        // As in Go (service.publishShortcuts): the full list on settings.changed key "shortcuts".
+        emit('settings.changed', { key: 'shortcuts', value: state.shortcuts });
         return copy(target);
       },
       resetShortcuts: () => {
         for (const a of state.shortcuts) a.binding = a.defaultBinding;
+        emit('settings.changed', { key: 'shortcuts', value: state.shortcuts });
         return copy(state.shortcuts);
       },
       getUiState: (key: string) => state.uiState[key] ?? '',
