@@ -11,6 +11,7 @@ require (
 	github.com/wailsapp/wails/v2 v2.16.0
 	github.com/zerodha/gokiteconnect/v4 v4.4.3
 	golang.org/x/tools v0.49.0
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (
