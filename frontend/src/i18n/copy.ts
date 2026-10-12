@@ -409,3 +409,14 @@ export const instrumentCopy = {
   outOfScope: holdingsCopy.outOfScope,
   outOfScopeHint: holdingsCopy.outOfScopeHint,
 } as const;
+
+export const chartHeaderCopy = {
+  controls: 'Chart controls',
+  back: 'Back',
+  changeSymbol: 'Change symbol',
+  searchInstruments: 'Search instruments',
+  refresh: 'Refresh chart data',
+  timeframe: 'Timeframe',
+  more: 'More chart actions',
+  openFullView: 'Open in full view',
+} as const;
