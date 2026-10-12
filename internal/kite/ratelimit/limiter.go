@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -11,6 +12,12 @@ import (
 	"tradeloom/internal/clock"
 	"tradeloom/internal/logging"
 )
+
+// ErrStopped is returned by Acquire once the context given to Run has ended.
+var ErrStopped = errors.New("ratelimit: limiter stopped")
+
+// ErrBadClass is returned by Acquire for a class outside the defined set.
+var ErrBadClass = errors.New("ratelimit: unknown class")
 
 // TopicUsage carries the 1 Hz usage snapshot (ARCHITECTURE §3.4 "limits.usage").
 var TopicUsage = bus.NewTopic[Usage]("limits.usage")
@@ -49,6 +56,8 @@ type Limiter struct {
 	seq    uint64
 	paused bool
 	reason string
+	done   chan struct{} // closed when the Run context ends
+	once   sync.Once
 }
 
 // New builds a Limiter; call Run to start its schedulers.
@@ -62,7 +71,7 @@ func New(clk clock.Clock, o Options) *Limiter {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
-	l := &Limiter{clk: clk, o: o}
+	l := &Limiter{clk: clk, o: o, done: make(chan struct{})}
 	for c := Class(0); c < numClasses; c++ {
 		r := o.Rates[c]
 		if r <= 0 {
@@ -75,6 +84,10 @@ func New(clk clock.Clock, o Options) *Limiter {
 
 // Run starts one scheduler goroutine per class and the 1 Hz usage publisher; they stop with ctx.
 func (l *Limiter) Run(ctx context.Context) {
+	logging.Go("ratelimit.stop", func() {
+		<-ctx.Done()
+		l.once.Do(func() { close(l.done) })
+	})
 	for c := Class(0); c < numClasses; c++ {
 		c := c
 		logging.Go("ratelimit."+c.String(), func() { l.loop(ctx, c) })
@@ -91,8 +104,16 @@ func (l *Limiter) Run(ctx context.Context) {
 
 // Acquire blocks until class c grants a slot to a request of priority p, or ctx ends.
 func (l *Limiter) Acquire(ctx context.Context, c Class, p Priority) error {
+	if c >= numClasses {
+		return ErrBadClass
+	}
 	if p >= NumPriorities {
 		p = NumPriorities - 1
+	}
+	select {
+	case <-l.done:
+		return ErrStopped
+	default:
 	}
 	w := &waiter{prio: p, ready: make(chan struct{})}
 	cs := l.cls[c]
@@ -106,13 +127,25 @@ func (l *Limiter) Acquire(ctx context.Context, c Class, p Priority) error {
 	case <-w.ready:
 		return nil
 	case <-ctx.Done():
-		l.mu.Lock()
-		if w.index >= 0 {
-			heap.Remove(&cs.q, w.index)
-		}
-		l.mu.Unlock()
+		l.dequeue(cs, w)
 		return ctx.Err()
+	case <-l.done:
+		l.dequeue(cs, w)
+		select {
+		case <-w.ready: // granted concurrently with shutdown: honour it
+			return nil
+		default:
+			return ErrStopped
+		}
 	}
+}
+
+func (l *Limiter) dequeue(cs *classState, w *waiter) {
+	l.mu.Lock()
+	if w.index >= 0 {
+		heap.Remove(&cs.q, w.index)
+	}
+	l.mu.Unlock()
 }
 
 // Do acquires a slot and runs fn.
@@ -125,6 +158,9 @@ func (l *Limiter) Do(ctx context.Context, c Class, p Priority, fn func() error) 
 
 // Backoff records an HTTP 429 on class c and delays only that class (FR-DATA-003 AC2).
 func (l *Limiter) Backoff(c Class) {
+	if c >= numClasses {
+		return
+	}
 	l.mu.Lock()
 	d := l.cls[c].backoff(l.clk.Now())
 	n := l.cls[c].http429
@@ -134,8 +170,11 @@ func (l *Limiter) Backoff(c Class) {
 
 // Success resets class c's back-off exponent after a successful response.
 func (l *Limiter) Success(c Class) {
+	if c >= numClasses {
+		return
+	}
 	l.mu.Lock()
-	l.cls[c].backoffN = 0
+	l.cls[c].success(l.clk.Now())
 	l.mu.Unlock()
 }
 

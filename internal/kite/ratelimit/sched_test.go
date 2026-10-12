@@ -82,3 +82,29 @@ func TestPausedGrantsNothing(t *testing.T) {
 		t.Fatal("paused class granted")
 	}
 }
+
+func TestStaleSuccessAndLateBackoffNeverShortenHold(t *testing.T) {
+	c := newClassState(3, time.Second)
+	for i := 0; i < 4; i++ { // holds 1,2,4,8 s
+		c.backoff(t0)
+	}
+	before := c.backoffUntil       // t0+8s
+	c.success(t0.Add(time.Second)) // stale success while the hold is active
+	if c.backoffN == 0 {
+		t.Fatal("success inside an active hold reset the exponent")
+	}
+	c.backoff(t0.Add(time.Second)) // late 429: 16 s from +1s = +17s, extends
+	if c.backoffUntil.Before(before) {
+		t.Fatalf("hold shortened: %v < %v", c.backoffUntil, before)
+	}
+	held := c.backoffUntil
+	c.backoffN = 0
+	c.backoff(t0.Add(2 * time.Second)) // 1 s hold must not pull the hold in
+	if c.backoffUntil.Before(held) {
+		t.Fatalf("hold shortened by smaller back-off: %v < %v", c.backoffUntil, held)
+	}
+	c.success(held)
+	if c.backoffN != 0 {
+		t.Fatal("success after the hold should reset the exponent")
+	}
+}

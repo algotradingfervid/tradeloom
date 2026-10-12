@@ -91,9 +91,19 @@ func (c *classState) backoff(now time.Time) time.Duration {
 	} else {
 		c.backoffN++
 	}
-	c.backoffUntil = now.Add(d)
+	if until := now.Add(d); until.After(c.backoffUntil) {
+		c.backoffUntil = until // only ever extend an active hold
+	}
 	c.http429++
 	return d
+}
+
+// success resets the back-off exponent, but not while a hold is still active: a stale success
+// from a request sent before the 429 must not shorten the next back-off.
+func (c *classState) success(now time.Time) {
+	if !now.Before(c.backoffUntil) {
+		c.backoffN = 0
+	}
 }
 
 func (c *classState) poke() {

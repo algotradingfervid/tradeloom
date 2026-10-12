@@ -205,3 +205,41 @@ func TestPriorityContext(t *testing.T) {
 		t.Fatal("WithPriority lost")
 	}
 }
+
+func TestRunContextEndUnblocksAndRejectsAcquire(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 10, 12, 10, 0, 0, 0, clock.IST))
+	l := New(fc, Options{})
+	l.PauseAll("test")
+	runCtx, stop := context.WithCancel(context.Background())
+	l.Run(runCtx)
+	errc := make(chan error, 1)
+	go func() { errc <- l.Acquire(context.Background(), ClassQuote, Backtest) }()
+	waitQueued(t, l, ClassQuote, Backtest, 1)
+	stop()
+	select {
+	case err := <-errc:
+		if err != ErrStopped {
+			t.Fatalf("err = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued Acquire blocked after Run ctx ended")
+	}
+	if n := l.Snapshot().Classes[ClassQuote].Queued[Backtest]; n != 0 {
+		t.Fatalf("queued after stop = %d", n)
+	}
+	if err := l.Acquire(context.Background(), ClassQuote, Backtest); err != ErrStopped {
+		t.Fatalf("new Acquire err = %v", err)
+	}
+}
+
+func TestAcquireUnknownClassErrors(t *testing.T) {
+	l := New(clock.NewFake(time.Date(2026, 10, 12, 10, 0, 0, 0, clock.IST)), Options{})
+	if err := l.Acquire(context.Background(), numClasses, Interactive); err != ErrBadClass {
+		t.Fatalf("err = %v", err)
+	}
+	if err := l.Acquire(context.Background(), Class(200), Interactive); err != ErrBadClass {
+		t.Fatalf("err = %v", err)
+	}
+	l.Backoff(Class(200)) // must not panic
+	l.Success(Class(200))
+}
