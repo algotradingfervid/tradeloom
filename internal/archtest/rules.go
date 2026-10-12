@@ -96,7 +96,9 @@ var importRules = []importRule{
 }
 
 // sysAllowance is what one allow-listed package may use from syscall / golang.org/x/sys: the objects
-// (package path + "." + name) and the reason. CheckSysObjects enforces the object list (g0-sys).
+// (package path + "." + name of a package-level object) and the reason. CheckSysObjects resolves each
+// entry to its types.Object and allows only that object (identity, Ruling 99), and SysAllowMissing
+// reports an entry that does not resolve (g0-sys).
 type sysAllowance struct {
 	objects []string
 	reason  string

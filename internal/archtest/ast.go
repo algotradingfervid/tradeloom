@@ -5,8 +5,10 @@ import (
 	"go/ast"
 	"go/build/constraint"
 	"go/constant"
+	"go/parser"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -166,6 +168,12 @@ func isKiteClient(t types.Type) bool {
 // "|| go1.1" or "|| linux" that is true without the orders tag disqualifies the file. A file without a
 // //go:build line, an unparsable one, or one naming more than maxFreeTags tags is not orders-only.
 func requiresOrdersTag(f *ast.File) bool {
+	expr := goBuildExpr(f)
+	return expr != nil && ordersOnly(expr)
+}
+
+// goBuildExpr returns the file's //go:build expression, or nil when it has none or it does not parse.
+func goBuildExpr(f *ast.File) constraint.Expr {
 	for _, cg := range f.Comments {
 		if cg.Pos() > f.Package {
 			break
@@ -176,19 +184,37 @@ func requiresOrdersTag(f *ast.File) bool {
 			}
 			expr, err := constraint.Parse(c.Text)
 			if err != nil {
-				return false
+				return nil
 			}
-			return ordersOnly(expr)
+			return expr
 		}
 	}
-	return false
+	return nil
 }
 
 const maxFreeTags = 16
 
 func ordersOnly(expr constraint.Expr) bool {
-	seen := map[string]bool{"orders": true, "noorders": true}
-	tags := []string{"orders", "noorders"}
+	return linksOnlyWhen(expr, []string{"orders", "noorders"}, func(val map[string]bool) bool {
+		return val["orders"] && !val["noorders"] // an orders build: the file may link here
+	})
+}
+
+// onlyWithTag reports whether expr is false for every assignment of the tags it names in which tag is
+// false (Ruling 99: an allow-listed cgo file links only in builds that set tag).
+func onlyWithTag(expr constraint.Expr, tag string) bool {
+	return expr != nil && linksOnlyWhen(expr, []string{tag}, func(val map[string]bool) bool { return val[tag] })
+}
+
+// linksOnlyWhen reports whether expr is false for every assignment of fixed and the tags expr names for
+// which ok is false. Every other tag is a free variable; more than maxFreeTags tags is not decided (false).
+func linksOnlyWhen(expr constraint.Expr, fixed []string, ok func(map[string]bool) bool) bool {
+	seen := map[string]bool{}
+	tags := []string{}
+	for _, tag := range fixed {
+		seen[tag] = true
+		tags = append(tags, tag)
+	}
 	var walk func(constraint.Expr)
 	walk = func(e constraint.Expr) {
 		switch e := e.(type) {
@@ -216,11 +242,11 @@ func ordersOnly(expr constraint.Expr) bool {
 		for i, tag := range tags {
 			val[tag] = mask&(1<<i) != 0
 		}
-		if val["orders"] && !val["noorders"] {
-			continue // an orders build: the file may link here
+		if ok(val) {
+			continue
 		}
 		if expr.Eval(func(tag string) bool { return val[tag] }) {
-			return false // links in a build without orders, or with noorders
+			return false // links in a build where it must not
 		}
 	}
 	return true
@@ -757,23 +783,87 @@ func isSysPath(path string) bool { return under(path, "syscall") || under(path, 
 // CheckSysObjects reports every use of a syscall or golang.org/x/sys object (function, constant, type,
 // field, method) in a module package, unless the package is in sysImporters and the object is on its
 // list (g0-sys, Ruling 91 M1a). It blocks raw Syscall/RawSyscall (and SYS_EXECVE) in the allow-listed
-// importers, and syscall objects reached without importing syscall anywhere else.
+// importers, and syscall objects reached without importing syscall anywhere else. The listed names are
+// resolved to package-level objects and matched by identity (Ruling 99), so a field or method that
+// shares a listed name (a struct field Exec, a method Exec) is not allowed with it.
 func CheckSysObjects(module string, pkgs []*packages.Package) []Violation {
+	return checkSysObjects(module, pkgs, sysImporters)
+}
+
+func checkSysObjects(module string, pkgs []*packages.Package, allow map[string]sysAllowance) []Violation {
 	var out []Violation
 	for _, p := range pkgs {
-		allowed := sysImporters[relPkg(module, p.PkgPath)].objects
+		allowed := map[types.Object]bool{}
+		names := allow[relPkg(module, p.PkgPath)].objects
+		var byPath map[string]*types.Package
+		if len(names) != 0 {
+			byPath = typesByPath([]*packages.Package{p}) // resolved in p's own type universe
+		}
+		for _, name := range names {
+			if obj := lookupPkgObject(byPath, name); obj != nil {
+				allowed[obj] = true
+			}
+		}
 		for id, obj := range p.TypesInfo.Uses {
 			if _, isPkg := obj.(*types.PkgName); isPkg || obj.Pkg() == nil || !isSysPath(obj.Pkg().Path()) {
 				continue
 			}
-			name := obj.Pkg().Path() + "." + obj.Name()
-			if !containsStr(allowed, name) {
+			if !allowed[obj] {
 				out = append(out, Violation{"g0-sys", position(p.Fset, id.Pos()),
-					name + " is not on this package's syscall / golang.org/x/sys allow-list (sysImporters)"})
+					obj.Pkg().Path() + "." + obj.Name() + " is not on this package's syscall / golang.org/x/sys allow-list (sysImporters)"})
 			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// typesByPath indexes every types.Package reachable from pkgs (loaded packages and, through
+// types.Package.Imports, their dependencies) by path. One load shares one types.Package per path, so an
+// object looked up here is identical to the one TypesInfo.Uses records.
+func typesByPath(pkgs []*packages.Package) map[string]*types.Package {
+	out := map[string]*types.Package{}
+	var add func(tp *types.Package)
+	add = func(tp *types.Package) {
+		if tp == nil || out[tp.Path()] != nil {
+			return
+		}
+		out[tp.Path()] = tp
+		for _, imp := range tp.Imports() {
+			add(imp)
+		}
+	}
+	packages.Visit(pkgs, nil, func(p *packages.Package) { add(p.Types) })
+	return out
+}
+
+// lookupPkgObject resolves "pkg/path.Name" to the package-level object Name of pkg/path, or nil.
+func lookupPkgObject(byPath map[string]*types.Package, name string) types.Object {
+	i := strings.LastIndex(name, ".")
+	if i <= 0 {
+		return nil
+	}
+	tp := byPath[name[:i]]
+	if tp == nil {
+		return nil
+	}
+	return tp.Scope().Lookup(name[i+1:])
+}
+
+// SysAllowMissing lists the allow entries ("pkg: path.Name") that do not resolve to a package-level object
+// in the loaded packages, so a typo or a toolchain change cannot leave an allowance that matches nothing.
+// pkgs (one load) must include, directly or as dependencies, every package the entries name.
+func SysAllowMissing(pkgs []*packages.Package, allow map[string]sysAllowance) []string {
+	byPath := typesByPath(pkgs)
+	var out []string
+	for pkg, a := range allow {
+		for _, name := range a.objects {
+			if lookupPkgObject(byPath, name) == nil {
+				out = append(out, pkg+": "+name)
+			}
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -845,8 +935,7 @@ func CheckKiteConstruct(module string, pkgs []*packages.Package) []Violation {
 func CheckOtherFiles(module string, pkgs []*packages.Package) []Violation {
 	var out []Violation
 	for _, p := range pkgs {
-		rel := relPkg(module, p.PkgPath)
-		if rel == "testdata" || strings.HasPrefix(rel, "testdata/") || strings.Contains(rel, "/testdata/") || strings.HasSuffix(rel, "/testdata") {
+		if inTestdata(relPkg(module, p.PkgPath)) {
 			continue
 		}
 		files := append(append([]string(nil), p.OtherFiles...), p.IgnoredFiles...)
@@ -857,6 +946,177 @@ func CheckOtherFiles(module string, pkgs []*packages.Package) []Violation {
 			out = append(out, Violation{"g0-src", filepath.ToSlash(filepath.Base(filepath.Dir(f))) + "/" + filepath.Base(f),
 				"non-Go source file in package " + p.PkgPath + "; only Go files may be linked"})
 		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// inTestdata reports whether the module-relative package path is a testdata directory or below one.
+func inTestdata(rel string) bool {
+	return rel == "testdata" || strings.HasPrefix(rel, "testdata/") || strings.Contains(rel, "/testdata/") || strings.HasSuffix(rel, "/testdata")
+}
+
+// fileImport is one import of a parsed file and its line.
+type fileImport struct {
+	path string
+	line int
+}
+
+// parseImports parses the imports and the //go:build expression (nil if none) of the Go file at path.
+func parseImports(path string) ([]fileImport, constraint.Expr, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly|parser.ParseComments)
+	if err != nil {
+		return nil, nil, err
+	}
+	var out []fileImport
+	for _, imp := range f.Imports {
+		ip, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			return nil, nil, err
+		}
+		out = append(out, fileImport{ip, fset.Position(imp.Pos()).Line})
+	}
+	return out, goBuildExpr(f), nil
+}
+
+func importPaths(imps []fileImport) []string {
+	out := make([]string, 0, len(imps))
+	for _, imp := range imps {
+		out = append(out, imp.path)
+	}
+	return out
+}
+
+// fileLabel is "dir/file" for a file path, the form position uses.
+func fileLabel(path string) string {
+	return filepath.ToSlash(filepath.Base(filepath.Dir(path))) + "/" + filepath.Base(path)
+}
+
+// cgoAllowance lets one file (module-relative path) import "C" only if its //go:build line keeps it out of
+// every build that does not set tag.
+type cgoAllowance struct {
+	file, tag, reason string
+}
+
+// cgoAllowed are the only cgo files of the module and of tradeloom/ta (Ruling 99). Both are test-oracle
+// only: no release, archtest or nm-check build sets libmc or oracle, and no non-test file imports
+// ta/internal/oracle. Adding an entry is a G-0 review item.
+var cgoAllowed = []cgoAllowance{
+	{"ta/libm_c.go", "libmc",
+		"test-oracle only: routes ta's libm calls to the C library so the oracle tests (go test -tags oracle,libmc) can demand bit-exact agreement with TA-Lib C; the default build uses libm.go (//go:build !libmc, pure Go)"},
+	{"ta/internal/oracle/oracle.go", "oracle",
+		"test-oracle only: calls the reference TA-Lib C library from the *_oracle_test.go differential tests; imported by no non-test file, and unsafe here only converts cgo pointers"},
+}
+
+func cgoAllowedFile(key string, expr constraint.Expr, allow []cgoAllowance) bool {
+	for _, a := range allow {
+		if a.file == key && onlyWithTag(expr, a.tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckCgo reports import "C" in every .go file of a module package (g0-cgo, Ruling 99): the files this
+// build compiles (packages.Package.GoFiles, which holds go list's GoFiles and CgoFiles) and the ones it
+// does not (IgnoredFiles: excluded by a build tag, GOOS/GOARCH or CGO_ENABLED=0). C code linked through cgo
+// is invisible to every type-based G-0 rule. Packages under testdata are exempt; cgoAllowed files are
+// allowed under their tag only. A file that does not parse is reported (fail closed).
+func CheckCgo(module string, pkgs []*packages.Package) []Violation {
+	return checkCgo(module, pkgs, cgoAllowed)
+}
+
+func checkCgo(module string, pkgs []*packages.Package, allow []cgoAllowance) []Violation {
+	var out []Violation
+	for _, p := range pkgs {
+		rel := relPkg(module, p.PkgPath)
+		if inTestdata(rel) {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, f := range append(append([]string(nil), p.GoFiles...), p.IgnoredFiles...) {
+			if !strings.HasSuffix(f, ".go") || seen[f] {
+				continue
+			}
+			seen[f] = true
+			imps, expr, err := parseImports(f)
+			if err != nil {
+				out = append(out, Violation{"g0-cgo", fileLabel(f), "cannot parse imports: " + err.Error()})
+				continue
+			}
+			for _, imp := range imps {
+				if imp.path == "C" && !cgoAllowedFile(rel+"/"+filepath.Base(f), expr, allow) {
+					out = append(out, Violation{"g0-cgo", fileLabel(f) + ":" + strconv.Itoa(imp.line),
+						"import \"C\" in package " + p.PkgPath + "; cgo is not allowed (C code is invisible to the G-0 rules)"})
+				}
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// taBanned are the imports no tradeloom/ta file may have (Ruling 99), beyond the stdlib-only rule:
+// network, process, raw-syscall, plugin and unsafe/cgo access. "C" and "unsafe" are allowed only in the
+// cgoAllowed files under their tag.
+func taBanned(ip string) bool {
+	return under(ip, "net") || under(ip, "golang.org/x/sys") || containsStr([]string{"os/exec", "syscall", "plugin", "unsafe", "C"}, ip)
+}
+
+// CheckTASources walks the nested module tradeloom/ta (dir, module path modPath) and checks every non-test
+// .go file, under any build tags, outside testdata (g0-ta, Ruling 99): it may import only the standard
+// library and modPath's own packages, and none of net/..., os/exec, syscall, golang.org/x/sys/..., unsafe,
+// plugin or "C" — except "C" and "unsafe" in a cgoAllowed file whose //go:build line requires its tag.
+// ta is linked into the binary through internal/candles/builder but is not matched by ./...; TestArchitecture
+// also loads it for the type-based rules, and this file walk sees the tag-gated files (ta/internal/oracle is
+// not loaded at all without the oracle tag). Files that do not parse are reported (fail closed).
+func CheckTASources(dir, modPath string) []Violation {
+	var out []Violation
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != dir && (name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		relDir, err := filepath.Rel(dir, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		pkgPath := modPath
+		if relDir != "." {
+			pkgPath += "/" + filepath.ToSlash(relDir)
+		}
+		key := relPkg("tradeloom", pkgPath) + "/" + filepath.Base(path)
+		imps, expr, err := parseImports(path)
+		if err != nil {
+			out = append(out, Violation{"g0-ta", fileLabel(path), "cannot parse imports: " + err.Error()})
+			return nil
+		}
+		for _, imp := range imps {
+			at := fileLabel(path) + ":" + strconv.Itoa(imp.line)
+			switch {
+			case (imp.path == "C" || imp.path == "unsafe") && cgoAllowedFile(key, expr, cgoAllowed):
+			case taBanned(imp.path):
+				out = append(out, Violation{"g0-ta", at, "imports " + imp.path + " (not allowed in tradeloom/ta; C and unsafe only in the cgoAllowed test-oracle files under their tag)"})
+			case under(imp.path, modPath):
+			case !strings.Contains(strings.SplitN(imp.path, "/", 2)[0], "."):
+			default:
+				out = append(out, Violation{"g0-ta", at, "imports " + imp.path + " (tradeloom/ta may import only the standard library and its own packages)"})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		out = append(out, Violation{"g0-ta", dir, "walk: " + err.Error()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out

@@ -21,6 +21,9 @@ func TestSysObjects_Fixture(t *testing.T) {
 		"g0-sys execuser/execuser.go:20", "g0-sys execuser/execuser.go:21", "g0-sys execuser/execuser.go:22",
 		"g0-sys execuser/execuser.go:23", "g0-sys execuser/execuser.go:24",
 		"g0-sys execuser/execuser.go:30", "g0-sys execuser/execuser.go:31",
+		// Ruling 99: unixnames.go: unix.Attr, the field Attr.Exec, unix.Proc and the method Proc.Exec, unix.Exec.
+		"g0-sys app/unixnames.go:7", "g0-sys app/unixnames.go:8", "g0-sys app/unixnames.go:9", "g0-sys app/unixnames.go:9",
+		"g0-sys app/unixnames.go:10",
 	}
 	for _, tags := range []string{"noorders", "orders", "orders,noorders"} {
 		t.Run(tags, func(t *testing.T) { assertList(t, runFixture(t, tags, CheckSysObjects), want) })
