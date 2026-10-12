@@ -58,6 +58,13 @@ const VALIDATORS: Record<string, (v: unknown) => string | null> = {
   'chart.default_timeframe': (v) => (typeof v === 'string' && TIMEFRAMES.includes(v) ? null : 'Unknown timeframe'),
 };
 
+const CRED_RE = /^[A-Za-z0-9]{6,64}$/;
+const normalizeCredential = (v: string): string => v.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+
+/** Go kite.CodeLoginBusy (internal/kite/session_types.go). */
+const LOGIN_BUSY = 'login_in_progress';
+const INVALID_PORT = 'Choose a port between 1024 and 65535. Then set the redirect URL of your app in the Kite developer console to http://127.0.0.1:<port>/kite/callback with that port.';
+
 const overlaps = (a: ShortcutScope, b: ShortcutScope) => a === b || a === 'global' || b === 'global';
 
 type Fns = Record<string, (...args: never[]) => unknown>;
@@ -165,8 +172,17 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       status: () => copy(state.session),
       credentials: () => copy(state.session.credentials),
       saveCredentials: (input: CredentialsInput) => {
-        const key = input.apiKey.trim();
-        if (!key || !input.apiSecret.trim()) throw refusal('invalid_credentials', 'session', 'Enter both the API key and the API secret');
+        // As Go kite.NormalizeCredential + ValidateAPIKey / ValidateAPISecret (internal/kite/credentials.go).
+        const key = normalizeCredential(input.apiKey);
+        const secret = normalizeCredential(input.apiSecret);
+        if (!CRED_RE.test(key)) throw refusal('invalid_credentials', 'session', 'The API key should be 6–64 letters and digits. Copy it from your app in the Kite developer console.');
+        if (!CRED_RE.test(secret)) throw refusal('invalid_credentials', 'session', 'The API secret should be 6–64 letters and digits. Copy it from your app in the Kite developer console.');
+        if (key === secret) {
+          throw refusal('invalid_credentials', 'session', 'The API key and the API secret are identical. Paste each from its own field in the Kite developer console.');
+        }
+        // As Go kite.Session.SaveCredentials: refused while a login runs or a session is live.
+        if (state.session.state === 'logging_in') throw refusal(LOGIN_BUSY, 'session', 'Finish or cancel the current login before changing credentials.');
+        if (state.session.state === 'ready') throw refusal('already_logged_in', 'session', 'Log out before changing the Kite credentials.');
         if (state.session.secrets.mode === 'choose' || state.session.secrets.mode === 'none') {
           throw refusal('secret_store', 'session', 'Choose where to store the secret first');
         }
@@ -177,10 +193,14 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
       removeCredentials: () => setSession({ state: 'no_credentials', riskAckRequired: false, credentials: { ...state.session.credentials, configured: false, apiKeyMasked: '' } }),
       setRedirectPort: (port: number) => {
-        if (!Number.isInteger(port) || port < 1024 || port > 65535) throw refusal('invalid_port', 'session', 'Port must be a whole number between 1024 and 65535');
-        const credentials = { ...state.session.credentials, port, redirectUrl: `http://127.0.0.1:${port}/kite/callback` };
-        setSession({ credentials });
-        return copy(credentials);
+        // As Go kite.Session.SetRedirectPort (texts verbatim); Go publishes no session.state for a port change.
+        if (!Number.isInteger(port) || port < 1024 || port > 65535) throw refusal('invalid_port', 'session', INVALID_PORT);
+        const redirectUrl = `http://127.0.0.1:${port}/kite/callback`;
+        if (state.session.state === 'logging_in') {
+          throw refusal(LOGIN_BUSY, 'session', `Finish or cancel the current login before changing the port. Then set the redirect URL of your app in the Kite developer console to ${redirectUrl}.`);
+        }
+        state.session.credentials = { ...state.session.credentials, port, redirectUrl };
+        return copy(state.session.credentials);
       },
       login: () => {
         const ok = state.loginListenerOk;
@@ -216,16 +236,17 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       },
       refuseSecretStorage: () => setSession({ secrets: { ...state.session.secrets, mode: 'none', backend: 'none' } }),
       unlock: (passphrase: string) => {
-        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Wrong passphrase');
+        if (passphrase !== state.encPassphrase) throw refusal('bad_passphrase', 'secrets', 'Unlock failed: wrong passphrase or damaged file. Check the passphrase and try again.'); // Go msgBadPassphrase
         return setSession({
           state: state.session.credentials.configured ? 'logged_out' : 'no_credentials',
           secrets: { ...state.session.secrets, backend: 'file' },
         });
       },
       migrateToKeyring: () => {
-        if (!state.session.secrets.keyringAvailable) throw refusal('keyring_unavailable', 'secrets', 'The system keyring is not available');
+        // As Go service.MigrateToKeyring: no session.state is published; the caller re-reads Credentials().
+        if (!state.session.secrets.keyringAvailable) throw refusal('keyring_unavailable', 'secrets', 'No system keyring is available. Unlock or start it, then try again.');
         const secrets = { mode: 'keyring' as const, backend: 'keyring' as const, keyringAvailable: true, fileExists: false, choices: [] };
-        setSession({ secrets, credentials: { ...state.session.credentials, secretBackend: 'keyring' } });
+        state.session = { ...state.session, secrets, credentials: { ...state.session.credentials, secretBackend: 'keyring' } };
         return copy(secrets);
       },
       reconnectFeed: () => undefined,

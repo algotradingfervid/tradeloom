@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { PositionRow } from '../../api/backend';
 import { demoSeed, emptySeed, FIXED_NOW, positionClosed, positionOpen, positionsOf, tickFixture } from '../../api/mock/fixtures';
 import { createMockBackend } from '../../api/mock/index';
+import { setRunStartedMs } from '../../market/quotes';
 import { renderApp } from '../../test/render';
 
 describe('FR-ORD-002 Positions view (read-only in P0)', () => {
@@ -69,11 +70,11 @@ describe('FR-ORD-002 Positions view (read-only in P0)', () => {
     expect(within(screen.getByRole('row', { name: 'USDINR26OCTFUT' })).getAllByRole('cell')[5]).toHaveTextContent('+₹10.00');
     expect(screen.getAllByRole('rowgroup')[2]).toHaveTextContent('Total P&L+₹130.00');
   });
-  it('a persisted quote older than the session is not applied as live (Task 10 carry-forward)', async () => {
+  it('carry-forward (Ruling 93): a persisted quote from a previous run is not applied as live', async () => {
+    setRunStartedMs(FIXED_NOW);
     const { backend } = renderApp({ route: '/positions' });
     await screen.findByRole('row', { name: 'INFY' });
-    const loggedInAtMs = backend.state.session.loggedInAtMs;
-    act(() => backend.emit('tick.batch', [{ ...tickFixture(positionOpen.token, 150, 110), tsMs: loggedInAtMs - 60_000 }]));
+    act(() => backend.emit('tick.batch', [{ ...tickFixture(positionOpen.token, 150, 110), tsMs: FIXED_NOW - 60_000 }]));
     expect(within(screen.getByRole('row', { name: 'INFY' })).getAllByRole('cell')[4]).toHaveTextContent('112.00');
     act(() => backend.emit('tick.batch', [{ ...tickFixture(positionOpen.token, 113, 110), tsMs: FIXED_NOW }]));
     expect(within(screen.getByRole('row', { name: 'INFY' })).getAllByRole('cell')[4]).toHaveTextContent('113.00');

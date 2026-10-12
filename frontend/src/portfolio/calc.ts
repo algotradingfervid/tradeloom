@@ -1,4 +1,5 @@
 import type { HoldingRow, HoldingsSummary, PositionRow, TickDTO } from '../api/backend';
+import { isStaleQuote } from '../market/quotes';
 
 /** Go sends money as integer paise (AD-04); the view layer works in rupees. Sums are always taken in paise. */
 export const rupees = (paise: number): number => paise / 100;
@@ -21,12 +22,12 @@ function ratioPct(num: number, den: number): number | null {
 }
 
 /**
- * The tick's LTP when it is a live quote of this session. Go can replay quote snapshots persisted by an earlier run
- * (QuoteCacheKey): any quote stamped before the current session started (or with no session) is stale and the
- * view keeps the LTP Go priced the snapshot at until a fresh tick arrives (P0-4 Task 10 carry-forward).
+ * The tick's LTP when it is a live quote of this run. Go replays quote snapshots persisted by an earlier run
+ * (QuoteCacheKey): such a quote is stale (Ruling 93: the one shared rule, isStaleQuote) and the view keeps the LTP
+ * Go priced the snapshot at until a fresh tick arrives (P0-4 Task 10 carry-forward).
  */
-export function liveLtp(tick: TickDTO | undefined, sessionStartMs: number): number | undefined {
-  if (!tick || sessionStartMs <= 0 || tick.tsMs < sessionStartMs || !(tick.ltp > 0)) return undefined;
+export function liveLtp(tick: TickDTO | undefined): number | undefined {
+  if (!tick || isStaleQuote(tick) || !(tick.ltp > 0)) return undefined;
   return tick.ltp;
 }
 

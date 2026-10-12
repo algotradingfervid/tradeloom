@@ -4,6 +4,7 @@ import { HoldingsView } from '../views/holdings/HoldingsView';
 import { NotFoundView } from '../views/NotFoundView';
 import { OrderBookView } from '../views/orders/OrderBookView';
 import { PositionsView } from '../views/positions/PositionsView';
+import { SettingsView } from '../views/settings/SettingsView';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
 
@@ -13,6 +14,8 @@ export const shellChildren: RouteObject[] = [
   { path: 'holdings', element: <HoldingsView /> },
   { path: 'positions', element: <PositionsView /> },
   { path: 'orders', element: <OrderBookView /> },
+  { path: 'settings', element: <Navigate to="/settings/kite" replace /> },
+  { path: 'settings/:group', element: <SettingsView /> },
 ];
 
 /** Children of the root layout that render outside the shell (onboarding) plus the shell itself. */

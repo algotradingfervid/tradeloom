@@ -9,7 +9,6 @@ import { positionsCopy as copy } from '../../i18n/copy';
 import { formatNumber, formatPrice } from '../../i18n/format';
 import { livePosition, liveLtp, positionNetChangePct, positionsTotalPnl, rupees, type LivePosition } from '../../portfolio/calc';
 import { listStatusOf, usePortfolioResource } from '../../store/portfolio';
-import { useSessionStore } from '../../store/session';
 import { useTicksStore } from '../../store/ticks';
 
 type PositionTab = 'net' | 'day';
@@ -40,7 +39,6 @@ const columns: Column<PositionView>[] = [
 export function PositionsView() {
   const { resource, reload, refresh } = usePortfolioResource('positions');
   const latest = useTicksStore((s) => s.latest);
-  const sessionStartMs = useSessionStore((s) => s.session?.loggedInAtMs ?? 0);
   const [tab, setTab] = useState<PositionTab>('net');
   const [query, setQuery] = useState('');
 
@@ -48,12 +46,12 @@ export function PositionsView() {
     () =>
       resource.data[tab]
         .map((p) => {
-          const live = livePosition(p, liveLtp(latest[p.token], sessionStartMs));
+          const live = livePosition(p, liveLtp(latest[p.token]));
           return { ...live, netPct: positionNetChangePct(p, live.ltp) };
         })
         // Open rows first; the sort is stable, so Go's order is kept within each group.
         .sort((a, b) => Number(b.open) - Number(a.open)),
-    [resource.data, tab, latest, sessionStartMs],
+    [resource.data, tab, latest],
   );
   const visible = filterRows(rows, query, (r) => [r.row.symbol, r.row.exchange, r.row.product]);
   const total = positionsTotalPnl(tab === 'net' ? resource.data.netTotalPnlPaise : resource.data.dayTotalPnlPaise, rows);

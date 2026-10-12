@@ -3,7 +3,7 @@ import type { Backend } from './backend';
 let current: Backend | null = null;
 
 /** Registered once by <MarketDataBridge> (and directly by tests); the typed market helpers read it. */
-export function setBackend(b: Backend): void {
+export function setBackend(b: Backend | null): void {
   current = b;
 }
 
