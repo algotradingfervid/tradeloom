@@ -139,6 +139,46 @@ export const profileMenuCopy = {
   themeFailed: (reason: string) => `The theme could not be saved: ${reason}`,
 } as const;
 
+export const calendarCopy = {
+  title: 'Trading days and special sessions',
+  version: 'Calendar version',
+  coversUntil: 'Covers until',
+  stale: 'Calendar may be stale',
+  staleHint: 'It does not cover the next 30 days. Import an updated list or add the missing days.',
+  staleToast: (until: string) => `Calendar may be stale — it ends on ${until}. Import an updated list in Settings → Market calendar.`,
+  open: 'Open',
+  import: 'Import CSV…',
+  importHint: 'A CSV file of up to 1 MiB and 5,000 rows. Every row is checked first; if one is invalid, nothing is imported.',
+  imported: 'Calendar imported',
+  importFailed: (reason: string) => `Calendar import refused: ${reason}`,
+  add: 'Add entry',
+  addTitle: 'Add calendar entry',
+  editTitle: 'Edit calendar entry',
+  edit: 'Edit',
+  remove: 'Remove',
+  removeTitle: 'Remove calendar entry?',
+  removeMessage: (date: string) => `The entry for ${date} is removed. The bundled calendar applies to that day again.`,
+  save: 'Save',
+  empty: 'No holidays or special sessions are listed.',
+  cols: { date: 'Date', exchange: 'Exchange', type: 'Type', session: 'Session', source: 'Source' },
+  tableCaption: 'Calendar entries',
+  // One label per `CalendarEntryDTO.type` Go lists; the dialog offers all but the inferred type.
+  dayTypes: { holiday: 'Holiday', special: 'Special session', trading: 'Trading day', 'inferred-non-trading': 'Non-trading day (inferred)' },
+  // `CalendarEntryDTO.source` of an override: Settings dialog, CSV import or inference (Go lists overrides only).
+  sources: { user: 'Added by you', import: 'Imported', inferred: 'Inferred' } as Record<string, string>,
+  phases: { 'pre-open': 'Pre-open', continuous: 'Continuous trading', closing: 'Closing session', 'post-closing': 'Post-closing', closed: 'Closed' },
+  fields: { date: 'Date', exchange: 'Exchange', type: 'Type', target: 'Phase to edit', phase: 'Session phase', start: 'Start', end: 'End' },
+  phaseList: 'Phases of this day',
+  newPhase: 'New phase',
+  inferredHint: 'This day was marked closed because no market data arrived for it. Saving it makes it a holiday added by you.',
+  tradingTimesHint: 'Leave Start and End empty for the regular session times.',
+  dateRequired: 'Choose a date',
+  timesInvalid: 'Enter a start time before the end time',
+  continuousRequired: 'A session needs a continuous trading phase',
+  // Go's own wording (internal/service/calendar.go parseEntry).
+  duplicateKind: 'Each phase kind appears at most once.',
+} as const;
+
 // --- Settings (P0-4 Task 14)
 export const settingsViewCopy = {
   nav: 'Settings groups',
