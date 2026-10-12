@@ -48,7 +48,10 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	shutdown := func() { once.Do(func() { boot.Shutdown() }) }
 	defer shutdown()
 
-	a := app.New()
+	// Interim (P0-3 Task 22 → Task 23): the Service is wired by Task 23, which replaces this file. Until then
+	// the eleven API structs are bound only so `wails generate module` can emit their TypeScript; the
+	// lifecycle callbacks stay unwired and the frontend calls none of them yet.
+	a := app.New(app.Deps{Boot: boot})
 	opts := &options.App{
 		Title:       "Tradeloom",
 		Width:       1440,
@@ -56,9 +59,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		MinWidth:    1280, // FR-SHELL layouts are designed for 1280 px; P0-4 relies on this floor
 		MinHeight:   720,
 		AssetServer: &assetserver.Options{Assets: frontend.Assets()},
-		OnStartup:   a.OnStartup,
 		OnShutdown:  func(context.Context) { shutdown() },
-		Bind:        []interface{}{a},
+		Bind:        a.Bind(),
 	}
 	if *smoke {
 		opts.OnDomReady = func(ctx context.Context) { runtime.Quit(ctx) }

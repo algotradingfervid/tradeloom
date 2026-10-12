@@ -77,3 +77,13 @@ licence-in-container:
 	cd frontend && npm ci
 	$(MAKE) licenses notices
 	git diff --exit-code THIRD_PARTY_NOTICES.md internal/licences/THIRD_PARTY_NOTICES.md
+
+# wails.json lives in cmd/tradeloom (P0-1). The binding generator runs the cmd/tradeloom binary, whose
+# P0-1 boot opens a data directory before wails.Run, so it gets a throwaway one (never the user's).
+WAILS_PROJECT_DIR ?= cmd/tradeloom
+
+.PHONY: bindings
+bindings: ## Regenerate frontend/wailsjs (Go → TS) and frontend/src/api/events.gen.ts
+	cd $(WAILS_PROJECT_DIR) && tmp=$$(mktemp -d) && TRADELOOM_DATA_DIR=$$tmp wails generate module -tags "webkit2_41,noorders"; \
+	  status=$$?; rm -rf "$$tmp"; exit $$status
+	go generate -tags webkit2_41,noorders ./internal/app/

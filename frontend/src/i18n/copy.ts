@@ -30,3 +30,7 @@ export const componentCopy = {
   cancel: 'Cancel',
   typeToConfirm: (phrase: string) => `Type ${phrase} to confirm`,
 } as const;
+
+export const settingsCopy = {
+  restoreInProgress: 'A restore is in progress — settings changes are paused',
+} as const;
