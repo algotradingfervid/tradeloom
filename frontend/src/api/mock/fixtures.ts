@@ -118,20 +118,31 @@ export function kiteOrder(overrides: Partial<KiteOrder> = {}): KiteOrder {
 
 const NAV_TARGETS = ['Home', 'Scalper', 'Strategies', 'Equity Builder', 'Live Strategies', 'Scanners', 'New Scanner', 'Scanner Alerts'];
 
-// Mirrors the Go registry defaults (contract §E / A8); test data only — the app always reads Settings.Shortcuts().
+// Mirrors the Go registry exactly (internal/settings/shortcuts.go DefaultShortcuts: ids, labels, scopes, defaults and
+// order; scalper.* ship unbound). src/api/mock/shortcuts.test.ts compares it with the golden file that
+// internal/settings TestDefaultShortcuts_Golden keeps in sync with Go. Test data only — the app always reads
+// Settings.Shortcuts().
 export const shortcutFixture: ShortcutAction[] = [
   ...NAV_TARGETS.map((label, i): ShortcutAction => ({ id: `nav.${i + 1}`, label: `Go to ${label}`, scope: 'global', defaultBinding: `Alt+${i + 1}`, binding: `Alt+${i + 1}` })),
-  { id: 'toasts.focus', label: 'Focus newest notification', scope: 'global', defaultBinding: 'Alt+T', binding: 'Alt+T' },
-  { id: 'search.open', label: 'Search symbols', scope: 'global', defaultBinding: 'Ctrl+K', binding: 'Ctrl+K' },
+  { id: 'toasts.focus', label: 'Focus toasts', scope: 'global', defaultBinding: 'Alt+T', binding: 'Alt+T' },
+  { id: 'search.open', label: 'Open search', scope: 'global', defaultBinding: 'Ctrl+K', binding: 'Ctrl+K' },
   { id: 'help.open', label: 'Open help', scope: 'global', defaultBinding: 'F1', binding: 'F1' },
-  { id: 'kill.switch', label: 'Stop all trading', scope: 'global', defaultBinding: 'Ctrl+Shift+K', binding: 'Ctrl+Shift+K' },
+  { id: 'kill.switch', label: 'Kill switch', scope: 'global', defaultBinding: 'Ctrl+Shift+K', binding: 'Ctrl+Shift+K' },
   { id: 'chart.fullView', label: 'Full-view chart', scope: 'global', defaultBinding: 'F11', binding: 'F11' },
-  { id: 'chart.trendLine', label: 'Trend line tool', scope: 'chart', defaultBinding: 'Alt+T', binding: 'Alt+T' },
+  { id: 'chart.trendLine', label: 'Draw trend line', scope: 'chart', defaultBinding: 'Alt+T', binding: 'Alt+T' },
+  { id: 'chart.horizontalLine', label: 'Draw horizontal line', scope: 'chart', defaultBinding: 'Alt+H', binding: 'Alt+H' },
+  { id: 'chart.horizontalRay', label: 'Draw horizontal ray', scope: 'chart', defaultBinding: 'Alt+J', binding: 'Alt+J' },
+  { id: 'chart.verticalLine', label: 'Draw vertical line', scope: 'chart', defaultBinding: 'Alt+V', binding: 'Alt+V' },
+  { id: 'chart.crossLine', label: 'Draw cross line', scope: 'chart', defaultBinding: 'Alt+C', binding: 'Alt+C' },
   { id: 'order.new', label: 'New order', scope: 'chart', defaultBinding: 'Shift+T', binding: 'Shift+T' },
+  { id: 'scalper.buy', label: 'Scalper: buy', scope: 'view', defaultBinding: '', binding: '' },
+  { id: 'scalper.sell', label: 'Scalper: sell', scope: 'view', defaultBinding: '', binding: '' },
+  { id: 'scalper.exitAll', label: 'Scalper: exit all', scope: 'view', defaultBinding: '', binding: '' },
+  { id: 'scalper.cancelAll', label: 'Scalper: cancel all', scope: 'view', defaultBinding: '', binding: '' },
   { id: 'builder.undo', label: 'Undo', scope: 'builder', defaultBinding: 'Ctrl+Z', binding: 'Ctrl+Z' },
   { id: 'builder.redo', label: 'Redo', scope: 'builder', defaultBinding: 'Ctrl+Shift+Z', binding: 'Ctrl+Shift+Z' },
-  { id: 'watchlist.moveUp', label: 'Move watchlist row up', scope: 'view', defaultBinding: 'Alt+ArrowUp', binding: 'Alt+ArrowUp' },
-  { id: 'watchlist.moveDown', label: 'Move watchlist row down', scope: 'view', defaultBinding: 'Alt+ArrowDown', binding: 'Alt+ArrowDown' },
+  { id: 'watchlist.moveUp', label: 'Move item up', scope: 'view', defaultBinding: 'Alt+ArrowUp', binding: 'Alt+ArrowUp' },
+  { id: 'watchlist.moveDown', label: 'Move item down', scope: 'view', defaultBinding: 'Alt+ArrowDown', binding: 'Alt+ArrowDown' },
 ];
 
 const statusFixture: StatusSnapshot = {

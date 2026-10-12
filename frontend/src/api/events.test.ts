@@ -3,9 +3,10 @@ import { useAppStore } from '../store/app';
 import { useSessionStore } from '../store/session';
 import { useSettingsStore } from '../store/settings';
 import { useStatusStore } from '../store/status';
+import { registerReset } from '../store/reset';
 import { useTicksStore } from '../store/ticks';
 import { bootstrap, startEventBridge } from './events';
-import { demoSeed, FIXED_NOW, readySession, tickFixture } from './mock/fixtures';
+import { demoSeed, FIXED_NOW, freshSeed, readySession, tickFixture } from './mock/fixtures';
 import { createMockBackend } from './mock/index';
 
 describe('event bridge', () => {
@@ -40,5 +41,91 @@ describe('event bridge', () => {
     expect(useStatusStore.getState().feed.state).toBe('live');
     expect(useSettingsStore.getState()).toMatchObject({ loaded: true, values: { 'appearance.theme': 'dark' } });
     expect(useAppStore.getState().info?.version).toBe('0.1.0');
+  });
+});
+
+describe('bootstrap vs events (Ruling 83-F I1)', () => {
+  it('a feed.state live emitted before system.status() resolves stays live', async () => {
+    const backend = createMockBackend(freshSeed()); // System.Status reports the feed stopped
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    const done = bootstrap(backend);
+    backend.emit('feed.state', { state: 'live', attempt: 0, nextRetryMs: 0, lastTickMs: FIXED_NOW, connections: 1, tokens: 3 });
+    await done;
+    expect(useStatusStore.getState().feed.state).toBe('live');
+    expect(useStatusStore.getState().market?.label).toBe('Open'); // slices without an event still load
+    stop();
+  });
+  it('a session.state emitted during bootstrap wins over the older Status() result', async () => {
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    const done = bootstrap(backend);
+    backend.emit('session.state', readySession({ state: 'expired' }));
+    await done;
+    expect(useSessionStore.getState().session?.state).toBe('expired');
+    stop();
+  });
+  it('settings hydrate merges: keys changed since subscribing keep their newer value', async () => {
+    const seed = demoSeed();
+    seed.settings = { 'appearance.theme': '"light"', 'appearance.sidebar_collapsed': 'true' };
+    const backend = createMockBackend(seed);
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    const done = bootstrap(backend);
+    backend.emit('settings.changed', { key: 'appearance.theme', value: 'dark' });
+    await done;
+    expect(useSettingsStore.getState()).toMatchObject({
+      loaded: true, values: { 'appearance.theme': 'dark', 'appearance.sidebar_collapsed': true },
+    });
+    stop();
+  });
+});
+
+describe('bootstrap failures and cancellation (Ruling 83-F I2, M6)', () => {
+  it('records the failed slices, leaves settings unloaded and still applies the rest', async () => {
+    const backend = createMockBackend(demoSeed());
+    backend.failNext('settings.all', 'database is locked');
+    const result = await bootstrap(backend);
+    expect(result.failed).toEqual(['settings']);
+    expect(useSettingsStore.getState().loaded).toBe(false);
+    expect(useAppStore.getState().bootError).toEqual({ failed: ['settings'], reason: 'database is locked' });
+    expect(useSessionStore.getState().session?.state).toBe('ready');
+    await bootstrap(backend);
+    expect(useAppStore.getState().bootError).toBeNull();
+    expect(useSettingsStore.getState().loaded).toBe(true);
+  });
+  it('an aborted bootstrap applies nothing', async () => {
+    const backend = createMockBackend(demoSeed());
+    const ctl = new AbortController();
+    const done = bootstrap(backend, { signal: ctl.signal });
+    ctl.abort();
+    await done;
+    expect(useSessionStore.getState().session).toBeNull();
+    expect(useSettingsStore.getState().loaded).toBe(false);
+    expect(useAppStore.getState().info).toBeNull();
+    expect(useAppStore.getState().bootError).toBeNull();
+  });
+});
+
+describe('account data is cleared on sign-out (Ruling 83-F M5)', () => {
+  it('runs account resets once on the transition to logged_out or no_credentials, never ticks', () => {
+    const accountReset = vi.fn();
+    registerReset(accountReset);
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    backend.emit('tick.batch', [tickFixture(1, 10, 9)]);
+    backend.emit('session.state', readySession());
+    backend.emit('settings.changed', { key: 'appearance.theme', value: 'dark' });
+    expect(accountReset).not.toHaveBeenCalled();
+    backend.emit('session.state', readySession({ state: 'logged_out' }));
+    expect(accountReset).toHaveBeenCalledTimes(1);
+    backend.emit('session.state', readySession({ state: 'logged_out' }));
+    backend.emit('session.state', readySession({ state: 'no_credentials' }));
+    expect(accountReset).toHaveBeenCalledTimes(1);
+    backend.emit('session.state', readySession());
+    backend.emit('session.state', readySession({ state: 'no_credentials' }));
+    expect(accountReset).toHaveBeenCalledTimes(2);
+    expect(useTicksStore.getState().latest[1].ltp).toBe(10);
+    expect(useSettingsStore.getState().values).toEqual({ 'appearance.theme': 'dark' });
+    expect(useSessionStore.getState().session?.state).toBe('no_credentials');
+    stop();
   });
 });

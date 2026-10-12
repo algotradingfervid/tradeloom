@@ -23,4 +23,4 @@ export function useLtp(token: number | undefined): number | undefined {
   return useTicksStore((s) => (token === undefined ? undefined : s.latest[token]?.ltp));
 }
 
-registerReset(() => useTicksStore.setState({ latest: {} }));
+registerReset(() => useTicksStore.setState({ latest: {} }), { onLogout: false });

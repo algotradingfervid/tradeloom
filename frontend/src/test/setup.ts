@@ -4,10 +4,11 @@ import { cleanup } from '@testing-library/react';
 import { resetAllStores } from '../store/reset';
 import { installMatchMedia, resetMatchMedia } from './matchMedia';
 
-installMatchMedia();
+// Guarded for `// @vitest-environment node` files (prodBuild.test.ts), which have no window.
+if (typeof window !== 'undefined') installMatchMedia();
 
 afterEach(() => {
   cleanup();
   resetAllStores();
-  resetMatchMedia();
+  if (typeof window !== 'undefined') resetMatchMedia();
 });

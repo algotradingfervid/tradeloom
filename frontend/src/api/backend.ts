@@ -165,12 +165,15 @@ export interface EventMap {
 }
 export type EventName = keyof EventMap;
 
-// Compile-time guard: every EventMap entry is a generated event; its payload type either satisfies the generated one
-// (narrowed mirror) or is a subset of it (`order.update` types only the KiteOrder fields the UI reads).
+// Compile-time guard: every EventMap entry is a generated event whose payload our type satisfies (narrowed mirror).
+// Only `order.update` may instead be a subset of the generated payload (KiteOrder types the fields the UI reads).
 type Assert<T extends true> = T;
-type Compatible<Ours, Gen> = [Ours] extends [Gen] ? true : [Gen] extends [Ours] ? true : false;
+type SubsetEvents = 'order.update';
+type Compatible<K extends EventName, Ours, Gen> = [Ours] extends [Gen]
+  ? true
+  : K extends SubsetEvents ? ([Gen] extends [Ours] ? true : false) : false;
 export type EventMapMatchesGenerated = Assert<
-  { [K in EventName]: K extends G.EventName ? Compatible<EventMap[K], G.EventPayloads[K]> : false }[EventName]
+  { [K in EventName]: K extends G.EventName ? Compatible<K, EventMap[K], G.EventPayloads[K]> : false }[EventName]
 >;
 
 export interface Backend {

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { BackendProvider } from '../api/BackendContext';
 import { demoSeed } from '../api/mock/fixtures';
 import { createMockBackend } from '../api/mock/index';
-import { suspendSettingsWrites, useSetting } from './settings';
+import { suspendSettingsWrites, useSetting, useSettingsStore, writeSetting } from './settings';
 
 function Harness() {
   const [keep, setKeep] = useSetting<number>('backup.schedule.keep', 7);
@@ -46,5 +46,22 @@ describe('useSetting', () => {
     await user.click(screen.getByText('good'));
     expect(await screen.findByText('A restore is in progress — settings changes are paused')).toBeInTheDocument();
     expect(backend.callsTo('settings.set')).toHaveLength(0);
+  });
+});
+
+describe('writeSetting rollback guard (Ruling 83-F M4)', () => {
+  it('does not roll back over a newer value that arrived while the refused write was in flight', async () => {
+    const backend = createMockBackend(demoSeed());
+    useSettingsStore.getState().hydrate([{ name: 'backup.schedule.keep', valueJson: '7' }]);
+    const pending = writeSetting(backend, 'backup.schedule.keep', 0);
+    useSettingsStore.getState().put('backup.schedule.keep', 14); // settings.changed from another writer
+    expect(await pending).toMatchObject({ code: 'invalid' });
+    expect(useSettingsStore.getState().values['backup.schedule.keep']).toBe(14);
+  });
+  it('still rolls back when nothing else changed the key', async () => {
+    const backend = createMockBackend(demoSeed());
+    useSettingsStore.getState().hydrate([{ name: 'backup.schedule.keep', valueJson: '7' }]);
+    await writeSetting(backend, 'backup.schedule.keep', 0);
+    expect(useSettingsStore.getState().values['backup.schedule.keep']).toBe(7);
   });
 });

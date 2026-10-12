@@ -11,6 +11,7 @@ interface SettingsStore {
   values: Record<string, unknown>;
   loaded: boolean;
   writesSuspended: boolean;
+  /** Loads `Settings.All`, keeping keys put or removed since `markSettingsBaseline()` (they are newer). */
   hydrate(all: SettingValue[]): void;
   put(key: string, value: unknown): void;
   remove(key: string): void;
@@ -27,12 +28,32 @@ function parse(raw: string): unknown {
 
 const initial = { values: {} as Record<string, unknown>, loaded: false, writesSuspended: false };
 
+// Keys changed (event or local write) since the last baseline: a hydrate that started earlier must not undo them.
+let touched = new Set<string>();
+
+/** Start of a `Settings.All` fetch: changes from here on win over the fetched values (Ruling 83-F I1). */
+export function markSettingsBaseline(): void {
+  touched = new Set();
+}
+
 export const useSettingsStore = create<SettingsStore>()((set) => ({
   ...initial,
-  hydrate: (all) => set({ values: Object.fromEntries(all.map((v) => [v.name, parse(v.valueJson)])), loaded: true }),
-  put: (key, value) => set((st) => ({ values: { ...st.values, [key]: value } })),
+  hydrate: (all) =>
+    set((st) => {
+      const values: Record<string, unknown> = Object.fromEntries(all.map((v) => [v.name, parse(v.valueJson)]));
+      for (const key of touched) {
+        if (key in st.values) values[key] = st.values[key];
+        else delete values[key];
+      }
+      return { values, loaded: true };
+    }),
+  put: (key, value) => {
+    touched.add(key);
+    set((st) => ({ values: { ...st.values, [key]: value } }));
+  },
   remove: (key) =>
     set((st) => {
+      touched.add(key);
       const values = { ...st.values };
       delete values[key];
       return { values };
@@ -40,9 +61,18 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
   setSuspended: (writesSuspended) => set({ writesSuspended }),
 }));
 
-registerReset(() => useSettingsStore.setState(initial));
+registerReset(
+  () => {
+    touched = new Set();
+    useSettingsStore.setState(initial);
+  },
+  { onLogout: false },
+);
 
-/** Optimistic write; on refusal the previous value is restored and the reason returned (inline error). */
+/**
+ * Optimistic write; on refusal the previous value is restored and the reason returned (inline error). The rollback
+ * happens only while the key still holds this write's value, so a newer value (event or later write) survives (M4).
+ */
 export async function writeSetting(backend: Backend, key: string, value: unknown): Promise<BackendError | null> {
   const st = useSettingsStore.getState();
   if (st.writesSuspended) return { code: 'suspended', stage: 'settings', reason: settingsCopy.restoreInProgress };
@@ -54,13 +84,16 @@ export async function writeSetting(backend: Backend, key: string, value: unknown
     return null;
   } catch (e) {
     const now = useSettingsStore.getState();
-    if (had) now.put(key, previous);
-    else now.remove(key);
+    if (key in now.values && Object.is(now.values[key], value)) {
+      if (had) now.put(key, previous);
+      else now.remove(key);
+    }
     return parseBackendError(e);
   }
 }
 
 export async function reloadSettings(backend: Backend): Promise<void> {
+  markSettingsBaseline();
   useSettingsStore.getState().hydrate(await backend.settings.all());
 }
 

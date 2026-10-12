@@ -34,4 +34,4 @@ export const useStatusStore = create<StatusStore>()((set) => ({
   setSnapshot: (s) => set({ feed: s.feed, market: s.market, clock: s.clock }),
 }));
 
-registerReset(() => useStatusStore.setState(initial));
+registerReset(() => useStatusStore.setState(initial), { onLogout: false });

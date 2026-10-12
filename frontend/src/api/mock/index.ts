@@ -250,7 +250,8 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
       rebind: (actionId: string, binding: string) => {
         const target = state.shortcuts.find((a) => a.id === actionId);
         if (!target) throw refusal('invalid', 'shortcuts', `Unknown action ${actionId}`);
-        const clash = state.shortcuts.find((a) => a.id !== actionId && a.binding === binding && overlaps(a.scope, target.scope));
+        // As in Go: an empty binding (unbound action) never conflicts.
+        const clash = binding === '' ? undefined : state.shortcuts.find((a) => a.id !== actionId && a.binding === binding && overlaps(a.scope, target.scope));
         if (clash) throw refusal('conflict', 'shortcuts', clash.label);
         target.binding = binding;
         return copy(target);
