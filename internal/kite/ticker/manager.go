@@ -68,7 +68,7 @@ type Manager struct {
 	owners  map[ownerKey]map[uint32]Mode
 	assign  map[uint32]int
 	slots   []*slot
-	retry   chan struct{}
+	retry   chan struct{} // closed and replaced by Reconnect: wakes every Offline connection at once
 
 	tickMu   sync.Mutex
 	latest   map[uint32]Tick
@@ -108,7 +108,7 @@ func New(o Options) *Manager {
 		o.Log = slog.Default()
 	}
 	m := &Manager{o: o, owners: map[ownerKey]map[uint32]Mode{}, assign: map[uint32]int{},
-		retry: make(chan struct{}, 1), latest: map[uint32]Tick{}, raws: map[int]chan Tick{}}
+		retry: make(chan struct{}), latest: map[uint32]Tick{}, raws: map[int]chan Tick{}}
 	for i := 0; i < o.MaxConns; i++ {
 		m.slots = append(m.slots, &slot{idx: i, state: "stopped", tokens: map[uint32]Mode{}})
 	}
@@ -149,17 +149,21 @@ func (m *Manager) Stop() {
 }
 
 // Reconnect restarts connections that went Offline (user "Retry now").
+// It wakes every Offline connection; a call while none is Offline has no later effect.
 func (m *Manager) Reconnect() {
-	select {
-	case m.retry <- struct{}{}:
-	default:
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	close(m.retry)
+	m.retry = make(chan struct{})
 }
 
 // Subscribe adds tokens for (c, owner) at mode. It is all-or-nothing: if the union of all
 // subscriptions would exceed MaxConns × PerConn tokens it returns *ErrBudget and changes nothing.
 // No subscription is ever evicted to make room.
 func (m *Manager) Subscribe(c Consumer, owner string, tokens []uint32, mode Mode) error {
+	if mode < ModeLTP || mode > ModeFull {
+		return fmt.Errorf("ticker: invalid subscription mode %d", mode)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := ownerKey{c, owner}
@@ -331,6 +335,12 @@ func (m *Manager) startSlot(s *slot) {
 
 func (m *Manager) run(ctx context.Context, s *slot) {
 	for ctx.Err() == nil {
+		m.mu.Lock()
+		stopped := m.stopped
+		m.mu.Unlock()
+		if stopped {
+			return
+		}
 		var c Conn
 		c = m.o.Dial(Events{
 			OnConnect:     func() { m.onConnect(s, c) },
@@ -339,6 +349,11 @@ func (m *Manager) run(ctx context.Context, s *slot) {
 			OnError:       func(err error) { m.o.Log.Info("ticker error", "conn", s.idx, "err", err) },
 		})
 		m.mu.Lock()
+		if m.stopped { // Stop ran while this goroutine waited or dialled: never serve after Stop
+			m.mu.Unlock()
+			c.Stop()
+			return
+		}
 		s.conn = c
 		m.mu.Unlock()
 		c.Serve(ctx)
@@ -356,13 +371,14 @@ func (m *Manager) run(ctx context.Context, s *slot) {
 		att := s.attempt
 		if att > m.o.MaxAttempts {
 			s.state = "offline"
+			retry := m.retry
 			m.publishFeedLocked()
 			m.mu.Unlock()
 			m.o.Log.Warn("ticker offline", "conn", s.idx, "attempts", att-1)
 			select {
 			case <-ctx.Done():
 				return
-			case <-m.retry:
+			case <-retry:
 				m.mu.Lock()
 				s.attempt = 0
 				s.state = "connecting"
@@ -390,6 +406,9 @@ func (m *Manager) run(ctx context.Context, s *slot) {
 func (m *Manager) onConnect(s *slot, c Conn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.stopped {
+		return
+	}
 	s.live, s.state, s.connectedAt = true, "live", m.o.Clock.Now()
 	all := make([]uint32, 0, len(s.tokens))
 	modes := map[Mode][]uint32{}
@@ -457,8 +476,11 @@ func (m *Manager) Raw(buffer int) (<-chan Tick, func()) {
 	m.tickMu.Unlock()
 	return ch, func() {
 		m.tickMu.Lock()
-		delete(m.raws, id)
-		m.tickMu.Unlock()
+		defer m.tickMu.Unlock()
+		if _, ok := m.raws[id]; ok { // sends happen under tickMu, so closing here is safe
+			delete(m.raws, id)
+			close(ch)
+		}
 	}
 }
 

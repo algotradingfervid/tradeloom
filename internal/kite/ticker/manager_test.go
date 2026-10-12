@@ -349,3 +349,105 @@ func TestOrderUpdatesPublished(t *testing.T) {
 		t.Fatalf("order %+v", o)
 	}
 }
+
+func TestStopDuringReconnectWaitDoesNotRedial(t *testing.T) {
+	r := newRig(t, Options{})
+	r.d.get(0).Stop()
+	if !r.clk.WaitTimers(2, 2*time.Second) { // flush loop + reconnect delay
+		t.Fatal("no reconnect timer")
+	}
+	r.m.Stop()
+	r.clk.Advance(time.Hour)
+	time.Sleep(20 * time.Millisecond)
+	if n := r.d.n(); n != 1 {
+		t.Fatalf("stopped manager dialled again: %d dials", n)
+	}
+}
+
+func TestReconnectWhileLiveDoesNotArmALaterRetry(t *testing.T) {
+	r := newRig(t, Options{MaxAttempts: 1})
+	feed := bus.Subscribe(r.bus, TopicFeed, bus.SubOpts[FeedState]{Buffer: 64})
+	eventually(t, "connect", func() bool { return r.m.Usage().Connections == 1 })
+	r.m.Reconnect() // user clicks "Retry now" while the feed is fine
+	r.d.mu.Lock()
+	r.d.failNext = 10
+	r.d.mu.Unlock()
+	r.d.get(0).Stop()
+	var fs FeedState
+	eventually(t, "reconnecting", func() bool {
+		for _, v := range drain(feed) {
+			fs = v
+		}
+		return fs.State == "reconnecting"
+	})
+	r.clk.Advance(fs.NextRetry.Sub(r.clk.Now()))
+	eventually(t, "offline", func() bool {
+		for _, v := range drain(feed) {
+			if v.State == "offline" {
+				return true
+			}
+		}
+		return false
+	})
+	time.Sleep(20 * time.Millisecond)
+	if n := r.d.n(); n != 2 { // the first connection + one back-off retry
+		t.Fatalf("offline connection redialled without a retry: %d dials, want 2", n)
+	}
+}
+
+func TestReconnectWakesEveryOfflineConnection(t *testing.T) {
+	r := newRig(t, Options{PerConn: 1, MaxConns: 2, MaxAttempts: 1})
+	feed := bus.Subscribe(r.bus, TopicFeed, bus.SubOpts[FeedState]{Buffer: 64})
+	_ = r.m.Subscribe(ConsumerWatchlist, "w", []uint32{1, 2}, ModeQuote)
+	eventually(t, "both live", func() bool {
+		var fs FeedState
+		for _, v := range drain(feed) {
+			fs = v
+		}
+		return r.d.n() == 2 && fs.State == "live" && fs.Connections == 2
+	})
+	r.d.mu.Lock()
+	r.d.failNext = 10
+	r.d.mu.Unlock()
+	r.d.get(0).Stop()
+	r.d.get(1).Stop()
+	if !r.clk.WaitTimers(3, 2*time.Second) { // flush loop + two reconnect delays
+		t.Fatal("no reconnect timers")
+	}
+	r.clk.Advance(time.Minute)
+	eventually(t, "both offline", func() bool { return r.d.n() == 4 && r.clk.PendingTimers() == 1 })
+	time.Sleep(20 * time.Millisecond)
+	r.d.mu.Lock()
+	r.d.failNext = 0
+	r.d.mu.Unlock()
+	r.m.Reconnect()
+	eventually(t, "both redialled", func() bool { return r.d.n() == 6 })
+}
+
+func TestSubscribeRejectsInvalidMode(t *testing.T) {
+	r := newRig(t, Options{})
+	for _, md := range []Mode{0, 4} {
+		if err := r.m.Subscribe(ConsumerChart, "c", []uint32{1}, md); err == nil {
+			t.Fatalf("mode %d accepted", md)
+		}
+	}
+	if u := r.m.Usage(); u.Used != 0 {
+		t.Fatalf("usage after refused modes %+v", u)
+	}
+}
+
+func TestRawCancelClosesStream(t *testing.T) {
+	r := newRig(t, Options{})
+	raw, cancel := r.m.Raw(4)
+	cancel()
+	cancel() // idempotent
+	select {
+	case _, ok := <-raw:
+		if ok {
+			t.Fatal("raw stream delivered after cancel")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("raw stream not closed by cancel")
+	}
+	r.d.get(0).ev.OnTick(models.Tick{InstrumentToken: 1, LastPrice: 1}) // no send on closed channel
+}
