@@ -128,6 +128,14 @@ type Service struct {
 
 	chartMu    sync.Mutex
 	liveCharts map[string]liveChart // subscription id → (token, interval)
+
+	// Task 21 (events): initialised lazily in events.go so New is untouched.
+	quoteMu    sync.Mutex
+	lastQuote  map[uint32]TickDTO // last quote per token (tick.batch, live or polled); Task 29 persists it
+	quoteDirty bool
+
+	feedMu   sync.Mutex
+	lastFeed ticker.FeedState // last feed.state (System.Status); zero State reads as "stopped"
 }
 
 // New panics when a dependency the core cannot run without is missing (a wiring bug, caught at start-up).
