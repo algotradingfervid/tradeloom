@@ -51,9 +51,11 @@ const libmExpSubnormalStart = -708.0
 // assembly whose subnormal path returns 0 for x in about [-745.133, -745.0],
 // where libm (and the true value, rounded) gives math.SmallestNonzeroFloat64.
 // For subnormal results use libmExpFdlibm, the portable fdlibm algorithm (Go's
-// own pure-Go math.exp), which gradually underflows like libm.
+// own pure-Go math.exp), which gradually underflows like libm. Above
+// libmOverflowStart it is used too: amd64's assembly math.Exp returns +Inf from
+// about x = 709.5, below the real overflow threshold (~709.78).
 func libmExp(x float64) float64 {
-	if x < libmExpSubnormalStart {
+	if x < libmExpSubnormalStart || x > libmOverflowStart {
 		return libmExpFdlibm(x)
 	}
 	return math.Exp(x)
