@@ -17,6 +17,7 @@ import (
 	"tradeloom/internal/kite/ratelimit"
 	"tradeloom/internal/kite/ticker"
 	"tradeloom/internal/orders"
+	"tradeloom/internal/settings"
 )
 
 type emitted struct {
@@ -434,6 +435,35 @@ func TestMarketClock_ExitsOnCancel(t *testing.T) {
 	select {
 	case v := <-sub.C():
 		t.Fatalf("published after cancel: %+v", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// Final review I1: settings.changed mirrors Settings.All — the credential keys (kite.*) and secret-like
+// names never reach the UI, while a normal key still does. settings.Set publishes every key on the bus;
+// the filter sits in the forwarder.
+func TestForwardNow_SettingsChangedHidesCredentialKeys(t *testing.T) {
+	e := newSvcEnv(t)
+	ch := startEvents(t, e)
+	ctx := context.Background()
+	if err := settings.Set(ctx, e.svc.d.Settings, kite.SettingAPIKey, "plantedApiKey0123"); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(ctx, e.svc.d.Settings, kite.SettingRedirectPort, 7421); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.SetSetting(ctx, "appearance.theme", `"dark"`); err != nil {
+		t.Fatal(err)
+	}
+	// One subscription delivers in order: the first settings.changed seen must be the normal key.
+	if ev := nextEvent(t, ch, EvSettingsChanged).payload.(settings.Changed); ev.Key != "appearance.theme" || string(ev.Value) != `"dark"` {
+		t.Fatalf("credential key reached the UI: %+v", ev)
+	}
+	select {
+	case ev := <-ch:
+		if ev.name == EvSettingsChanged {
+			t.Fatalf("unexpected %+v", ev)
+		}
 	case <-time.After(50 * time.Millisecond):
 	}
 }

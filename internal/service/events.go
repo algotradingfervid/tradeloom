@@ -220,7 +220,7 @@ func (s *Service) EventSources() []EventSource {
 		forwardLatest(s, orders.TopicHoldings, func(v orders.HoldingsSnapshot) any { return v }),
 		forwardOrderUpdates(s),
 		forwardNow(s, TopicWatchlists, func(v WatchlistsState) any { return v }),
-		forwardNow(s, settings.Topic, func(v settings.Changed) any { return v }),
+		forwardSettingsChanged(s),
 		marketStatusSource(s),
 		forwardNow(s, TopicJobProgress, func(v JobProgress) any { return v }),
 		forwardNow(s, TopicNavigate, func(v Navigate) any { return v }),
@@ -233,6 +233,22 @@ func timerC(t clock.Timer) <-chan time.Time {
 		return nil
 	}
 	return t.C()
+}
+
+// skipEmit is what a flush returns when its value must not reach the UI (settings.changed for a hidden key).
+// The core drops such a result instead of emitting it.
+type skipEmit struct{}
+
+// forwardSettingsChanged mirrors settings.changed to the UI with the same filter as Settings.All: settings.Set
+// publishes every key on the bus, but the credential keys (kite.*) and secret-like names never reach the
+// frontend settings store (final review I1).
+func forwardSettingsChanged(s *Service) EventSource {
+	return forwardNow(s, settings.Topic, func(v settings.Changed) any {
+		if hiddenKey(v.Key) {
+			return skipEmit{}
+		}
+		return v
+	})
 }
 
 // forward is the coalescing core: immediate topics emit every value; others accumulate for CoalesceWindow.
@@ -257,6 +273,11 @@ func forwardWatch[T any, A any](s *Service, t bus.Topic[T], immediate bool, empt
 					fire.Stop()
 				}
 			}()
+			send := func(p any) {
+				if _, skip := p.(skipEmit); !skip {
+					emit(name, p)
+				}
+			}
 			for {
 				select {
 				case <-ctx.Done():
@@ -269,7 +290,7 @@ func forwardWatch[T any, A any](s *Service, t bus.Topic[T], immediate bool, empt
 						onRecv(ctx, sub)
 					}
 					if immediate {
-						emit(name, flush(add(empty(), v)))
+						send(flush(add(empty(), v)))
 						continue
 					}
 					acc, has = add(acc, v), true
@@ -279,7 +300,7 @@ func forwardWatch[T any, A any](s *Service, t bus.Topic[T], immediate bool, empt
 				case <-timerC(fire):
 					fire = nil
 					if has {
-						emit(name, flush(acc))
+						send(flush(acc))
 						acc, has = empty(), false
 					}
 				}
