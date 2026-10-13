@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { createMemoryRouter, Outlet, RouterProvider } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { useTrackHistoryDepth } from '../store/nav';
@@ -130,5 +130,43 @@ describe('ListPage / ListBody — Ruling 84 fix round 1', () => {
     expect(region).toHaveTextContent('No matches for “zzz”');
     await user.clear(screen.getByRole('searchbox', { name: 'Search holdings' }));
     expect(region).toBeEmptyDOMElement();
+  });
+});
+
+describe('ListPage body: keyboard access to a scrolling body (Task 19 axe scrollable-region-focusable, WCAG 2.1.1)', () => {
+  function layout(scrollHeight: number, clientHeight: number) {
+    const sh = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(scrollHeight);
+    const ch = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(clientHeight);
+    return () => { sh.mockRestore(); ch.mockRestore(); };
+  }
+  const page = (children: ReactNode) => (
+    <RouterProvider router={createMemoryRouter([{ path: '/', element: <ListPage title="Terms of use" description="d">{children}</ListPage> }])} />
+  );
+
+  it('a scrolling body with only text becomes a named, focusable region', () => {
+    const restore = layout(3000, 500);
+    try {
+      render(page(<p>Long text</p>));
+      const region = screen.getByRole('region', { name: 'Terms of use' });
+      expect(region).toHaveClass('list-page__body');
+      expect(region).toHaveAttribute('tabindex', '0');
+    } finally { restore(); }
+  });
+
+  it('a body that does not scroll adds no tab stop', () => {
+    const restore = layout(400, 500);
+    try {
+      const { container } = render(page(<p>Short text</p>));
+      expect(container.querySelector('.list-page__body')).not.toHaveAttribute('tabindex');
+      expect(screen.queryByRole('region')).toBeNull();
+    } finally { restore(); }
+  });
+
+  it('a scrolling body that holds a tabbable control adds no extra tab stop (Tab reaches the content)', () => {
+    const restore = layout(3000, 500);
+    try {
+      const { container } = render(page(<a href="#x">Link</a>));
+      expect(container.querySelector('.list-page__body')).not.toHaveAttribute('tabindex');
+    } finally { restore(); }
   });
 });

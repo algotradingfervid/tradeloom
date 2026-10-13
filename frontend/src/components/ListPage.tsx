@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { listCopy } from '../i18n/copy';
 import { useNavStore } from '../store/nav';
@@ -17,8 +17,38 @@ export interface ListPageProps {
   children: ReactNode;
 }
 
+const TABBABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * WCAG 2.1.1 (axe scrollable-region-focusable): a body that scrolls but holds nothing tabbable (legal text, a long
+ * help article) cannot be scrolled from the keyboard, so it becomes a focusable region. A body with tabbable content
+ * gets no extra tab stop: tabbing into the content scrolls it.
+ */
+function useNeedsScrollFocus(ref: RefObject<HTMLElement | null>): boolean {
+  const [needs, setNeeds] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => {
+      const scrolls = el.scrollHeight > el.clientHeight;
+      const hasTabbable = [...el.querySelectorAll(TABBABLE)].some((c) => c !== el);
+      setNeeds(scrolls && !hasTabbable);
+    };
+    update();
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    resize?.observe(el);
+    const mutations = new MutationObserver(update);
+    mutations.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => { resize?.disconnect(); mutations.disconnect(); };
+  }, [ref]);
+  return needs;
+}
+
 export function ListPage({ title, description, onRefresh, refreshing, search, tabs, children }: ListPageProps) {
   const navigate = useNavigate();
+  const titleId = useId();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const scrollFocus = useNeedsScrollFocus(bodyRef);
   const goBack = () => {
     if (useNavStore.getState().depth > 1) void navigate(-1);
     else void navigate('/home');
@@ -28,7 +58,7 @@ export function ListPage({ title, description, onRefresh, refreshing, search, ta
       <header className="list-page__header">
         <IconButton label={listCopy.back} icon="back" onClick={goBack} />
         <div className="list-page__titles">
-          <h1>{title}</h1>
+          <h1 id={titleId}>{title}</h1>
           <p className="muted">{description}</p>
         </div>
         <div className="list-page__tools">
@@ -62,7 +92,13 @@ export function ListPage({ title, description, onRefresh, refreshing, search, ta
           {search.matches === 0 && search.value.trim() !== '' ? listCopy.noMatches(search.value.trim()) : null}
         </p>
       )}
-      <div className="list-page__body">{children}</div>
+      <div
+        ref={bodyRef}
+        className="list-page__body"
+        {...(scrollFocus ? { tabIndex: 0, role: 'region', 'aria-labelledby': titleId } : {})}
+      >
+        {children}
+      </div>
     </div>
   );
 }

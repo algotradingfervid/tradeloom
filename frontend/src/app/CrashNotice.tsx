@@ -22,7 +22,8 @@ export function CrashNotice() {
   }, [backend]);
   if (!crash || !crash.path) return null;
   return (
-    <div className="banner banner--error" role="status">
+    // No live role: ShellBanners mounts it inside an always-mounted polite region (Ruling 86 M5).
+    <div className="banner banner--error">
       <Icon name="error" />
       <span>{crashCopy.message(formatDateTimeLong(crash.atMs))}</span>
       <Button onClick={() => void backend.diagnostics.openCrashReport().catch(fail)}>{crashCopy.view}</Button>

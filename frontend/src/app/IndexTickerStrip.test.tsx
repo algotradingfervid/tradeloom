@@ -30,8 +30,18 @@ const notFound = (id: string) => new BindingError('not_found', `No instrument ${
 const showOnDashboard = vi.fn();
 const setWidth = (w: number) => { Object.defineProperty(window, 'innerWidth', { configurable: true, value: w }); window.dispatchEvent(new Event('resize')); };
 const pill = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}`) });
+/**
+ * Task 19 flake fix: waitFor can see the DOM of a commit made outside act() (an identifier lookup resolving) before
+ * that commit's passive effects ran. zustand's useSyncExternalStore updates its snapshot getter (the pill's new
+ * token) in such an effect, so a tick applied in that window was checked against the old getter and the pill stayed
+ * "—" (1 in ~40 runs under load). An empty async act() flushes the pending effects before the test goes on.
+ */
+const settle = () => act(async () => {});
 // The symbol fallback shows before the identifiers resolve, so wait for the resolved names (data-instrument-name).
-const resolved = () => waitFor(() => expect(document.querySelectorAll('[data-instrument-name]')).toHaveLength(3));
+const resolved = async () => {
+  await waitFor(() => expect(document.querySelectorAll('[data-instrument-name]')).toHaveLength(3));
+  await settle();
+};
 const fresh = { tsMs: FIXED_NOW }; // stamped in this run, so not stale (Ruling 93)
 
 beforeEach(() => { useTicksStore.setState({ latest: {} }); vi.clearAllMocks(); vi.mocked(instrumentByIdentifier).mockImplementation(realLookup); setWidth(1600); });
@@ -116,6 +126,7 @@ describe('IndexTickerStrip', () => {
     useTicksStore.getState().applyBatch([tick(SENSEX.token, 74100.25, 74000)]); // tsMs 1: from a previous run
     render(<IndexTickerStrip />);
     await waitFor(() => expect(pill('SENSEX')).toHaveTextContent('74,100.25'));
+    await settle();
     expect(pill('SENSEX')).toHaveAttribute('data-stale', 'true');
     expect(pill('SENSEX')).toHaveAccessibleName('SENSEX, 74,100.25, up +100.25 (+0.14%). Last known price, not live yet');
     act(() => useTicksStore.getState().applyBatch([tick(SENSEX.token, 74120, 74000, fresh)]));

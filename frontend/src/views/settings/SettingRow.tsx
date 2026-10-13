@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useId, useRef, useState, type ReactNode } from 'react';
 import { TextField } from '../../components/TextField';
 import { settingsViewCopy } from '../../i18n/copy';
 import { useSetting } from '../../store/settings';
@@ -31,7 +31,13 @@ export function NumberCommitField({ label, value, onCommit, hint }: NumberCommit
   const [error, setError] = useState<string | null>(null);
   /** A commit is in flight: Enter followed by blur (or a second Enter) must not write twice (M2). */
   const pending = useRef(false);
-  useEffect(() => setDraft(String(value)), [value]);
+  // A new value from outside (a reload, another commit) replaces the draft. Adjusted during render, not in an effect:
+  // a mount-time effect could land after the user (or a test) already edited the field and undo the edit (Task 19).
+  const [shown, setShown] = useState(value);
+  if (shown !== value) {
+    setShown(value);
+    setDraft(String(value));
+  }
 
   const commit = async () => {
     if (pending.current) return;

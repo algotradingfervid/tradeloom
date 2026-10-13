@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, act, fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -67,6 +67,7 @@ beforeEach(() => {
   seedLists([wl('w1', 'Watchlist 1')]);
 });
 afterEach(() => {
+  cleanup(); // unmount before unregistering the backend (Task 19)
   setBackend(null);
   vi.useRealTimers();
 });

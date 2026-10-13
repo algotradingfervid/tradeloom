@@ -4,6 +4,7 @@ import { demoSeed } from '../api/mock/fixtures';
 import { createMockBackend } from '../api/mock/index';
 import { istDayKey } from '../i18n/format';
 import { useToastStore } from '../store/toasts';
+import { nestedLiveRegions } from '../test/liveRegions';
 import { renderApp } from '../test/render';
 import { CalendarStaleCheck } from './CalendarStaleCheck';
 import { registerShellBanner, shellBannerSlot } from './ShellBanners';
@@ -22,7 +23,7 @@ describe('ShellBanners', () => {
   });
   it('M13: renders banners registered in its slot and forgets them when unregistered', async () => {
     function TestBanner() {
-      return <div role="status">later banner</div>;
+      return <div>later banner</div>;
     }
     const unregister = registerShellBanner(TestBanner);
     try {
@@ -35,7 +36,7 @@ describe('ShellBanners', () => {
   });
   it('minor 4: banners whose function names collide (minified builds) all render without key warnings', async () => {
     const make = (text: string) => {
-      const C = () => <div role="status">{text}</div>;
+      const C = () => <div>{text}</div>;
       Object.defineProperty(C, 'name', { value: 'a' });
       return C;
     };
@@ -106,5 +107,35 @@ describe('ShellBanners', () => {
     await waitFor(() => expect(backend.state.settings['calendar.stale_toast_day']).toBe(JSON.stringify(day2)));
     expect(backend.callsTo('calendar.info').length).toBe(calls + 1);
     expect(staleToasts()).toHaveLength(2);
+  });
+
+  describe('Ruling 86 M5: banners that mount with their text are announced through always-mounted live regions', () => {
+    it('the expiry banner appears inside a polite region that existed before it and has no live role of its own', async () => {
+      const backend = createMockBackend(demoSeed());
+      const { container } = renderApp({ route: '/holdings', backend });
+      await screen.findByRole('heading', { level: 1, name: 'Holdings' });
+      const regions = [...container.querySelectorAll('#main-content [aria-live="polite"]')];
+      expect(regions.length).toBeGreaterThan(0);
+      act(() => backend.emit('session.state', { ...backend.state.session, state: 'expired' }));
+      const banner = (await screen.findByText('Kite session expired — log in to continue')).closest('.banner') as HTMLElement;
+      expect(banner).not.toHaveAttribute('role');
+      expect(regions).toContain(banner.closest('[aria-live]'));
+      expect(nestedLiveRegions(container)).toEqual([]);
+    });
+    it('the crash notice appears inside a polite region that existed before it; the boot alert is not nested', async () => {
+      const backend = createMockBackend(demoSeed());
+      let resolveCrash: (c: { path: string; atMs: number }) => void = () => undefined;
+      vi.spyOn(backend.diagnostics, 'lastCrash').mockReturnValue(new Promise((r) => { resolveCrash = r; }));
+      backend.failNext('system.info', 'info unavailable');
+      const { container } = renderApp({ route: '/home', backend });
+      await screen.findByText('Some app data could not be loaded');
+      const regions = [...container.querySelectorAll('#main-content [aria-live="polite"]')];
+      await act(async () => resolveCrash({ path: '/tmp/crash-1.txt', atMs: Date.UTC(2026, 9, 11, 10, 0) }));
+      const banner = (await screen.findByText(/crash/i, { selector: '.banner--error span' })).closest('.banner') as HTMLElement;
+      expect(banner).not.toHaveAttribute('role');
+      expect(regions).toContain(banner.closest('[aria-live]'));
+      expect(screen.getByRole('alert')).toHaveTextContent('Some app data could not be loaded');
+      expect(nestedLiveRegions(container)).toEqual([]);
+    });
   });
 });

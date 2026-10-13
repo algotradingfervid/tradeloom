@@ -10,7 +10,8 @@ import { CrashNotice } from './CrashNotice';
 
 /**
  * Slot for banners added by other tasks: Task 17's calendar-stale check (FR-DATA-001 AC6, re-checked per IST day via
- * useIstDay — Ruling 100 M6). Each renders null when it has nothing to say. Later tasks list theirs here; tests and
+ * useIstDay — Ruling 100 M6). Each renders null when it has nothing to say, and carries no live role: the slot sits in
+ * an always-mounted polite live region (Ruling 86 M5). Later tasks list theirs here; tests and
  * runtime additions use registerShellBanner (Ruling 108 M13) instead of mutating the list.
  */
 const slot: ComponentType[] = [CalendarStaleCheck];
@@ -49,18 +50,25 @@ export function ShellBanners() {
   const navigate = useNavigate();
   const expired = useSessionStore((s) => s.session?.state === 'expired');
   useSyncExternalStore(subscribe, () => version);
+  // Ruling 86 M5: a banner that mounts with its text inside its own role="status" is not reliably announced, so the
+  // banners carry no live role and mount inside these always-mounted polite regions. BootNotice keeps role="alert"
+  // (an inserted alert is announced) and sits between them, so no live region is nested in another.
   return (
     <>
-      <CrashNotice />
+      <div className="shell-banners" aria-live="polite">
+        <CrashNotice />
+      </div>
       <BootNotice />
-      {expired && (
-        <div className="banner banner--warn" role="status">
-          <Icon name="warning" />
-          <span>{bannerCopy.expired}</span>
-          <Button variant="primary" onClick={() => void navigate('/login')}>{bannerCopy.logIn}</Button>
-        </div>
-      )}
-      {shellBannerSlot().map((Banner, i) => <Banner key={i} />)}
+      <div className="shell-banners" aria-live="polite">
+        {expired && (
+          <div className="banner banner--warn">
+            <Icon name="warning" />
+            <span>{bannerCopy.expired}</span>
+            <Button variant="primary" onClick={() => void navigate('/login')}>{bannerCopy.logIn}</Button>
+          </div>
+        )}
+        {shellBannerSlot().map((Banner, i) => <Banner key={i} />)}
+      </div>
     </>
   );
 }

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../market/hooks', () => ({ useSubscription: vi.fn(), usePolled: () => false }));
@@ -293,7 +293,7 @@ describe('ChartView fix round 1', () => {
 });
 
 describe('ChartView leaks', () => {
-  afterEach(() => { vi.useRealTimers(); setBackend(null); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); setBackend(null); }); // unmount before unregistering (Task 19)
 
   it('unmount closes the live subscription and every event listener (mock backend openLiveIds)', async () => {
     const backend = createMockBackend(demoSeed());

@@ -1,6 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
+// E2E_PORT lets parallel worktrees use different ports. Never 5180: the user's other app owns it (Task 19).
 const port = Number(process.env.E2E_PORT ?? 5174);
+if (!Number.isInteger(port) || port === 5180) throw new Error(`E2E_PORT must be an integer other than 5180 (got ${process.env.E2E_PORT})`);
 
 export default defineConfig({
   testDir: './e2e',
@@ -19,7 +21,8 @@ export default defineConfig({
   webServer: {
     command: `npm run dev:mock -- --host 127.0.0.1 --port ${port} --strictPort`,
     url: `http://127.0.0.1:${port}`,
-    reuseExistingServer: !process.env.CI,
+    // Opt-in only (Task 19): reusing whatever already listens on the port could drive someone else's server.
+    reuseExistingServer: !process.env.CI && process.env.E2E_REUSE === '1',
     timeout: 60_000,
   },
 });

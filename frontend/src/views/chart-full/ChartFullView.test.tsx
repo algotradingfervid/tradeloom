@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,7 +46,12 @@ beforeEach(() => {
   useSessionStore.setState({ session: readySession() });
 });
 
-afterEach(() => setBackend(null));
+// Unmount first: after-hooks run in stack order, so setup.ts's cleanup() would come after this hook and a chart
+// still mounted could load with no backend registered (an unhandled rejection in 3/25 runs; Task 19).
+afterEach(() => {
+  cleanup();
+  setBackend(null);
+});
 
 describe('ChartFullView', () => {
   it('AC1: opens with the caller instrument and timeframe (ADANIENT NSE, 1 Day)', async () => {

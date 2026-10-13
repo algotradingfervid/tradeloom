@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { focusNewestToast, pushToast, useToastStore } from '../store/toasts';
+import { nestedLiveRegions } from '../test/liveRegions';
 import { ToastRegion } from './ToastRegion';
 
 beforeEach(() => vi.useFakeTimers());
@@ -88,8 +89,10 @@ describe('toast focus (no focus theft, Alt+T round trip)', () => {
       pushToast({ level: 'info', message: 'Found 5 instruments' });
     });
     expect(input).toHaveFocus();
-    expect(screen.getByText('Holdings could not be loaded').closest('.toast')).toHaveAttribute('role', 'alert');
-    expect(screen.getByText('Found 5 instruments').closest('.toast')).toHaveAttribute('role', 'status');
+    // Task 19 / Ruling 86 M5: both are announced by the region (FR-SHELL-009), not by nested role="alert"/"status".
+    const region = screen.getByRole('region', { name: 'Notifications' });
+    expect(screen.getByText('Holdings could not be loaded').closest('[aria-live]')).toBe(region);
+    expect(screen.getByText('Found 5 instruments').closest('[aria-live]')).toBe(region);
   });
   it('dismissing the focused toast moves focus to the next toast, then back to where focus was before', () => {
     render(<><input aria-label="Quantity" /><ToastRegion /></>);
@@ -204,5 +207,25 @@ describe('fix round 1 (Ruling 86)', () => {
     expect(screen.getByText('Found 5 instruments')).toBeInTheDocument();
     advance(200);
     expect(screen.queryByText('Found 5 instruments')).toBeNull();
+  });
+});
+
+describe('Ruling 86 M5: one live region, no nested live regions', () => {
+  it('the always-mounted region announces every level; toasts carry no live role of their own', () => {
+    const { container } = render(<ToastRegion />);
+    const region = screen.getByRole('region', { name: 'Notifications' });
+    expect(region).toHaveAttribute('aria-live', 'polite');
+    act(() => {
+      pushToast({ level: 'info', message: 'info one' });
+      pushToast({ level: 'success', message: 'saved one' });
+      pushToast({ level: 'error', message: 'failed one' });
+    });
+    for (const m of ['info one', 'saved one', 'failed one']) {
+      const toast = screen.getByText(m).closest('.toast') as HTMLElement;
+      expect(toast.parentElement).toBe(region);
+      expect(toast).not.toHaveAttribute('role');
+      expect(toast).not.toHaveAttribute('aria-live');
+    }
+    expect(nestedLiveRegions(container)).toEqual([]);
   });
 });

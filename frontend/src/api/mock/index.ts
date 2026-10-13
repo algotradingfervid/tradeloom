@@ -41,6 +41,9 @@ export interface MockBackend extends Backend {
   readonly calls: MockCall[];
   emit<K extends EventName>(name: K, payload: EventMap[K]): void;
   failNext(method: string, reason: string, code?: string): void;
+  /** Every call to `method` fails until clearFailures() (e2e `?fail=`: StrictMode's double bootstrap would eat a failNext). */
+  failAlways(method: string, reason: string): void;
+  clearFailures(): void;
   listenerCount(name: EventName): number;
   callsTo(method: string): MockCall[];
   /** The browser redirect reaching the loopback listener (FR-ACCT-006 AC1). */
@@ -91,6 +94,7 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
   const state = copy(seed);
   const calls: MockCall[] = [];
   const failures = new Map<string, Error>();
+  const sticky = new Map<string, Error>();
   const listeners = new Map<EventName, Set<(p: unknown) => void>>();
   let jobSeq = 0;
   let loginSeq = 1;
@@ -139,6 +143,8 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
           failures.delete(method);
           throw failure;
         }
+        const always = sticky.get(method);
+        if (always) throw always;
         return (impl[name] as (...a: unknown[]) => unknown)(...args);
       };
     }
@@ -177,6 +183,8 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
     failNext: (method, reason, code = 'error') => {
       failures.set(method, code === 'error' ? new Error(reason) : refusal(code, method.split('.')[0], reason));
     },
+    failAlways: (method, reason) => { sticky.set(method, new Error(reason)); },
+    clearFailures: () => { failures.clear(); sticky.clear(); },
     listenerCount: (name) => listeners.get(name)?.size ?? 0,
     callsTo: (method) => calls.filter((c) => c.method === method),
     on: (name, cb) => {
