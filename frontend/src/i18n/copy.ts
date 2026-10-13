@@ -648,3 +648,8 @@ export const chartViewCopy = {
   autoScale: 'Auto-scale (A)',
   logScale: 'Logarithmic scale (L)',
 } as const;
+
+/** Full-view chart (FR-CHART-017, P0-5 Task 11): the route outside the shell. */
+export const chartFullViewCopy = {
+  title: 'Full-view chart',
+} as const;

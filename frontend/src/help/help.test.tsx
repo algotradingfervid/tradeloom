@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { loggedOutSeed, unackedSeed } from '../api/mock/fixtures';
 import { createMockBackend } from '../api/mock/index';
 import { isRememberable } from '../app/lastRoute';
-import { isShellRoute } from '../app/routes';
+import { isRestorableRoute } from '../app/routes';
 import { reloadShortcuts } from '../shortcuts/ShortcutProvider';
 import { useShortcutStore } from '../shortcuts/store';
 import { useToastStore } from '../store/toasts';
@@ -88,8 +88,8 @@ describe('FR-ACCT-010 built-in help', () => {
     const { backend } = renderApp({ route: '/help/kite-setup' });
     await screen.findByRole('heading', { name: 'Create your Kite Connect app' });
     await waitFor(() => expect(backend.state.settings['ui.last_route']).toBe('"/help/kite-setup"'));
-    expect(isShellRoute('/help')).toBe(true);
-    expect(isShellRoute('/help/kite-setup')).toBe(true);
+    expect(isRestorableRoute('/help')).toBe(true);
+    expect(isRestorableRoute('/help/kite-setup')).toBe(true);
     expect(isRememberable('/legal/terms')).toBe(false);
   });
   // Minor 1 + 2: a new article clears the search and takes focus to its heading.

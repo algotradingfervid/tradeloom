@@ -27,3 +27,6 @@
 /* Home slot (P0-4 Task 12). Compound selector: home.css loads after this file and its .home-slot sets min-height. */
 .home-slot.home-slot--chart { display: flex; flex-direction: column; min-height: 420px; padding: 0; overflow: hidden; }
 .home-slot--chart > .chart-view { flex: 1; }
+/* Full-view chart (P0-5 Task 11): a root route outside the shell, so the chart fills the window. */
+.chart-full { display: flex; flex-direction: column; height: 100vh; min-width: 0; }
+.chart-full > .chart-view { flex: 1; }
