@@ -236,6 +236,8 @@ export interface Backend {
     useEncryptedFile(passphrase: string): Promise<SessionStatus>;
     refuseSecretStorage(): Promise<SessionStatus>;
     unlock(passphrase: string): Promise<SessionStatus>;
+    /** Removes secrets.enc and returns secret storage to the setup choice (the locked screen's "start over"). */
+    forgetSecretsFile(): Promise<SessionStatus>;
     migrateToKeyring(): Promise<SecretStorageInfo>;
     reconnectFeed(): Promise<void>;
   };

@@ -179,6 +179,14 @@ describe('secret storage: the passphrases stay out of state (security)', () => {
     await screen.findByRole('heading', { name: 'Log in to Kite' });
     expectNowhere('right-unlock-4', backend, router);
   });
+  it('forgetting the secrets file after typing a passphrase keeps the passphrase nowhere (Ruling 68)', async () => {
+    const { user, backend, router } = startLeak(lockedSeed());
+    await user.type(await screen.findByLabelText('Passphrase'), 'typed-then-forgot-6');
+    await user.click(screen.getByRole('button', { name: 'Forget saved credentials and start over' }));
+    await user.click(await screen.findByRole('button', { name: 'Forget and start over' }));
+    await screen.findByRole('heading', { name: 'Choose where to keep your Kite secret' });
+    expectNowhere('typed-then-forgot-6', backend, router);
+  });
   it('leaving the unlock form discards the typed passphrase (unmount)', async () => {
     const { user, backend, router } = startLeak(lockedSeed());
     await user.type(await screen.findByLabelText('Passphrase'), 'typed-not-sent-5');

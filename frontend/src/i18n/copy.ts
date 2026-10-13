@@ -209,6 +209,11 @@ export const setupCopy = {
   unlockTitle: 'Unlock your Kite credentials',
   unlockIntro: 'Enter the passphrase that protects your encrypted secrets file.',
   unlock: 'Unlock',
+  // Ruling 68 carry-forward: the way out when the passphrase is lost or the file is damaged.
+  forget: 'Forget saved credentials and start over',
+  forgetTitle: 'Forget saved credentials?',
+  forgetMessage: 'The encrypted secrets file (secrets.enc) is deleted from this computer, together with the API key, the API secret and any saved access token in it. This cannot be undone. You then choose where to keep your Kite secret and enter the credentials again.',
+  forgetConfirm: 'Forget and start over',
 } as const;
 
 export const loginCopy = {
