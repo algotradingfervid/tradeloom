@@ -413,3 +413,138 @@ func TestMigrateToKeyring_LeftoverRemovalNeedsThisRunsFlag(t *testing.T) {
 		t.Fatal("keyring changed")
 	}
 }
+
+// Ruling 68 carry-forward (P0 review I2): a user who forgot the passphrase, or whose secrets.enc is damaged,
+// can forget the file from the locked state and set secret storage up again. The passphrase never appears
+// in the log line, and the file is gone.
+func TestForgetSecretsFile_FromLocked(t *testing.T) {
+	e, sw, file := lockedFile(t)
+	var logs syncBuf
+	e.svc.d.Log = slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx := context.Background()
+	if st := e.svc.SessionStatus(ctx); st.State != StateLocked {
+		t.Fatalf("precondition: %+v", st)
+	}
+	st, err := e.svc.ForgetSecretsFile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, serr := os.Stat(file); !os.IsNotExist(serr) {
+		t.Fatalf("secrets file still there: %v", serr)
+	}
+	if sw.Locked() || sw.Refused() || sw.Backend() != secrets.BackendNone {
+		t.Fatalf("switch locked=%v refused=%v backend=%s", sw.Locked(), sw.Refused(), sw.Backend())
+	}
+	if st.State == StateLocked || st.Secrets.Mode != "choose" || st.Secrets.Backend != "none" || st.Secrets.FileExists || len(st.Secrets.Choices) != 2 {
+		t.Fatalf("status after forget: %+v", st)
+	}
+	if out := logs.String(); !strings.Contains(out, "secrets file forgotten") || strings.Contains(out, passphrase) || strings.Contains(out, "s3cr3t-value-abc") {
+		t.Fatalf("log: %s", out)
+	}
+	// Nothing left to forget: the backend is "none" now.
+	if _, err := e.svc.ForgetSecretsFile(ctx); refusedCode(t, err) != "not_file_backend" {
+		t.Fatal(err)
+	}
+	// Start over: a new encrypted file can be created with a new passphrase.
+	st, err = e.svc.UseEncryptedFile(ctx, "a brand new passphrase")
+	if err != nil || st.Secrets.Backend != "file" || !st.Secrets.FileExists {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if v, err := sw.Get(secrets.KeyAPISecret); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("old secret survived: %q %v", v, err)
+	}
+}
+
+// No forgetting while a login is in progress (as MigrateToKeyring, Ruling 68 (3)): the file and the lock stay.
+func TestForgetSecretsFile_RefusedWhileLoggingIn(t *testing.T) {
+	e, sw, file := lockedFile(t)
+	e.session.setState(kite.SessionState{State: kite.StateLoggingIn})
+	if _, err := e.svc.ForgetSecretsFile(context.Background()); refusedCode(t, err) != kite.CodeLoginBusy {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil || !sw.Locked() {
+		t.Fatalf("forgotten anyway: %v locked=%v", err, sw.Locked())
+	}
+}
+
+// The keyring backend has no file to forget: not_file_backend, and a file next to it is never touched
+// (Ruling 72 (b): it may be the only copy of the secrets).
+func TestForgetSecretsFile_RefusedOnKeyringBackend(t *testing.T) {
+	e := newSvcEnv(t)
+	e.session.setState(kite.SessionState{State: kite.StateLoggedOut})
+	kr := &memStore{m: map[secrets.Key]string{secrets.KeyAPISecret: "s3cr3t"}, backend: secrets.BackendKeyring}
+	sw, file := withSecrets(t, e, kr, false, secrets.ModeKeyring)
+	if err := os.WriteFile(file, []byte("the only copy of the secrets"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.ForgetSecretsFile(context.Background()); refusedCode(t, err) != "not_file_backend" {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil || sw.Backend() != secrets.BackendKeyring || kr.m[secrets.KeyAPISecret] != "s3cr3t" {
+		t.Fatalf("keyring or file changed: %v %s", err, sw.Backend())
+	}
+	// No switch at all (a build without secret storage) refuses the same way.
+	e2 := newSvcEnv(t)
+	if _, err := e2.svc.ForgetSecretsFile(context.Background()); refusedCode(t, err) != "not_file_backend" {
+		t.Fatal(err)
+	}
+}
+
+// An unlocked file can be forgotten too, but not under a live login: the session's token would outlive its
+// store. Logged out, the open store is closed (its values zeroed) before the file goes.
+func TestForgetSecretsFile_UnlockedFile(t *testing.T) {
+	e, sw, file := lockedFile(t)
+	ctx := context.Background()
+	if _, err := e.svc.Unlock(ctx, passphrase); err != nil {
+		t.Fatal(err)
+	}
+	cur, _ := sw.current()
+	e.session.setState(kite.SessionState{State: kite.StateReady, SessionID: "s1"})
+	if _, err := e.svc.ForgetSecretsFile(ctx); refusedCode(t, err) != kite.CodeAlreadyLoggedIn {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil || sw.Backend() != secrets.BackendFile {
+		t.Fatalf("forgotten anyway: %v %s", err, sw.Backend())
+	}
+	e.session.setState(kite.SessionState{State: kite.StateLoggedOut})
+	st, err := e.svc.ForgetSecretsFile(ctx)
+	if err != nil || st.Secrets.Mode != "choose" {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if _, serr := os.Stat(file); !os.IsNotExist(serr) {
+		t.Fatalf("secrets file still there: %v", serr)
+	}
+	if _, err := cur.Get(secrets.KeyAPISecret); err == nil || errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("old file store not closed: %v", err)
+	}
+}
+
+// A removal that fails leaves the state as it was (still locked) and refuses with file_not_removed, so the
+// user can fix the cause and try again.
+func TestForgetSecretsFile_FileNotRemoved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	e, sw, file := lockedFile(t)
+	dir := filepath.Dir(file)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	ctx := context.Background()
+	if _, err := e.svc.ForgetSecretsFile(ctx); refusedCode(t, err) != "file_not_removed" {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(file); err != nil || !sw.Locked() {
+		t.Fatalf("state changed: %v locked=%v", err, sw.Locked())
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.ForgetSecretsFile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, serr := os.Stat(file); !os.IsNotExist(serr) || sw.Locked() {
+		t.Fatalf("retry failed: %v locked=%v", serr, sw.Locked())
+	}
+}

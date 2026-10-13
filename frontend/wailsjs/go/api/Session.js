@@ -18,6 +18,10 @@ export function Credentials() {
   return window['go']['api']['Session']['Credentials']();
 }
 
+export function ForgetSecretsFile() {
+  return window['go']['api']['Session']['ForgetSecretsFile']();
+}
+
 export function Login() {
   return window['go']['api']['Session']['Login']();
 }

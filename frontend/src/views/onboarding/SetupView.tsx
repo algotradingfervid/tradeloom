@@ -4,6 +4,7 @@ import type { SecretBackendName, SecretChoice } from '../../api/backend';
 import { useBackend } from '../../api/BackendContext';
 import { parseBackendError } from '../../api/errors';
 import { Button } from '../../components/Button';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { TextField } from '../../components/TextField';
 import { setupCopy as copy } from '../../i18n/copy';
 import { useSessionStore } from '../../store/session';
@@ -194,6 +195,11 @@ function UnlockForm() {
   const [pass, setPass] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Ruling 68 carry-forward: "forget saved credentials and start over" behind the app's confirm dialog. On success Go
+  // publishes session.state (locked → no_credentials, mode "choose"), which replaces this form with the storage choice.
+  const [forgetting, setForgetting] = useState(false);
+  const [forgetBusy, setForgetBusy] = useState(false);
+  const [forgetError, setForgetError] = useState<string | null>(null);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -208,11 +214,41 @@ function UnlockForm() {
       setBusy(false);
     }
   };
+  const forget = async () => {
+    if (forgetBusy) return;
+    setForgetBusy(true);
+    setForgetError(null);
+    try {
+      adoptReturnedStatus(await backend.session.forgetSecretsFile());
+      setForgetting(false);
+      setPass('');
+      setError(null);
+    } catch (err) {
+      setForgetError(parseBackendError(err).reason);
+    } finally {
+      setForgetBusy(false);
+    }
+  };
   return (
     <form onSubmit={submit} noValidate>
       <p>{copy.unlockIntro}</p>
       <TextField label={copy.passphrase} type="password" value={pass} onChange={(e) => setPass(e.target.value)} error={error} autoComplete="current-password" />
       <Button type="submit" variant="primary" disabled={busy}>{copy.unlock}</Button>
+      <Button onClick={() => setForgetting(true)} disabled={busy}>{copy.forget}</Button>
+      <ConfirmDialog
+        open={forgetting}
+        title={copy.forgetTitle}
+        message={copy.forgetMessage}
+        confirmLabel={copy.forgetConfirm}
+        tone="danger"
+        busy={forgetBusy}
+        error={forgetError}
+        onConfirm={() => void forget()}
+        onCancel={() => {
+          setForgetting(false);
+          setForgetError(null);
+        }}
+      />
     </form>
   );
 }

@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
   demoSeed, freshSeed, lockedSeed, loggedOutSeed, noKeyringSeed, readySession, unackedSeed,
@@ -119,6 +119,66 @@ describe('FR-ACCT-013 secret storage fallback (UI)', () => {
     await user.type(screen.getByLabelText('Passphrase'), 'correct horse');
     await user.click(screen.getByRole('button', { name: 'Unlock' }));
     expect(await screen.findByRole('heading', { name: 'Log in to Kite' })).toBeInTheDocument();
+  });
+
+  // Ruling 68 carry-forward (P0 review I2): a lost passphrase or a damaged file is no longer a dead end.
+  it('Ruling 68: from the locked state, "Forget saved credentials and start over" confirms, forgets the file and lands on the storage choice', async () => {
+    const backend = createMockBackend(lockedSeed());
+    const { user } = renderApp({ route: '/', backend });
+    await screen.findByLabelText('Passphrase');
+    await user.click(screen.getByRole('button', { name: 'Forget saved credentials and start over' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Forget saved credentials?' });
+    expect(dialog).toHaveAccessibleDescription(/secrets\.enc/);
+    expect(backend.callsTo('session.forgetSecretsFile')).toHaveLength(0);
+    await user.click(within(dialog).getByRole('button', { name: 'Forget and start over' }));
+    expect(await screen.findByRole('heading', { name: 'Choose where to keep your Kite secret' })).toBeInTheDocument();
+    expect(backend.callsTo('session.forgetSecretsFile')).toHaveLength(1);
+    expect(backend.state.encPassphrase).toBe('');
+    expect(backend.state.session.secrets.mode).toBe('choose');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByLabelText('Passphrase')).not.toBeNull(); // the choice form's new passphrase
+    expect(screen.getByRole('radio', { name: 'Encrypted file protected by a passphrase' })).toBeInTheDocument();
+  });
+  it('Ruling 68: cancelling the forget dialog keeps the unlock form, calls nothing and returns focus to the button', async () => {
+    const backend = createMockBackend(lockedSeed());
+    const { user } = renderApp({ route: '/', backend });
+    await screen.findByLabelText('Passphrase');
+    const forget = screen.getByRole('button', { name: 'Forget saved credentials and start over' });
+    await user.click(forget);
+    const dialog = await screen.findByRole('dialog', { name: 'Forget saved credentials?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(forget).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Unlock' })).toBeInTheDocument();
+    expect(backend.callsTo('session.forgetSecretsFile')).toHaveLength(0);
+    // Escape cancels too.
+    await user.click(forget);
+    await screen.findByRole('dialog', { name: 'Forget saved credentials?' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(backend.callsTo('session.forgetSecretsFile')).toHaveLength(0);
+  });
+  it("Ruling 68: a refused forget shows Go's reason in the dialog and stays locked", async () => {
+    const backend = createMockBackend(lockedSeed());
+    const reason = 'The secrets file could not be removed. Check that Tradeloom may write to its data folder, then try again.';
+    backend.failNext('session.forgetSecretsFile', reason, 'file_not_removed');
+    const { user } = renderApp({ route: '/', backend });
+    await screen.findByLabelText('Passphrase');
+    await user.click(screen.getByRole('button', { name: 'Forget saved credentials and start over' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Forget saved credentials?' });
+    await user.click(within(dialog).getByRole('button', { name: 'Forget and start over' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(reason);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(backend.state.session.state).toBe('locked');
+    // A retry from the same dialog works.
+    await user.click(within(dialog).getByRole('button', { name: 'Forget and start over' }));
+    expect(await screen.findByRole('heading', { name: 'Choose where to keep your Kite secret' })).toBeInTheDocument();
+  });
+  it('M11: the mock refuses forgetSecretsFile like Go (not_file_backend, login_in_progress)', async () => {
+    await expect(createMockBackend(noKeyringSeed()).session.forgetSecretsFile()).rejects.toThrow('Only an encrypted secrets file can be forgotten.');
+    const busy = lockedSeed();
+    busy.session.state = 'logging_in';
+    await expect(createMockBackend(busy).session.forgetSecretsFile()).rejects.toThrow('Finish or cancel the current login before forgetting the secrets file.');
   });
 });
 

@@ -280,6 +280,21 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
           secrets: { ...state.session.secrets, backend: 'file' },
         });
       },
+      // As Go service.ForgetSecretsFile: secrets.enc goes, the switch is back to "choose", and the deferred Restore
+      // publishes session.state (no_credentials: the API secret went with the file). `encPassphrase` stands in for
+      // the file, so it is blanked.
+      forgetSecretsFile: () => {
+        if (state.session.state === 'logging_in') throw refusal(LOGIN_BUSY, 'secrets', 'Finish or cancel the current login before forgetting the secrets file.');
+        if (state.session.state === 'ready') throw refusal('already_logged_in', 'secrets', 'Log out before forgetting the secrets file.');
+        const backend = state.session.secrets.backend;
+        if (backend !== 'locked' && backend !== 'file') throw refusal('not_file_backend', 'secrets', 'Only an encrypted secrets file can be forgotten.');
+        state.encPassphrase = '';
+        return setSession({
+          state: 'no_credentials',
+          secrets: { mode: 'choose', backend: 'none', keyringAvailable: state.session.secrets.keyringAvailable, fileExists: false, choices: ['encrypted_file', 'no_storage'] },
+          credentials: { ...state.session.credentials, configured: false, secretBackend: 'none' },
+        });
+      },
       migrateToKeyring: () => {
         // As Go service.MigrateToKeyring: no session.state is published; the caller re-reads Credentials().
         if (!state.session.secrets.keyringAvailable) throw refusal('keyring_unavailable', 'secrets', 'No system keyring is available. Unlock or start it, then try again.');

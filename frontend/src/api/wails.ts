@@ -70,6 +70,7 @@ export function createWailsBackend(): Backend {
       useEncryptedFile: (passphrase) => cast<SessionStatus>(Session.UseEncryptedFile(passphrase)).then(normSession),
       refuseSecretStorage: () => cast<SessionStatus>(Session.RefuseSecretStorage()).then(normSession),
       unlock: (passphrase) => cast<SessionStatus>(Session.Unlock(passphrase)).then(normSession),
+      forgetSecretsFile: () => cast<SessionStatus>(Session.ForgetSecretsFile()).then(normSession),
       migrateToKeyring: () => cast<SecretStorageInfo>(Session.MigrateToKeyring()).then(normSecrets),
       reconnectFeed: () => Session.ReconnectFeed(),
     },

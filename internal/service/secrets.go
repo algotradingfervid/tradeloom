@@ -285,6 +285,55 @@ func (s *Service) Unlock(ctx context.Context, passphrase string) (SessionStatus,
 	return s.Restore(ctx), nil
 }
 
+const (
+	msgNotFileBackend  = "Only an encrypted secrets file can be forgotten."
+	msgForgetNotRemove = "The secrets file could not be removed. Check that Tradeloom may write to its data folder, then try again."
+)
+
+// ForgetSecretsFile removes secrets.enc and returns secret storage to the setup choice (Ruling 68 carry-forward:
+// "forget secrets file and start over"). It is the way out of the locked state when the passphrase is lost or the
+// file is damaged (both unlock as bad_passphrase). The in-memory copy of an unlocked file is closed (key and values
+// zeroed) before the file goes; a locked file has no copy in memory. Refusals: login_in_progress and
+// already_logged_in (a live session's token would outlive its store), not_file_backend for the keyring, "none"
+// or a build without secret storage (a file next to the keyring is never touched, Ruling 72 (b)), and
+// file_not_removed when the removal fails — then the backend is not swapped (a locked file stays locked; an
+// unlocked one is already closed and answers no reads) and the call can be repeated.
+func (s *Service) ForgetSecretsFile(ctx context.Context) (SessionStatus, error) {
+	sw := s.d.Secrets
+	if sw == nil || s.d.SecretsFile == "" {
+		return s.SessionStatus(ctx), refused(secretsStage, "not_file_backend", msgNotFileBackend)
+	}
+	sw.setup.Lock()
+	defer sw.setup.Unlock()
+	switch s.d.Session.State().State {
+	case kite.StateLoggingIn:
+		return s.SessionStatus(ctx), refused(secretsStage, kite.CodeLoginBusy, "Finish or cancel the current login before forgetting the secrets file.")
+	case kite.StateReady:
+		return s.SessionStatus(ctx), refused(secretsStage, kite.CodeAlreadyLoggedIn, "Log out before forgetting the secrets file.")
+	}
+	if !sw.Locked() && sw.Backend() != secrets.BackendFile {
+		return s.SessionStatus(ctx), refused(secretsStage, "not_file_backend", msgNotFileBackend)
+	}
+	err := sw.exclusive(func(cur secrets.Store) (secrets.Store, error) {
+		if ef, ok := cur.(*secrets.EncFile); ok {
+			ef.Close()
+		}
+		if err := secrets.RemoveFile(s.d.SecretsFile); err != nil {
+			return nil, err
+		}
+		return secrets.NewNone(), nil
+	})
+	if err != nil {
+		s.d.Log.Warn("removing the secrets file at the user's request failed", "err", err)
+		return s.SessionStatus(ctx), refused(secretsStage, "file_not_removed", msgForgetNotRemove)
+	}
+	sw.leftoverFile = false
+	s.d.Log.Warn("secrets file forgotten at the user's request; secret storage is back to the setup choice")
+	// The deferred startup Restore now runs against the empty store: it publishes session.state, which moves the
+	// UI off the locked screen (the returned status alone is not adopted across a state change).
+	return s.Restore(ctx), nil
+}
+
 // keyringCallTimeout bounds each keyring call made during a migration: a locked collection can block on
 // an unlock prompt that never appears (P0-1 carry-forward). A variable only so tests can shorten it.
 var keyringCallTimeout = secrets.ProbeTimeout
