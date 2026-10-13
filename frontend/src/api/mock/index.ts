@@ -113,6 +113,9 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
   };
 
   const emit = <K extends EventName>(name: K, payload: EventMap[K]) => {
+    // Go's rememberTicks runs right before every tick.batch emit (internal/service/events.go): Watch snapshots then
+    // serve the last published quote, never an older price than the ticks the UI already has.
+    if (name === 'tick.batch') for (const t of payload as EventMap['tick.batch']) state.quotes[t.token] = copy(t);
     for (const cb of [...(listeners.get(name) ?? [])]) cb(copy(payload));
   };
   const setSession = (patch: Partial<SessionStatus>): SessionStatus => {
