@@ -67,5 +67,10 @@ func (s *Session) MigrateToKeyring() (service.SecretStorageInfo, error) {
 	return s.svc.MigrateToKeyring(s.ctx())
 }
 
+// ForgetSecretsFile is the locked screen's "forget saved credentials and start over" (Ruling 68 carry-forward).
+func (s *Session) ForgetSecretsFile() (service.SessionStatus, error) {
+	return s.svc.ForgetSecretsFile(s.ctx())
+}
+
 // ReconnectFeed is the status indicator's "Retry now".
 func (s *Session) ReconnectFeed() error { return s.svc.ReconnectFeed(s.ctx()) }
