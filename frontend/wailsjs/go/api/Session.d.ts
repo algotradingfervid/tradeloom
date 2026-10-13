@@ -11,6 +11,8 @@ export function CompleteLogin(arg1:string):Promise<service.SessionStatus>;
 
 export function Credentials():Promise<kite.CredentialsInfo>;
 
+export function ForgetSecretsFile():Promise<service.SessionStatus>;
+
 export function Login():Promise<kite.LoginStart>;
 
 export function Logout():Promise<kite.LogoutResult>;

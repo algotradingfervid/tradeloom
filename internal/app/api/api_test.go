@@ -155,11 +155,12 @@ func TestDiagnostics_OpensLogsFolder(t *testing.T) {
 	}
 }
 
-// The bound surface is exactly the plan's 65 methods: nothing internal (LoadCalendar, RunQuotes, Restore,
-// SaveWindowGeometry …) is ever exposed to the frontend.
+// The bound surface is exactly the plan's 65 methods plus Session.ForgetSecretsFile (Ruling 68 carry-forward,
+// P0 review I2): nothing internal (LoadCalendar, RunQuotes, Restore, SaveWindowGeometry …) is ever exposed to
+// the frontend.
 func TestBindings_ExactMethodSets(t *testing.T) {
 	want := map[string]string{
-		"Session": "AckRiskDisclosure CancelLogin CompleteLogin Credentials Login Logout MigrateToKeyring Profile ReconnectFeed " +
+		"Session": "AckRiskDisclosure CancelLogin CompleteLogin Credentials ForgetSecretsFile Login Logout MigrateToKeyring Profile ReconnectFeed " +
 			"RefuseSecretStorage RemoveCredentials SaveCredentials SecretStorage SetRedirectPort Status Unlock UseEncryptedFile",
 		"Portfolio":   "Holdings OrderBook Positions Refresh",
 		"Settings":    "All GetUiState Rebind ResetShortcuts Set SetUiState Shortcuts",
@@ -184,7 +185,7 @@ func TestBindings_ExactMethodSets(t *testing.T) {
 			t.Errorf("%s binds %q, want %q", rt.Elem().Name(), got, want[rt.Elem().Name()])
 		}
 	}
-	if total != 65 {
-		t.Fatalf("%d bound methods, want 65", total)
+	if total != 66 {
+		t.Fatalf("%d bound methods, want 66", total)
 	}
 }
