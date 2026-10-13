@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 
 	"tradeloom/internal/logging"
 )
@@ -24,9 +25,15 @@ type journalRow struct {
 	Stage       *string `json:"stage,omitempty"`
 }
 
+// credentialKeyPrefix names the Kite credential settings (kite.api_key, kite.redirect_port). They are not
+// secret-like by name, but the API key identifies the account: service.Settings hides them from the UI
+// (hiddenKey) and the support bundle must not ship them either. The prefix is spelled here because store
+// is a leaf that cannot import internal/kite.
+const credentialKeyPrefix = "kite."
+
 // SupportFiles returns the app.db part of a support bundle: settings.json (the settings table never
-// holds secrets), versions.json, order_journal.json (newest 200 rows) and deployment_logs.json
-// (empty until the P4 deployment_events table exists).
+// holds secrets; the Kite credential keys are left out), versions.json, order_journal.json (newest 200
+// rows) and deployment_logs.json (empty until the P4 deployment_events table exists).
 func (db *DB) SupportFiles(ctx context.Context) ([]logging.BundleFile, error) {
 	set, err := db.SettingsRepo().Load(ctx)
 	if err != nil {
@@ -34,7 +41,7 @@ func (db *DB) SupportFiles(ctx context.Context) ([]logging.BundleFile, error) {
 	}
 	setJSON := map[string]json.RawMessage{}
 	for k, v := range set {
-		if logging.IsSecretLikeKey(k) {
+		if logging.IsSecretLikeKey(k) || strings.HasPrefix(k, credentialKeyPrefix) {
 			continue // defence in depth: settings never hold secrets, but a stray row must not ship
 		}
 		if json.Valid([]byte(v)) {

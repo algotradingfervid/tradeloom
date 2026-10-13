@@ -44,6 +44,20 @@ describe('event bridge', () => {
     expect(useSettingsStore.getState()).toMatchObject({ loaded: true, values: { 'appearance.theme': 'dark' } });
     expect(useAppStore.getState().info?.version).toBe('0.1.0');
   });
+  // Final review I1: Settings.All never lists the credential keys (kite.*), and Go filters them from the event too;
+  // the bridge ignores them as well so a credential can never land in the settings store.
+  it('ignores settings.changed for credential keys (kite.*)', () => {
+    const backend = createMockBackend(demoSeed());
+    const stop = startEventBridge(backend, { navigate: vi.fn() });
+    backend.emit('settings.changed', { key: 'kite.api_key', value: 'plantedApiKey0123' });
+    backend.emit('settings.changed', { key: 'kite.redirect_port', value: 7421 });
+    backend.emit('settings.changed', { key: 'appearance.theme', value: 'dark' });
+    const { values } = useSettingsStore.getState();
+    expect(Object.keys(values).filter((k) => k.startsWith('kite.'))).toEqual([]);
+    expect(JSON.stringify(values)).not.toContain('plantedApiKey0123');
+    expect(values['appearance.theme']).toBe('dark');
+    stop();
+  });
 });
 
 describe('bootstrap vs events (Ruling 83-F I1)', () => {

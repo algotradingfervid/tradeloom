@@ -25,6 +25,13 @@ const seenBy = new WeakMap<Backend, Set<SeenSlice>>();
 const SIGNED_OUT: ReadonlySet<SessionStateName> = new Set(['logged_out', 'no_credentials']);
 
 /**
+ * The Kite credential keys (kite.api_key, kite.redirect_port) are managed by Settings → Kite connection: Go's
+ * Settings.All never lists them and its settings.changed forwarder drops them. The bridge ignores them too, so a
+ * credential can never land in the settings store (final review I1).
+ */
+const isCredentialKey = (key: string): boolean => key.startsWith('kite.');
+
+/**
  * The bridge owns the watchlists load (Ruling 102 I3): when the session is ready and the store is still idle (first
  * start, after the logout reset, or after a user change). The idle check keeps a view's mount-time fallback from
  * loading twice. The load goes through the typed helpers, which read the backend <MarketDataBridge> registers with
@@ -74,8 +81,11 @@ export function startEventBridge(backend: Backend, deps: BridgeDeps): () => void
     }),
     backend.on('tick.batch', (t) => useTicksStore.getState().applyBatch(t)),
     // Go publishes the shortcut list under settings.changed key "shortcuts"; it is not a setting.
-    backend.on('settings.changed', (c) =>
-      c.key === SHORTCUTS_CHANGE_KEY ? applyShortcutsEvent(c.value) : useSettingsStore.getState().put(c.key, c.value)),
+    backend.on('settings.changed', (c) => {
+      if (isCredentialKey(c.key)) return;
+      if (c.key === SHORTCUTS_CHANGE_KEY) applyShortcutsEvent(c.value);
+      else useSettingsStore.getState().put(c.key, c.value);
+    }),
     backend.on('app.navigate', (n) => deps.navigate(n.route)),
     backend.on('job.progress', (p) => {
       useJobsStore.getState().apply(p);

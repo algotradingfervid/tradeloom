@@ -26,6 +26,20 @@ func ValidateRoute(v string) error {
 	return nil
 }
 
+// ValidateLaunchRoute accepts a route handed over by another launch ("--view <route>", app.SecondInstance):
+// ValidateRoute plus no query or fragment. Argv is untrusted and may be a pasted URL, and a query or
+// fragment is where such a URL carries a token, so it is refused before the value can reach a log or
+// the UI router. In-app routes (ui.last_route, service.Navigate) keep ValidateRoute.
+func ValidateLaunchRoute(v string) error {
+	if err := ValidateRoute(v); err != nil {
+		return err
+	}
+	if strings.ContainsAny(v, "?#") {
+		return errors.New("must not contain a query or fragment")
+	}
+	return nil
+}
+
 // ValidateDateOrEmpty accepts "" or a YYYY-MM-DD date.
 func ValidateDateOrEmpty(v string) error {
 	if v == "" {

@@ -91,3 +91,18 @@ func TestValidateRoute_RejectsEscapes(t *testing.T) {
 		}
 	}
 }
+
+// Final review I4: a route taken from a launch's argv is a bare path — a query or fragment is where a
+// pasted URL would carry a token, so it is refused before anything is logged or navigated.
+func TestValidateLaunchRoute_RejectsQueryAndFragment(t *testing.T) {
+	for _, bad := range []string{"/home?request_token=x", "/home#token", "/?", "/a/b?c", "//evil.com", "/a/../b", "home", ""} {
+		if ValidateLaunchRoute(bad) == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+	for _, ok := range []string{"/home", "/settings/data", "/a..b", "/"} {
+		if err := ValidateLaunchRoute(ok); err != nil {
+			t.Fatalf("%q refused: %v", ok, err)
+		}
+	}
+}
