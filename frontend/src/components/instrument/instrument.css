@@ -1,0 +1,23 @@
+/* Instrument label (FR-WATCH-013/014): only the symbol truncates; the badge and the .chip tag/flags (list.css) keep
+   their width (Ruling 96 I2). Chips bring their own left margin. */
+.instrument-label { display: inline-flex; align-items: center; min-width: 0; max-width: 100%; }
+.instrument-label__symbol { flex: 0 1 auto; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.instrument-label .chip { flex: none; }
+.instrument-label__badge {
+  flex: none; display: inline-grid; place-items: center; width: 16px; height: 16px; margin-left: var(--space-2);
+  border-radius: var(--radius-pill); border: 1px solid currentColor; font-size: var(--fs-xs); font-weight: 700; line-height: 1;
+}
+.instrument-label__company { flex: none; margin-left: auto; padding-left: var(--space-2); font-size: var(--fs-sm); color: var(--text-muted); text-transform: uppercase; white-space: nowrap; }
+.price-change { display: inline-flex; gap: var(--space-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.price-change--empty { color: var(--text-muted); }
+.price-change--stale .price-change__ltp { color: var(--text-muted); font-style: italic; }
+/* InstrumentRow (FR-WATCH-005; P0-5 Task 14). Actions show on hover and on keyboard focus (NFR-11). */
+.instrument-row td { padding: var(--space-1); border-top: 1px solid var(--border); }
+.instrument-row.is-selected { box-shadow: inset 3px 0 0 var(--accent); }
+.instrument-row__symbol { display: inline-flex; gap: var(--space-2); align-items: center; background: none; border: 0; color: inherit; padding: 0; cursor: pointer; min-width: 0; max-width: 100%; }
+.instrument-row__avatar { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: var(--fs-xs); }
+.instrument-row__price { white-space: nowrap; }
+.instrument-row__hint { margin-left: var(--space-1); font-size: var(--fs-xs); color: var(--text-muted); border: 1px dashed currentColor; border-radius: var(--radius-1); padding: 0 var(--space-1); }
+.instrument-row__missing { margin-left: var(--space-2); font-style: italic; color: var(--text-muted); }
+.instrument-row__actions { visibility: hidden; text-align: right; white-space: nowrap; }
+.instrument-row:hover .instrument-row__actions, .instrument-row:focus-within .instrument-row__actions { visibility: visible; }

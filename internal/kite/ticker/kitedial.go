@@ -1,0 +1,190 @@
+package ticker
+
+import (
+	"context"
+	"errors"
+	"net/url"
+	"sync"
+	"time"
+
+	kt "github.com/zerodha/gokiteconnect/v4/ticker"
+
+	"tradeloom/internal/clock"
+	"tradeloom/internal/kite"
+)
+
+// writeTimeout bounds every Subscribe/Unsubscribe/SetMode frame (Conn's bounded-write contract).
+const writeTimeout = 5 * time.Second
+
+var errNotConnected = errors.New("ticker: not connected")
+
+// KiteDialer returns a Dialer over gokiteconnect's ticker. Each Conn is a fresh ticker.Ticker
+// with SetReconnectMaxRetries(0): the library then returns from ServeWithContext after the first
+// failure instead of reconnecting itself, so the Manager owns reconnects and resubscribes. This
+// avoids two library hazards (v4.4.3 ticker.go): Resubscribe mutates the unsynchronised
+// subscribedTokens map on the serve goroutine and prints the token list to stdout; and with
+// SetAutoReconnect(false) a failed dial dereferences a nil Conn.
+//
+// The ticker URL carries api_key and access_token in its query: errors passed to ev.OnError have
+// both values (raw and query-escaped) redacted by kite.RedactCredentials, and nothing here logs the URL. Errors raised after
+// the conn was stopped or closed (e.g. "use of closed network connection") are dropped.
+//
+// Known library hazard (not guarded here): processTextMessage does fmt.Errorf(msg.Data.(string))
+// on a {"type":"error"} text frame, so an error frame whose data is not a string panics on the
+// library's read goroutine.
+func KiteDialer(apiKey, accessToken string, root *url.URL) Dialer {
+	return func(ev Events) Conn {
+		t := kt.New(apiKey, accessToken)
+		if root != nil {
+			t.SetRootURL(*root)
+		}
+		t.SetAutoReconnect(true)
+		t.SetReconnectMaxRetries(0)
+		t.SetConnectTimeout(7 * time.Second)
+		k := &kiteConn{t: t}
+		t.OnConnect(func() {
+			// Runs on the serve goroutine right after the library assigned t.Conn on it, so reading
+			// t.Conn here is race-free; every other goroutine uses k.ws under k.mu.
+			ws := t.Conn
+			k.mu.Lock()
+			k.ws = ws
+			closed := k.closed
+			release := k.releaseDial
+			k.mu.Unlock()
+			if release != nil {
+				release() // the dial is over: let the next conn dial
+			}
+			if closed { // Stop or ctx cancel raced the dial: never surface a live socket
+				_ = ws.Close()
+				return
+			}
+			if ev.OnConnect != nil {
+				ev.OnConnect()
+			}
+		})
+		if ev.OnTick != nil {
+			t.OnTick(ev.OnTick)
+		}
+		if ev.OnOrderUpdate != nil {
+			t.OnOrderUpdate(ev.OnOrderUpdate)
+		}
+		if ev.OnError != nil {
+			t.OnError(func(err error) {
+				k.mu.Lock()
+				gone := k.closed || k.stopped
+				k.mu.Unlock()
+				if !gone {
+					ev.OnError(kite.RedactCredentials(err, apiKey, accessToken))
+				}
+			})
+		}
+		return k
+	}
+}
+
+// socket is the part of *websocket.Conn kiteConn uses itself (writes go through the library).
+type socket interface {
+	SetWriteDeadline(t time.Time) error
+	Close() error
+}
+
+type kiteConn struct {
+	t *kt.Ticker
+
+	mu          sync.Mutex
+	ws          socket             // set on OnConnect
+	cancel      context.CancelFunc // ends the serve ctx; set by Serve
+	releaseDial func()             // releases the kite.AcquireDial lock once; set by Serve while it holds the lock
+	served      bool
+	stopped     bool
+	closed      bool // serve ctx ended or Serve returned: late sockets are closed, writes refused
+}
+
+// Serve runs the library's serve loop under a ctx of its own, so Stop works whether it comes
+// before, during or after ServeWithContext (the library's Stop is a no-op until ServeWithContext
+// has assigned its cancel, and that assignment is unsynchronised — kiteConn never calls it). When
+// the ctx ends (caller cancel, Stop, or a failed write) the socket is closed so the library's
+// blocked read returns. Waiting for the dial lock also ends on ctx/Stop, so a Stop never waits behind
+// another conn's dial.
+func (k *kiteConn) Serve(ctx context.Context) {
+	k.mu.Lock()
+	if k.stopped || k.served {
+		k.mu.Unlock()
+		return
+	}
+	k.served = true
+	ctx, cancel := context.WithCancel(ctx)
+	k.cancel = cancel
+	k.mu.Unlock()
+	defer cancel()
+	defer k.closeSocket() // Serve returned: the conn is finished, later writes get errNotConnected
+
+	// kite.AcquireDial is the process-wide dial lock shared with the capability probe: the library
+	// writes gorilla's global websocket.DefaultDialer on every dial (P0-2 Ruling 46, P0-3 Ruling 50).
+	// A conn holds it from just before ServeWithContext until OnConnect fires or Serve returns.
+	release, err := kite.AcquireDial(ctx)
+	if err != nil {
+		return
+	}
+	defer release()
+	k.mu.Lock()
+	k.releaseDial = release
+	k.mu.Unlock()
+
+	unregister := context.AfterFunc(ctx, k.closeSocket)
+	defer unregister()
+	k.t.ServeWithContext(ctx)
+}
+
+func (k *kiteConn) closeSocket() {
+	k.mu.Lock()
+	k.closed = true
+	ws := k.ws
+	k.mu.Unlock()
+	if ws != nil {
+		_ = ws.Close()
+	}
+}
+
+// Stop ends Serve: non-blocking, idempotent, safe before Serve (Serve then returns at once).
+func (k *kiteConn) Stop() {
+	k.mu.Lock()
+	k.stopped = true
+	cancel := k.cancel
+	k.mu.Unlock()
+	if cancel != nil {
+		cancel() // AfterFunc closes the socket on its own goroutine
+	}
+}
+
+func (k *kiteConn) Subscribe(tokens []uint32) error {
+	return k.write(func() error { return k.t.Subscribe(tokens) })
+}
+
+func (k *kiteConn) Unsubscribe(tokens []uint32) error {
+	return k.write(func() error { return k.t.Unsubscribe(tokens) })
+}
+
+func (k *kiteConn) SetMode(m Mode, tokens []uint32) error {
+	return k.write(func() error { return k.t.SetMode(m.kite(), tokens) })
+}
+
+// write runs one library write under a writeTimeout deadline. Writes are never concurrent (Conn
+// contract) and k.mu is not held while writing, so Stop never waits on a stalled socket. A failed
+// write leaves the WebSocket unusable, so it ends Serve and the Manager redials and resubscribes.
+func (k *kiteConn) write(op func() error) error {
+	k.mu.Lock()
+	ws, closed, cancel := k.ws, k.closed || k.stopped, k.cancel
+	k.mu.Unlock()
+	if ws == nil || closed {
+		return errNotConnected
+	}
+	err := ws.SetWriteDeadline(clock.SystemNow().Add(writeTimeout))
+	if err == nil {
+		err = op()
+	}
+	if err != nil && cancel != nil {
+		cancel()
+	}
+	return err
+}

@@ -1,0 +1,131 @@
+# go-arch-lint v1.19.0 — ARCHITECTURE §2.4 rules 2, 3, 5, 6, 7 and the component graph.
+# go-arch-lint does not see standard-library imports, so rule 1/4 (database/sql, net/http), rule 8 (time)
+# and the G-0 call check live in internal/archtest. Later sub-plans add their components and vendors here.
+version: 3
+workdir: .
+allow:
+  depOnAnyVendor: false
+  deepScan: false   # interface injection (store.SettingsRepo → settings.Backend) is the intended design
+exclude:
+  - ta
+  - third_party
+  - frontend/node_modules
+  - internal/archtest/testdata
+excludeFiles:
+  - "^.*_test\\.go$"
+
+vendors:
+  wails:      { in: [github.com/wailsapp/wails/v2, github.com/wailsapp/wails/v2/**] }
+  kite:       { in: [github.com/zerodha/gokiteconnect/v4, github.com/zerodha/gokiteconnect/v4/**] }
+  sqlite:     { in: [modernc.org/sqlite, modernc.org/sqlite/**] }
+  keyring:    { in: [github.com/zalando/go-keyring] }
+  xcrypto:    { in: [golang.org/x/crypto/**] }
+  flock:      { in: [github.com/gofrs/flock] }
+  lumberjack: { in: [gopkg.in/natefinch/lumberjack.v2] }
+  zstd:       { in: [github.com/klauspost/compress/zstd] }
+  xtools:     { in: [golang.org/x/tools/go/packages] }
+  websocket:  { in: [github.com/gorilla/websocket] }
+  uuid:       { in: [github.com/google/uuid] }
+  godbus:     { in: [github.com/godbus/dbus/v5] }       # P0-3 Task 23: second-launch hand-off (Wails' Linux single-instance protocol)
+
+components:
+  cmd:        { in: cmd/tradeloom }
+  frontend:   { in: frontend }
+  app:        { in: internal/app }
+  api:        { in: internal/app/api }                 # P0-3 Task 22: Wails-bound API structs (call service only)
+  eventsgen:  { in: internal/app/eventsgen }           # P0-3 Task 21: go:generate tool for frontend/src/api/events.gen.ts
+  bus:        { in: internal/bus }
+  clock:      { in: internal/clock }
+  logging:    { in: internal/logging }
+  settings:   { in: internal/settings }
+  store:      { in: internal/store }
+  storetest:  { in: internal/store/storetest }          # test helper: no production component may depend on it
+  secrets:    { in: internal/secrets }
+  keyringprobe: { in: internal/secrets/keyringprobe }   # S0-4 spike tool
+  orderwrite: { in: internal/kite/orderwrite }
+  archtest:   { in: internal/archtest }
+  # P0-2 market data (packages present on this branch).
+  calendardata: { in: assets/calendar }                 # embedded exchange-calendar CSV
+  calendar:   { in: internal/calendar }
+  candles:    { in: internal/candles }
+  candles_sqlite: { in: internal/candles/sqlite }
+  candles_builder: { in: internal/candles/builder }
+  candles_backfill: { in: internal/candles/backfill } # P0-2 Task 14: resumable historical backfill   # P0-2 Task 19: ticks → candles
+  instruments: { in: internal/instruments }        # P0-2 Tasks 15–16: instrument master and refresher       # §2.4 rule 4: the only other sqlite user
+  kite:       { in: internal/kite }
+  ratelimit:  { in: internal/kite/ratelimit }
+  ticker:     { in: internal/kite/ticker }
+  feed:       { in: internal/kite/feed }                # P0-3: one ticker.Manager per login
+  kitemock:   { in: internal/kite/mock }                # test double: no production component may depend on it
+  # P0-3 (local order/position cache; read-only until P4 wires orderwrite).
+  orders:     { in: internal/orders }
+  service:    { in: internal/service }                  # P0-3 Task 14: transport-neutral façade (§2.2, AD-09)
+  servicetest: { in: internal/service/servicetest }     # P0-3 Task 22 test helper: no production component may depend on it
+  licences:   { in: internal/licences }                 # P0-3 Task 33: embedded THIRD_PARTY_NOTICES.md copy (leaf; wired by cmd)
+
+commonComponents:
+  - logging
+  - clock
+
+deps:
+  cmd:        # P0-3 Task 23: the composition root wires P0-1, P0-2 and P0-3 (ARCH §3.2)
+    mayDependOn: [frontend, app, service, bus, settings, store, secrets, calendar, candles, candles_sqlite, candles_backfill, candles_builder, instruments, kite, ratelimit, ticker, feed, orders, licences]
+    canUse: [wails, uuid]
+  app:
+    mayDependOn: [bus, settings, store, secrets, service, api]   # P0-3 Task 22: lifecycle + event bridge over the façade
+    canUse: [wails, godbus]
+  api:        # P0-3 Task 22: bound structs reach the engine only through service (rule 7)
+    mayDependOn: [service, settings]
+  eventsgen:  # reads service.EventCatalogue() only (rule 7: app reaches the engine through service)
+    mayDependOn: [service]
+  clock:
+    mayDependOn: [bus]
+  settings:
+    mayDependOn: [bus]
+  store:
+    canUse: [sqlite, flock, zstd]
+  secrets:
+    canUse: [keyring, xcrypto]
+  keyringprobe:
+    mayDependOn: [secrets]
+  logging:
+    canUse: [lumberjack]
+  orderwrite:
+    canUse: [kite]
+  archtest:
+    canUse: [xtools]
+  calendar:
+    mayDependOn: [calendardata]
+  candles:
+    mayDependOn: [calendar]
+  candles_sqlite:
+    mayDependOn: [candles, calendar, store]
+    canUse: [sqlite]
+  kite:
+    mayDependOn: [bus, ratelimit, settings, secrets, store]   # settings/secrets/store are §2.3 leaves (P0-3 Session: keys, token, sessions row)
+    canUse: [kite, uuid]
+  candles_backfill:
+    mayDependOn: [bus, calendar, candles, kite, ratelimit]
+    canUse: [uuid]
+  candles_builder:
+    mayDependOn: [bus, calendar, candles, ticker]
+  instruments:
+    mayDependOn: [bus, calendar, kite, ratelimit, store]
+  ticker:
+    mayDependOn: [bus, kite]
+    canUse: [kite]
+  feed:
+    mayDependOn: [ticker]
+  service:   # §2.3: the façade sits above every domain package; only app/api (Task 22) and cmd depend on it
+    mayDependOn: [bus, settings, store, secrets, calendar, kite, ratelimit, ticker, feed, candles, candles_backfill, candles_builder, instruments, orders]
+  orders:
+    mayDependOn: [bus, kite, ratelimit, store, ticker]   # P0-3 Task 19 Sync: bus topics, poll priority, orders cache, ticker ticks; §2.3 also allows orderwrite (P4)
+  storetest:
+    mayDependOn: [store]
+  servicetest:
+    mayDependOn: [bus, calendar, kite, orders, secrets, service, settings, store, storetest]
+  ratelimit:
+    mayDependOn: [bus]
+  kitemock:
+    mayDependOn: [kite, ratelimit]
+    canUse: [websocket]

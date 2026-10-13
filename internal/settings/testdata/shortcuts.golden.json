@@ -1,0 +1,191 @@
+[
+  {
+    "id": "nav.1",
+    "label": "Go to Home",
+    "scope": "global",
+    "defaultBinding": "Alt+1",
+    "binding": "Alt+1"
+  },
+  {
+    "id": "nav.2",
+    "label": "Go to Scalper",
+    "scope": "global",
+    "defaultBinding": "Alt+2",
+    "binding": "Alt+2"
+  },
+  {
+    "id": "nav.3",
+    "label": "Go to Strategies",
+    "scope": "global",
+    "defaultBinding": "Alt+3",
+    "binding": "Alt+3"
+  },
+  {
+    "id": "nav.4",
+    "label": "Go to Equity Builder",
+    "scope": "global",
+    "defaultBinding": "Alt+4",
+    "binding": "Alt+4"
+  },
+  {
+    "id": "nav.5",
+    "label": "Go to Live Strategies",
+    "scope": "global",
+    "defaultBinding": "Alt+5",
+    "binding": "Alt+5"
+  },
+  {
+    "id": "nav.6",
+    "label": "Go to Scanners",
+    "scope": "global",
+    "defaultBinding": "Alt+6",
+    "binding": "Alt+6"
+  },
+  {
+    "id": "nav.7",
+    "label": "Go to New Scanner",
+    "scope": "global",
+    "defaultBinding": "Alt+7",
+    "binding": "Alt+7"
+  },
+  {
+    "id": "nav.8",
+    "label": "Go to Scanner Alerts",
+    "scope": "global",
+    "defaultBinding": "Alt+8",
+    "binding": "Alt+8"
+  },
+  {
+    "id": "toasts.focus",
+    "label": "Focus toasts",
+    "scope": "global",
+    "defaultBinding": "Alt+T",
+    "binding": "Alt+T"
+  },
+  {
+    "id": "search.open",
+    "label": "Open search",
+    "scope": "global",
+    "defaultBinding": "Ctrl+K",
+    "binding": "Ctrl+K"
+  },
+  {
+    "id": "help.open",
+    "label": "Open help",
+    "scope": "global",
+    "defaultBinding": "F1",
+    "binding": "F1"
+  },
+  {
+    "id": "kill.switch",
+    "label": "Kill switch",
+    "scope": "global",
+    "defaultBinding": "Ctrl+Shift+K",
+    "binding": "Ctrl+Shift+K"
+  },
+  {
+    "id": "chart.fullView",
+    "label": "Full-view chart",
+    "scope": "global",
+    "defaultBinding": "F11",
+    "binding": "F11"
+  },
+  {
+    "id": "chart.trendLine",
+    "label": "Draw trend line",
+    "scope": "chart",
+    "defaultBinding": "Alt+T",
+    "binding": "Alt+T"
+  },
+  {
+    "id": "chart.horizontalLine",
+    "label": "Draw horizontal line",
+    "scope": "chart",
+    "defaultBinding": "Alt+H",
+    "binding": "Alt+H"
+  },
+  {
+    "id": "chart.horizontalRay",
+    "label": "Draw horizontal ray",
+    "scope": "chart",
+    "defaultBinding": "Alt+J",
+    "binding": "Alt+J"
+  },
+  {
+    "id": "chart.verticalLine",
+    "label": "Draw vertical line",
+    "scope": "chart",
+    "defaultBinding": "Alt+V",
+    "binding": "Alt+V"
+  },
+  {
+    "id": "chart.crossLine",
+    "label": "Draw cross line",
+    "scope": "chart",
+    "defaultBinding": "Alt+C",
+    "binding": "Alt+C"
+  },
+  {
+    "id": "order.new",
+    "label": "New order",
+    "scope": "chart",
+    "defaultBinding": "Shift+T",
+    "binding": "Shift+T"
+  },
+  {
+    "id": "scalper.buy",
+    "label": "Scalper: buy",
+    "scope": "view",
+    "defaultBinding": "",
+    "binding": ""
+  },
+  {
+    "id": "scalper.sell",
+    "label": "Scalper: sell",
+    "scope": "view",
+    "defaultBinding": "",
+    "binding": ""
+  },
+  {
+    "id": "scalper.exitAll",
+    "label": "Scalper: exit all",
+    "scope": "view",
+    "defaultBinding": "",
+    "binding": ""
+  },
+  {
+    "id": "scalper.cancelAll",
+    "label": "Scalper: cancel all",
+    "scope": "view",
+    "defaultBinding": "",
+    "binding": ""
+  },
+  {
+    "id": "builder.undo",
+    "label": "Undo",
+    "scope": "builder",
+    "defaultBinding": "Ctrl+Z",
+    "binding": "Ctrl+Z"
+  },
+  {
+    "id": "builder.redo",
+    "label": "Redo",
+    "scope": "builder",
+    "defaultBinding": "Ctrl+Shift+Z",
+    "binding": "Ctrl+Shift+Z"
+  },
+  {
+    "id": "watchlist.moveUp",
+    "label": "Move item up",
+    "scope": "view",
+    "defaultBinding": "Alt+ArrowUp",
+    "binding": "Alt+ArrowUp"
+  },
+  {
+    "id": "watchlist.moveDown",
+    "label": "Move item down",
+    "scope": "view",
+    "defaultBinding": "Alt+ArrowDown",
+    "binding": "Alt+ArrowDown"
+  }
+]

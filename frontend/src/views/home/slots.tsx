@@ -1,0 +1,27 @@
+import { DashboardChart } from '../../chart/ui/DashboardChart';
+import { homeCopy } from '../../i18n/copy';
+import { itemIdentifier } from '../../instruments/naming';
+import { showOnDashboard } from '../../store/chartContextsStore';
+import { WatchlistPanel } from '../watchlists/WatchlistPanel';
+import './home.css';
+
+/** The main chart (FR-CHART-001/002, P0-5 Task 10): the dashboard chart context, restored from chart.dashboard. */
+export function HomeChartArea() {
+  return (
+    <section className="card home-slot home-slot--chart" aria-label={homeCopy.chartArea}>
+      <DashboardChart />
+    </section>
+  );
+}
+
+/**
+ * The watchlist panel (FR-WATCH-001). The slot keeps P0-4's card styling but is a plain div, so the page has one
+ * "Watchlist" region (the panel's own section), not two nested ones.
+ */
+export function HomeWatchlistArea() {
+  return (
+    <div className="card home-slot">
+      <WatchlistPanel onChartItem={(item) => showOnDashboard(itemIdentifier(item))} />
+    </div>
+  );
+}

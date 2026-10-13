@@ -1,0 +1,31 @@
+:root {
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px; --space-6: 24px; --space-8: 32px;
+  --radius-1: 4px; --radius-2: 8px; --radius-pill: 999px;
+  --font-ui: "Inter", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 24px;
+  --topbar-h: 48px; --sidebar-w: 208px; --sidebar-w-collapsed: 56px;
+  --motion-fast: 150ms; --motion-colour: 300ms;
+  --z-menu: 20; --z-dialog: 40; --z-toast: 60; --z-tooltip: 80;
+}
+
+/* chart (P0-5): background, text, up and down come from P0-4's colour tokens */
+:root {
+  --chart-bg: var(--bg);
+  --chart-text: var(--text);
+  --chart-grid: #eef1f4;
+  --chart-crosshair: #7b8794;
+  --chart-separator: #d9dee5;
+  --chart-volume-up: rgba(22, 163, 74, 0.45);
+  --chart-volume-down: rgba(220, 38, 38, 0.45);
+  --chart-band: rgba(59, 130, 246, 0.12);
+}
+
+:root[data-theme="dark"] {
+  --chart-grid: #1d232b;
+  --chart-crosshair: #8a96a6;
+  --chart-separator: #2a313b;
+  --chart-volume-up: rgba(34, 197, 94, 0.45);
+  --chart-volume-down: rgba(239, 68, 68, 0.45);
+  --chart-band: rgba(96, 165, 250, 0.16);
+}

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tradeloom
+GenericName=Trading strategy desktop
+Comment=Strategy builder, charts and watchlists for Zerodha Kite
+Exec=tradeloom
+Icon=tradeloom
+Terminal=false
+Categories=Office;Finance;
+StartupWMClass=tradeloom

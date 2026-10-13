@@ -1,0 +1,33 @@
+/* Instrument picker (FR-WATCH-007). Colours come only from the P0-4 theme variables. */
+.picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); min-width: 0; }
+.picker__left, .picker__right { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.picker__input { width: 100%; font-size: var(--fs-md); color: var(--text); }
+.picker__chips { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.picker__chip {
+  padding: 2px var(--space-3); border-radius: var(--radius-pill); border: 1px solid var(--border);
+  background: none; color: inherit; cursor: pointer;
+}
+.picker__chip:hover { background: var(--surface-2); }
+.picker__chip[aria-pressed="true"] { border-color: var(--accent); background: var(--surface-2); }
+.picker__hint { margin: 0; padding: 0 var(--space-2); font-size: var(--fs-xs); color: var(--text-muted); }
+.picker__error { margin: 0; color: var(--down); font-size: var(--fs-sm); }
+.picker__all { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); font-size: var(--fs-sm); }
+.picker__results, .picker__selected { max-height: 50vh; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.picker__results[aria-busy="true"] { opacity: 0.6; } /* rows of the previous query while the next one loads */
+.picker__row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2);
+  padding: var(--space-1) var(--space-2); border-radius: var(--radius-1);
+}
+.picker__row.is-active:focus-within { background: var(--surface-2); }
+.picker__cell { display: flex; align-items: center; min-width: 0; }
+.picker__heading { margin: 0; font-size: var(--fs-md); }
+.picker__selected-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+.picker__save { display: flex; align-items: center; gap: var(--space-2); margin-right: auto; flex-wrap: wrap; }
+/* Dialog lg (760px) leaves each pane ~356px: the company name may shrink and truncate here (the label title has it). */
+.picker__cell--label { overflow: hidden; }
+.picker__cell--label .instrument-label { width: 100%; }
+.picker__cell--label .instrument-label__company { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.picker__selected-row .instrument-label { min-width: 0; overflow: hidden; }
