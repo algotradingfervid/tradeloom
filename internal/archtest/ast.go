@@ -10,7 +10,9 @@ import (
 	"go/token"
 	"go/types"
 	"io/fs"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -596,8 +598,18 @@ func CheckKiteRawWrite(module string, pkgs []*packages.Package) []Violation {
 // orders, GTT, alerts, mutual funds, position conversion and holdings authorisation. /orders and
 // /portfolio/positions also prefix read endpoints; the rule bans those too outside the mock, because
 // production code reaches Kite only through gokiteconnect's read methods. The entries omit the leading
-// "/" (writePathPrefix adds it) so this list does not trip g0-path itself without exempting archtest.
-var writePathPrefixes = []string{"orders", "gtt", "alerts", "mf/", "portfolio/positions", "portfolio/holdings/authorise"}
+// "/" (writePathPrefix adds it) and are joined from segments at run time, so this list does not trip
+// g0-path itself (a relative path with a "/" is matched too, M1) without exempting archtest.
+var writePathPrefixes = joinSegments([][]string{{"orders"}, {"gtt"}, {"alerts"}, {"mf", ""},
+	{"portfolio", "positions"}, {"portfolio", "holdings", "authorise"}})
+
+func joinSegments(segs [][]string) []string {
+	out := make([]string, 0, len(segs))
+	for _, s := range segs {
+		out = append(out, strings.Join(s, "/"))
+	}
+	return out
+}
 
 // kitePath trims leading whitespace and a host ("https://api.kite.trade/x" or "api.kite.trade/x")
 // from s, leaving the path.
@@ -618,10 +630,33 @@ func kitePath(s string) string {
 	return s
 }
 
-// writePathPrefix returns the write-path prefix s starts with (case-folded), or "".
+// normKitePath returns the path s names as the server would route it (M1), or "" when s is not a path:
+// percent-decoded until stable (as netguard's requestPaths), host and leading whitespace trimmed
+// (kitePath), given a leading "/" when it is relative but contains a "/" ("orders/regular"; a bare word
+// such as "orders" or "GetOrders" is not a path), cleaned of dot segments and repeated slashes
+// (path.Clean), and lower-cased. A string that does not decode is matched undecoded.
+func normKitePath(s string) string {
+	for i := 0; i < 8; i++ {
+		u, err := url.PathUnescape(s)
+		if err != nil || u == s {
+			break
+		}
+		s = u
+	}
+	s = kitePath(s)
+	if !strings.HasPrefix(s, "/") {
+		if !strings.Contains(s, "/") {
+			return ""
+		}
+		s = "/" + s
+	}
+	return strings.ToLower(path.Clean(s))
+}
+
+// writePathPrefix returns the write-path prefix the normalised s starts with (normKitePath), or "".
 func writePathPrefix(s string) string {
-	p := strings.ToLower(kitePath(s))
-	if !strings.HasPrefix(p, "/") {
+	p := normKitePath(s)
+	if p == "" {
 		return ""
 	}
 	for _, w := range writePathPrefixes {
