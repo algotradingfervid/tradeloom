@@ -8,6 +8,9 @@ test('FR-SHELL-001 AC4 + FR-HOME-001 AC3: the right column scrolls on its own; n
   await right.evaluate((el) => {
     const filler = document.createElement('div');
     filler.style.height = '3000px';
+    // The column is a flex container: an empty div would shrink to fit (min-height auto = 0) and nothing would scroll.
+    // Real widgets have content, so their automatic minimum height keeps them full size; give the filler the same.
+    filler.style.flexShrink = '0';
     el.appendChild(filler);
   });
   const chart = page.getByRole('region', { name: 'Main chart' });

@@ -7,6 +7,7 @@ import './toast.css';
 
 const ICON: Record<ToastLevel, IconName> = { info: 'info', success: 'check', warning: 'warning', error: 'error' };
 
+/** FR-SHELL-009: the toast region is the one ARIA live region for toasts of every level (newest on top). */
 export function ToastRegion() {
   const visible = useToastStore((s) => s.visible);
   return (
@@ -72,7 +73,8 @@ function ToastItem({ toast }: { toast: Toast }) {
     <div
       ref={self}
       className={`toast toast--${toast.level}`}
-      role={toast.level === 'error' ? 'alert' : 'status'}
+      // No live role: the always-mounted region announces each toast as it is added. A role="alert"/"status" here
+      // would nest live regions (double announcements) and, mounting with its text, is not reliably read (Ruling 86 M5).
       tabIndex={-1}
       onMouseEnter={() => { hovered.current = true; pause(); }}
       onMouseLeave={() => { hovered.current = false; resumeIfIdle(); }}

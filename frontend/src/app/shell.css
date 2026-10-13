@@ -59,6 +59,7 @@
 .menu__version { display: block; text-align: right; font-size: var(--fs-xs); }
 
 .boot { display: flex; align-items: center; justify-content: center; height: 100vh; color: var(--text-muted); }
+.shell-banners { flex: none; }
 .banner { flex: none; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); background: var(--surface-2); border-bottom: 1px solid var(--border); }
 .banner > span { flex: 1 1 auto; }
 .banner--warn { border-left: 4px solid var(--warn); }
