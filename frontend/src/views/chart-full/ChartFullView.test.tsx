@@ -7,27 +7,40 @@ vi.mock('../../shortcuts/ShortcutProvider', () => ({ useShortcut: (id: string, h
 vi.mock('../../market/hooks', () => ({ useSubscription: vi.fn(), usePolled: () => false }));
 vi.mock('../../chart/LightweightChartsAdapter', async () => ({ LightweightChartsAdapter: (await import('../../chart/testing/FakeAdapter')).FakeAdapter }));
 
+import type { ReactElement } from 'react';
 import { ChartFullView } from './ChartFullView';
+import { BackendProvider } from '../../api/BackendContext';
 import { setBackend } from '../../api/current';
 import { demoSeed, readySession } from '../../api/mock/fixtures';
 import { createMockBackend, type MockBackend } from '../../api/mock/index';
-import { isShellRoute } from '../../app/routes';
+import { isRestorableRoute } from '../../app/routes';
 import { safeLastRoute } from '../../app/lastRoute';
+import { gateTarget } from '../../app/gate';
+import { __resetChartContexts } from '../../store/chartContextsStore';
+import { useTrackHistoryDepth } from '../../store/nav';
 import { useSessionStore } from '../../store/session';
+import { useSettingsStore } from '../../store/settings';
+
+/** RootLayout counts history entries; Back steps back only when there is an entry to go back to (ListPage pattern). */
+const Tracker = () => { useTrackHistoryDepth(); return null; };
 
 let backend: MockBackend;
+// useSetting (chart.default_timeframe) needs the BackendProvider the app always has.
+const withBackend = (ui: ReactElement) => <BackendProvider backend={backend}>{ui}</BackendProvider>;
 
-const renderAt = () => render(
+const renderAt = () => render(withBackend(
   <MemoryRouter initialEntries={['/home', { pathname: '/chart-full', state: { identifier: 'NSE:ADANIENT', timeframe: '1d' } }]} initialIndex={1}>
     <Routes>
       <Route path="/home" element={<p>Home view</p>} />
       <Route path="/chart-full" element={<ChartFullView />} />
     </Routes>
   </MemoryRouter>,
-);
+));
 
 beforeEach(() => {
   shortcuts.handlers = {};
+  __resetChartContexts();
+  useSettingsStore.getState().hydrate([]);
   backend = createMockBackend(demoSeed());
   setBackend(backend);
   useSessionStore.setState({ session: readySession() });
@@ -86,19 +99,64 @@ describe('ChartFullView', () => {
     expect(document.activeElement).toBe(screen.getByRole('region', { name: /Price chart/ }));
   });
 
-  it('without caller state (restored last view) opens NIFTY 50 at 1 Hour and Back goes Home', async () => {
-    render(
-      <MemoryRouter initialEntries={['/chart-full']}>
+  const renderWithoutState = () => render(withBackend(
+    <MemoryRouter initialEntries={['/chart-full']}>
+      <Tracker />
+      <Routes>
+        <Route path="/home" element={<p>Home view</p>} />
+        <Route path="/chart-full" element={<ChartFullView />} />
+      </Routes>
+    </MemoryRouter>,
+  ));
+
+  it('without caller state and no saved dashboard opens NIFTY 50 at the default timeframe; Back goes Home', async () => {
+    renderWithoutState();
+    expect(await screen.findByText('NIFTY 50')).toBeInTheDocument();
+    expect((screen.getByLabelText('Timeframe') as HTMLSelectElement).value).toBe('1h');
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(await screen.findByText('Home view')).toBeInTheDocument();
+  });
+
+  it('Ruling 119 I2: without caller state (restored last view) it opens the dashboard chart state (RELIANCE, 15m)', async () => {
+    await backend.settings.setUiState('chart.dashboard', JSON.stringify({ identifier: 'NSE:RELIANCE', timeframe: '15m' }));
+    renderWithoutState();
+    expect(await screen.findByText('RELIANCE')).toBeInTheDocument();
+    expect((screen.getByLabelText('Timeframe') as HTMLSelectElement).value).toBe('15m');
+  });
+
+  it('Ruling 119 I2: without caller state the Settings → Chart default timeframe applies when nothing is saved', async () => {
+    useSettingsStore.getState().hydrate([{ name: 'chart.default_timeframe', valueJson: '"day"' }]);
+    renderWithoutState();
+    await waitFor(() => expect((screen.getByLabelText('Timeframe') as HTMLSelectElement).value).toBe('1d'));
+  });
+
+  it('Ruling 119 I2: timeframe changes in the full view stay local and never write chart.dashboard', async () => {
+    await backend.settings.setUiState('chart.dashboard', JSON.stringify({ identifier: 'NSE:RELIANCE', timeframe: '15m' }));
+    renderWithoutState();
+    await screen.findByText('RELIANCE');
+    fireEvent.change(screen.getByLabelText('Timeframe'), { target: { value: '1d' } });
+    await waitFor(() => expect((screen.getByLabelText('Timeframe') as HTMLSelectElement).value).toBe('1d'));
+    expect(JSON.parse(backend.state.uiState['chart.dashboard'])).toEqual({ identifier: 'NSE:RELIANCE', timeframe: '15m' });
+  });
+
+  it('Ruling 119 m1: Back with nothing behind the entry goes Home even when caller state is present', async () => {
+    render(withBackend(
+      <MemoryRouter initialEntries={[{ pathname: '/chart-full', state: { identifier: 'NSE:ADANIENT', timeframe: '1d' } }]}>
+        <Tracker />
         <Routes>
           <Route path="/home" element={<p>Home view</p>} />
           <Route path="/chart-full" element={<ChartFullView />} />
         </Routes>
       </MemoryRouter>,
-    );
-    expect(await screen.findByText('NIFTY 50')).toBeInTheDocument();
-    expect((screen.getByLabelText('Timeframe') as HTMLSelectElement).value).toBe('1h');
-    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    ));
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
     expect(await screen.findByText('Home view')).toBeInTheDocument();
+  });
+
+  it('Ruling 119 m3: the session gate covers /chart-full (logged out → login, risk acknowledgement → risk)', () => {
+    expect(gateTarget(readySession({ state: 'logged_out' }), '/chart-full')).toBe('/login');
+    expect(gateTarget(readySession({ riskAckRequired: true }), '/chart-full')).toBe('/risk');
+    expect(gateTarget(readySession(), '/chart-full')).toBeNull();
   });
 
   it('G-0: no order actions in the full view', async () => {
@@ -107,9 +165,9 @@ describe('ChartFullView', () => {
     expect(screen.queryByRole('button', { name: /buy|sell|order/i })).toBeNull();
   });
 
-  it('the last-view restore accepts /chart-full (isShellRoute)', () => {
-    expect(isShellRoute('/chart-full')).toBe(true);
-    expect(safeLastRoute('/chart-full', isShellRoute)).toBe('/chart-full');
+  it('the last-view restore accepts /chart-full (isRestorableRoute)', () => {
+    expect(isRestorableRoute('/chart-full')).toBe(true);
+    expect(safeLastRoute('/chart-full', isRestorableRoute)).toBe('/chart-full');
   });
 
   it('unmount leaves no key listener, live subscription or chart event listener behind', async () => {

@@ -8,7 +8,7 @@ import { LoginView } from '../views/onboarding/LoginView';
 import { RiskDisclosureView } from '../views/onboarding/RiskDisclosureView';
 import { SetupView } from '../views/onboarding/SetupView';
 import { RestoreLastRoute } from './RestoreLastRoute';
-import { useRememberLastRoute } from './lastRoute';
+import { ShellServices } from './ShellServices';
 import { OrderBookView } from '../views/orders/OrderBookView';
 import { PositionsView } from '../views/positions/PositionsView';
 import { ProfileView } from '../views/profile/ProfileView';
@@ -18,7 +18,7 @@ import { DocsFrame } from './DocsFrame';
 import { RootLayout } from './RootLayout';
 import { ShellLayout } from './ShellLayout';
 
-/** Views rendered inside the shell frame. Later tasks (and P0-5: `chart-full`) append entries here. */
+/** Views rendered inside the shell frame. Later phases append entries here (the full-view chart is a root child). */
 export const shellChildren: RouteObject[] = [
   { path: 'home', element: <HomeView /> },
   { path: 'holdings', element: <HoldingsView /> },
@@ -35,17 +35,24 @@ export const docChildren: RouteObject[] = [
   { path: 'legal/:page', element: <LegalView /> },
 ];
 
-/** The full-view chart (P0-5 Task 11, FR-CHART-017) is remembered as the last view like a shell view. */
+/** The full-view chart (P0-5 Task 11, FR-CHART-017): no shell frame, but the shell's services (last view, shortcuts). */
 function ChartFullRoute() {
-  useRememberLastRoute();
-  return <ChartFullView />;
+  return (
+    <>
+      <ShellServices />
+      <ChartFullView />
+    </>
+  );
 }
 
 /** Root-level views outside the shell that the last-view restore may reopen. */
 const restorableRootChildren: RouteObject[] = [{ path: 'chart-full', element: <ChartFullRoute /> }];
 
-/** Whether this build has a shell view at `path` (the not-found catch-all excluded) — Ruling 94 M4. */
-export function isShellRoute(path: string): boolean {
+/**
+ * Whether the last-view restore may reopen `path`: a shell view, Help, or the full-view chart that this build has (the
+ * not-found catch-all excluded) — Ruling 94 M4.
+ */
+export function isRestorableRoute(path: string): boolean {
   // Help counts too (Ruling 117 I1): it opens in the shell once signed in. Legal pages are never remembered (lastRoute).
   const matches = matchRoutes([...shellChildren, ...docChildren, ...restorableRootChildren], path);
   const leaf = matches?.[matches.length - 1];
@@ -57,7 +64,7 @@ export function isShellRoute(path: string): boolean {
 
 /** Root-level children rendered without the shell (onboarding); the index reopens the last view. */
 export const rootChildren: RouteObject[] = [
-  { index: true, element: <RestoreLastRoute exists={isShellRoute} /> },
+  { index: true, element: <RestoreLastRoute exists={isRestorableRoute} /> },
   { path: 'setup', element: <SetupView /> },
   { path: 'login', element: <LoginView /> },
   { path: 'risk', element: <RiskDisclosureView /> },

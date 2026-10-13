@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, type NavigateFunction } from 'react-router-dom';
 import { ChartView } from '../../chart/ui/ChartView';
-import { parseTimeframe, SHIPPED_DEFAULT_TIMEFRAME, type TimeframeId } from '../../chart/timeframes';
-import { chartFullViewCopy as copy } from '../../i18n/copy';
-import { DEFAULT_DASHBOARD_SYMBOL } from '../../store/chartContextsStore';
+import { parseTimeframe, type TimeframeId } from '../../chart/timeframes';
+import { Skeleton } from '../../components/Skeleton';
+import { chartFullViewCopy as copy, chartViewCopy } from '../../i18n/copy';
+import { DASHBOARD_CONTEXT, hydrateDashboard, useChartContexts } from '../../store/chartContextsStore';
+import { useNavStore } from '../../store/nav';
 import { registerReset } from '../../store/reset';
+import { useSetting } from '../../store/settings';
 import { useShortcut } from '../../shortcuts/ShortcutProvider';
 
 export interface FullViewParams { identifier: string; timeframe: TimeframeId }
@@ -35,10 +38,10 @@ export function takeFullViewReturn(origin: string): boolean {
   return true;
 }
 
-function paramsOf(state: unknown): Partial<FullViewParams> | null {
+function paramsOf(state: unknown): FullViewParams | null {
   if (!state || typeof state !== 'object') return null;
   const s = state as Record<string, unknown>;
-  return { identifier: typeof s.identifier === 'string' ? s.identifier : undefined, timeframe: s.timeframe as TimeframeId | undefined };
+  return typeof s.identifier === 'string' ? { identifier: s.identifier, timeframe: parseTimeframe(s.timeframe) } : null;
 }
 
 /** Rendered from rootChildren, outside the shell: no top bar or sidebar, the chart fills the window (FR-CHART-017 AC3). */
@@ -46,16 +49,24 @@ export function ChartFullView() {
   const location = useLocation();
   const navigate = useNavigate();
   const mainRef = useRef<HTMLElement>(null);
-  const initial = paramsOf(location.state);
-  const [identifier, setIdentifier] = useState(initial?.identifier ?? DEFAULT_DASHBOARD_SYMBOL);
-  const [timeframe, setTimeframe] = useState<TimeframeId>(parseTimeframe(initial?.timeframe ?? SHIPPED_DEFAULT_TIMEFRAME));
-  // Opened by openFullViewChart, the entry below is the origin. Without caller state (the restored last view) there
-  // is nothing to go back to, so Back opens Home.
-  const fromCaller = initial !== null;
+  // Caller state (openFullViewChart) is read once. Without it (the restored last view, Ruling 119 I2) the full view
+  // starts from the dashboard chart's symbol and timeframe, hydrated as DashboardChart does. A full view opened from
+  // a P3 scanner row restores the same way: to the dashboard symbol, not the scanner's (no full-view UI-state key).
+  const [caller] = useState(() => paramsOf(location.state));
+  const [defaultSetting] = useSetting<string>('chart.default_timeframe', '60minute');
+  const defaultTf = parseTimeframe(defaultSetting);
+  const dashboard = useChartContexts((s) => s.contexts[DASHBOARD_CONTEXT]);
+  useEffect(() => { if (!caller) void hydrateDashboard(defaultTf); }, [caller, defaultTf]);
+  // Symbol and timeframe changes stay local to the full view: it never writes chart.dashboard.
+  const [local, setLocal] = useState<Partial<FullViewParams>>({});
+  const base = caller ?? dashboard;
+  const identifier = local.identifier ?? base?.identifier;
+  const timeframe = local.timeframe ?? base?.timeframe;
+  // Back steps back to the origin when there is an entry behind this one, else opens Home (ListPage pattern).
   const back = () => {
     returnTo = openedFrom;
     openedFrom = null;
-    if (fromCaller) void navigate(-1);
+    if (useNavStore.getState().depth > 1) void navigate(-1);
     else void navigate('/home', { replace: true });
   };
   const backRef = useRef(back);
@@ -63,8 +74,9 @@ export function ChartFullView() {
 
   useShortcut('chart.fullView', back); // F11 again returns to the framed view it came from
 
-  // Focus moves into the full view: the chart canvas, whose keys pan and zoom.
-  useEffect(() => { mainRef.current?.querySelector<HTMLElement>('.chart-view__canvas')?.focus(); }, []);
+  // Focus moves into the full view: the chart canvas, whose keys pan and zoom (once it exists, after hydration).
+  const ready = identifier !== undefined && timeframe !== undefined;
+  useEffect(() => { if (ready) mainRef.current?.querySelector<HTMLElement>('.chart-view__canvas')?.focus(); }, [ready]);
 
   // Escape leaves the full view, unless something on top handled it (a dialog, a menu) or a modal dialog is open.
   useEffect(() => {
@@ -81,8 +93,13 @@ export function ChartFullView() {
   return (
     <main ref={mainRef} className="chart-full" aria-label={copy.title}>
       <h1 className="visually-hidden">{copy.title}</h1>
-      <ChartView contextId={FULL_VIEW_CONTEXT} identifier={identifier} timeframe={timeframe}
-        onSymbolChange={setIdentifier} onTimeframeChange={setTimeframe} onBack={back} />
+      {ready ? (
+        <ChartView contextId={FULL_VIEW_CONTEXT} identifier={identifier} timeframe={timeframe}
+          onSymbolChange={(id) => setLocal((l) => ({ ...l, identifier: id }))}
+          onTimeframeChange={(tf) => setLocal((l) => ({ ...l, timeframe: tf }))} onBack={back} />
+      ) : (
+        <div className="chart-view"><Skeleton rows={6} label={chartViewCopy.loadingChart} /></div>
+      )}
     </main>
   );
 }

@@ -17,6 +17,7 @@ import { setBackend } from '../../api/current';
 import { demoSeed, readySession } from '../../api/mock/fixtures';
 import { createMockBackend, type MockBackend } from '../../api/mock/index';
 import { __resetChartContexts } from '../../store/chartContextsStore';
+import { useTrackHistoryDepth } from '../../store/nav';
 import { useSessionStore } from '../../store/session';
 import { useSettingsStore } from '../../store/settings';
 import { renderApp } from '../../test/render';
@@ -76,9 +77,11 @@ describe('DashboardChart', () => {
     expect(await screen.findByText('at /chart-full {"identifier":"NSE:NIFTY 50","timeframe":"1h"}')).toBeInTheDocument();
   });
 
+  // RootLayout's history-depth tracker: the full view's Back steps back only when there is an entry behind it.
+  const Tracker = () => { useTrackHistoryDepth(); return null; };
   const renderRoundTrip = () => render(
     <BackendProvider backend={backend}>
-      <MemoryRouter><Routes><Route path="/" element={<DashboardChart />} /><Route path="/chart-full" element={<ChartFullView />} /></Routes></MemoryRouter>
+      <MemoryRouter><Tracker /><Routes><Route path="/" element={<DashboardChart />} /><Route path="/chart-full" element={<ChartFullView />} /></Routes></MemoryRouter>
     </BackendProvider>,
   );
   const fullHeading = () => screen.findByRole('heading', { level: 1, name: 'Full-view chart' });
