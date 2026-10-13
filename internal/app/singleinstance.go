@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options"
 
 	"tradeloom/internal/logging"
+	"tradeloom/internal/settings"
 )
 
 // The process lock is P0-1's store.AcquireLock (taken inside app.Start, with the last-exit marker that
@@ -55,6 +56,10 @@ func ForwardToRunningInstance(uniqueID string, args []string, workDir string) er
 // the UI router to show that route (app.navigate).
 // Wails calls it on its own goroutine, so a panic here is recorded as a crash report (Ruling 89 M2); a
 // launch that arrives before Startup installed the runtime is logged and ignored.
+//
+// Argv is untrusted and may be a pasted URL: the "--view" value is checked with settings.ValidateLaunchRoute
+// (no query or fragment) before it goes anywhere, and the log carries only its length (final review I4).
+// The value after "--view" is a route by declaration, so it is never read as a Kite redirect.
 func (a *App) SecondInstance(data options.SecondInstanceData) {
 	defer logging.Recover("app.secondinstance")
 	rt := a.runtime()
@@ -64,6 +69,16 @@ func (a *App) SecondInstance(data options.SecondInstanceData) {
 	}
 	rt.Focus()
 	for i, arg := range data.Args {
+		if arg == "--view" && i+1 < len(data.Args) {
+			route := strings.TrimSpace(data.Args[i+1])
+			if err := settings.ValidateLaunchRoute(route); err != nil {
+				a.d.Log.Warn("second launch asked for a view that is not an in-app route; ignored", "len", len(route), "reason", err)
+				return
+			}
+			a.d.Log.Info("second launch asked for a view", "len", len(route))
+			a.d.Service.Navigate(route)
+			return
+		}
 		if strings.Contains(arg, "request_token=") {
 			ctx := a.context()
 			a.d.Log.Info("second launch carried a Kite redirect; completing the login")
@@ -72,11 +87,6 @@ func (a *App) SecondInstance(data options.SecondInstanceData) {
 					a.d.Log.Warn("login from a second launch failed", "err", err)
 				}
 			})
-			return
-		}
-		if arg == "--view" && i+1 < len(data.Args) {
-			a.d.Log.Info("second launch asked for a view", "route", data.Args[i+1])
-			a.d.Service.Navigate(data.Args[i+1])
 			return
 		}
 	}

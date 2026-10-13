@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -114,5 +115,43 @@ func TestSecondInstance_NavigatesToView(t *testing.T) {
 	a.SecondInstance(options.SecondInstanceData{Args: []string{"--view"}}) // no route: focus only
 	if fr.focusCount() != 2 {
 		t.Fatalf("focus %d", fr.focusCount())
+	}
+}
+
+// Final review I4: a "--view" value with a query or fragment (where a pasted redirect URL would carry a
+// token) is refused before it is logged or navigated, and is never mistaken for a Kite redirect. The log
+// carries only the value's length (as service.Navigate does), never the value.
+func TestSecondInstance_RefusesViewWithQueryAndLogsLengthOnly(t *testing.T) {
+	var buf syncBuf
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	prev := slog.Default()
+	slog.SetDefault(log) // servicetest.New wires slog.Default() into the service, so its Navigate log is captured too
+	defer slog.SetDefault(prev)
+	svc, fs, _ := servicetest.New(t)
+	a := New(Deps{Service: svc, Log: log})
+	fr := newFakeRuntime()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.start(ctx, fr.rt())
+	a.SecondInstance(options.SecondInstanceData{Args: []string{"--view", "/home?request_token=rtokPLANTED9&status=success"}})
+	a.SecondInstance(options.SecondInstanceData{Args: []string{"--view", "/home#rtokFRAGMENT"}})
+	time.Sleep(50 * time.Millisecond)
+	if fr.sawEvent(service.EvAppNavigate) || len(fs.Forwarded()) != 0 || len(fs.Completed()) != 0 || fr.focusCount() != 2 {
+		t.Fatalf("navigated %v forwarded %v completed %v focus %d", fr.sawEvent(service.EvAppNavigate), fs.Forwarded(), fs.Completed(), fr.focusCount())
+	}
+	out := buf.String()
+	for _, leak := range []string{"request_token", "rtokPLANTED9", "rtokFRAGMENT", "/home?", "/home#"} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("log carries the argv value (%q): %s", leak, out)
+		}
+	}
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "len=") {
+		t.Fatalf("refusal must be logged with the length only: %s", out)
+	}
+	// The accepted path still logs the length, not the route.
+	a.SecondInstance(options.SecondInstanceData{Args: []string{"--view", "/settings/data"}})
+	eventually(t, "navigate event", func() bool { return fr.sawEvent(service.EvAppNavigate) })
+	if out := buf.String(); strings.Contains(out, "/settings/data") {
+		t.Fatalf("log carries the route: %s", out)
 	}
 }
