@@ -103,6 +103,51 @@ test('FR-CHART-017 AC3: full view renders outside the shell; F11 toggles between
   await expect(panel(page)).toBeVisible();
 });
 
+// NFR-07 (P0-5 Task 18 plan text, carried by Task 19). Additions to the plan text, all stricter: each change must reach
+// the backend (one more chart.candles call) so a no-op cannot pass, the storm must reach the UI (NIFTY 50 pill shows a
+// storm LTP), and the time runs to the first task after the frame's paint instead of to the rAF callback.
+test('NFR-07: timeframe change paints < 100 ms during a 10 Hz × 250-token tick storm', async ({ page }) => {
+  await page.evaluate(() => {
+    const toks = [256265, 260105, 265, 738561, 779521];
+    const w = window as unknown as { __storm?: ReturnType<typeof setInterval> };
+    w.__storm = setInterval(() => window.__tradeloomMock!.emit('tick.batch',
+      Array.from({ length: 250 }, (_, i) => {
+        const ltp = 1000 + Math.random();
+        return { token: toks[i % toks.length], ltp, close: 1000, change: ltp - 1000, changePct: (ltp - 1000) / 10, volume: 0, tsMs: Date.now(), polled: false };
+      })), 100);
+  });
+  try {
+    await expect(strip(page).getByRole('button', { name: /^NIFTY 50/ })).toContainText(/1,000\.\d\d/);
+    const run = await page.evaluate(async () => {
+      const sel = document.querySelector('select[aria-label="Timeframe"]') as HTMLSelectElement;
+      const candleCalls = () => window.__tradeloomMock!.callsTo('chart.candles').length;
+      const afterPaint = () => new Promise((r) => requestAnimationFrame(() => {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => r(null);
+        ch.port2.postMessage(null);
+      }));
+      const samples: number[] = [];
+      let applied = 0;
+      for (let k = 0; k < 10; k++) {
+        const before = candleCalls();
+        const t0 = performance.now();
+        sel.value = k % 2 ? '1h' : '15m';
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        await afterPaint();
+        samples.push(performance.now() - t0);
+        await new Promise((r) => setTimeout(r, 150));
+        if (candleCalls() > before && sel.value === (k % 2 ? '1h' : '15m')) applied++;
+      }
+      return { samples, applied };
+    });
+    console.log(`NFR-07 ${test.info().project.name}: worst ${Math.max(...run.samples).toFixed(1)} ms, samples ${run.samples.map((s) => s.toFixed(1)).join(', ')}`);
+    expect(run.applied).toBe(10);
+    expect(Math.max(...run.samples)).toBeLessThan(100);
+  } finally {
+    await page.evaluate(() => clearInterval((window as unknown as { __storm?: ReturnType<typeof setInterval> }).__storm));
+  }
+});
+
 test('FR-CHART-003 AC4 (no data plan, ?seed=personal): data-plan message, no chart history', async ({ page }) => {
   await openApp(page, '?seed=personal');
   await expect(page.getByText('Charts need a Kite Connect data plan')).toBeVisible();

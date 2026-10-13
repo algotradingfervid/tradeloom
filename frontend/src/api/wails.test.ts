@@ -28,6 +28,12 @@ describe('Wails adapter wiring (generated bindings call window.go.api.<Struct>.<
     await backend.calendar.remove('NSE', '2026-10-20');
     expect(Remove).toHaveBeenCalledWith('NSE', '2026-10-20');
   });
+  it('system.openExternal opens the URL through runtime.BrowserOpenURL (system browser, not the app webview)', async () => {
+    const BrowserOpenURL = vi.fn();
+    (window as WailsWindow).runtime = { BrowserOpenURL };
+    await createWailsBackend().system.openExternal('https://www.tradingview.com/');
+    expect(BrowserOpenURL).toHaveBeenCalledWith('https://www.tradingview.com/');
+  });
   it('subscribes through runtime.EventsOnMultiple and returns its unsubscribe', () => {
     const off = vi.fn();
     const EventsOnMultiple = vi.fn(() => off);

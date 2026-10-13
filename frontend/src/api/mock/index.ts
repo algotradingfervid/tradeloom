@@ -391,6 +391,7 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
     system: wrap('system', {
       info: () => copy(state.info),
       status: () => copy(state.status),
+      openExternal: () => undefined,
     }),
     chart: wrap('chart', market.chart),
     instruments: wrap('instruments', market.instruments),
