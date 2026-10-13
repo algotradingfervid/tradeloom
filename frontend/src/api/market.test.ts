@@ -235,6 +235,13 @@ describe('mock market behaves like the Go service', () => {
     expect(await watchQuotes('watchlist', [256265, RELIANCE.token])).toMatchObject({ live: [256265, RELIANCE.token], polled: [] });
   });
 
+  it('a published tick.batch feeds the Watch snapshot (Go rememberTicks before emit, events.go), so a later Watch never regresses the price', async () => {
+    backend.emit('tick.batch', [{ token: 256265, ltp: 22600, close: 22500, change: 100, changePct: 100 / 225, volume: 7, tsMs: 5, polled: false }]);
+    const r = await watchQuotes('watchlist', [256265, RELIANCE.token]);
+    expect(r.snapshot.map((t) => [t.token, t.ltp, t.close, t.volume])).toEqual([[256265, 22600, 22500, 7], [RELIANCE.token, 1290, 1290 * 0.995, 0]]);
+    expect(backend.state.quotes[256265].ltp).toBe(22600);
+  });
+
   it('M6: the mock accepts exactly QUOTE_CONSUMERS', async () => {
     for (const c of QUOTE_CONSUMERS) await expect(watchQuotes(c, [])).resolves.toMatchObject({ live: [] });
     await expect(watchQuotes('scanner' as never, [1])).rejects.toMatchObject({ code: 'invalid_consumer', stage: 'quotes' });

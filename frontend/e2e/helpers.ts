@@ -4,9 +4,7 @@ export const P0_VIEWS = [
   '/home', '/holdings', '/positions', '/orders', '/profile',
   '/settings/kite', '/settings/appearance', '/settings/chart', '/settings/calendar', '/settings/data',
   '/settings/shortcuts', '/settings/diagnostics', '/settings/about',
-  '/help', '/help/kite-setup', '/help/keyboard-shortcuts', '/legal/terms', '/legal/privacy', '/legal/risk', '/no-such-view',
-  // P0-5 views (the chart's real-render checks stay with P0-5 Task 19; these guards cover the frame).
-  '/chart-full',
+  '/help', '/help/kite-setup', '/help/keyboard-shortcuts', '/legal/terms', '/legal/privacy', '/legal/risk', '/chart-full', '/no-such-view',
 ];
 
 export async function openApp(page: Page, query = ''): Promise<void> {
