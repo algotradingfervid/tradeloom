@@ -11,7 +11,7 @@ import * as Settings from '../../wailsjs/go/api/Settings';
 import * as System from '../../wailsjs/go/api/System';
 import * as Watchlists from '../../wailsjs/go/api/Watchlists';
 import { kite, orders, service, settings } from '../../wailsjs/go/models';
-import { EventsOn } from '../../wailsjs/runtime/runtime';
+import { BrowserOpenURL, EventsOn } from '../../wailsjs/runtime/runtime';
 import type {
   AppInfo, Backend, BackupInfo, BookSnapshot, CalendarEntryDTO, CalendarEntryInput, CalendarInfo, CandleDTO, CandlesRequest,
   CandlesResult, ClockOffset, CrashInfo, CredentialsInfo, CredentialsInput, DataStats, EventMap, EventName, FeedState, HoldingRow,
@@ -115,6 +115,7 @@ export function createWailsBackend(): Backend {
     system: {
       info: () => cast<AppInfo>(System.Info()).then(normInfo),
       status: () => cast(System.Status()),
+      openExternal: async (url) => BrowserOpenURL(url),
     },
     chart: {
       candles: (req) => cast<CandlesResult>(Chart.Candles(service.CandlesRequest.createFrom(req))).then(normCandles),

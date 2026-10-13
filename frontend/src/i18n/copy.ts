@@ -372,6 +372,9 @@ export const aboutCopy = {
   component: 'Component',
   licenceVersion: 'Version',
   licence: 'Licence',
+  chartLibrary: 'Chart library',
+  chartLink: 'TradingView website',
+  chartLinkHint: '(opens in your web browser)',
 } as const;
 
 export const dataCopy = {

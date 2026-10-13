@@ -281,6 +281,8 @@ export interface Backend {
   system: {
     info(): Promise<AppInfo>;
     status(): Promise<StatusSnapshot>;
+    /** Opens `url` in the system browser; the single app webview never navigates off-origin (NFR-04, Ruling 110 I4). */
+    openExternal(url: string): Promise<void>;
   };
   chart: {
     candles(req: CandlesRequest): Promise<CandlesResult>;
