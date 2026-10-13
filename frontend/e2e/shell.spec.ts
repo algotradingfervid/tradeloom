@@ -32,3 +32,29 @@ test('FR-SHELL-001 AC2: at 1280×720 no horizontal scrollbar; status, quick link
     expect(box!.x + box!.width).toBeLessThanOrEqual(1280);
   }
 });
+
+test('P0-5 Ruling 113 I1: a keyboard-focused ticker pill shows its focus ring inside the clipping ticker strip', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto('/');
+  const ticker = page.getByTestId('topbar-ticker');
+  for (const name of [/^NIFTY 50,/, /^NIFTY BANK,/, /^SENSEX,/]) {
+    const pill = page.getByRole('button', { name });
+    await page.keyboard.press('Shift'); // a keyboard interaction first, so programmatic focus matches :focus-visible
+    await pill.focus();
+    expect(await pill.evaluate((el) => el.matches(':focus-visible'))).toBe(true);
+    const ring = await pill.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { style: s.outlineStyle, width: parseFloat(s.outlineWidth), offset: parseFloat(s.outlineOffset) };
+    });
+    expect(ring.style).not.toBe('none');
+    expect(ring.width).toBeGreaterThan(0);
+    // The ring is drawn from the border edge outwards by `offset`; with offset ≤ -width it lies inside the pill.
+    expect(ring.offset).toBeLessThanOrEqual(-ring.width);
+    const pillBox = (await pill.boundingBox())!;
+    const tickerBox = (await ticker.boundingBox())!;
+    expect(pillBox.x).toBeGreaterThanOrEqual(tickerBox.x);
+    expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(tickerBox.x + tickerBox.width);
+    expect(pillBox.y).toBeGreaterThanOrEqual(tickerBox.y);
+    expect(pillBox.y + pillBox.height).toBeLessThanOrEqual(tickerBox.y + tickerBox.height);
+  }
+});

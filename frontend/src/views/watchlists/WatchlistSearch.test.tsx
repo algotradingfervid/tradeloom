@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../api/instruments', () => ({ searchInstruments: vi.fn() }));
@@ -48,6 +48,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup(); // unmount before unregistering the backend (Task 19)
   vi.useRealTimers();
   setBackend(null);
 });

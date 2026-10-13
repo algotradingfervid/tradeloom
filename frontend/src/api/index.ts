@@ -15,6 +15,8 @@ export function defaultBackend(): Backend {
     persistKey: params.has('persist') ? 'tradeloom.mock.settings' : undefined,
     autoJobs: true,
   });
+  // `?fail=system.info,settings.all`: those calls fail until __tradeloomMock.clearFailures() (e2e of the boot notice).
+  for (const method of params.get('fail')?.split(',').filter(Boolean) ?? []) mock.failAlways(method, `${method} unavailable (mock)`);
   window.__tradeloomMock = mock;
   return mock;
 }

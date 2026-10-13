@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Profile } from '../api/backend';
 import { Icon } from '../components/Icon';
@@ -12,10 +13,15 @@ import { useTheme } from './theme';
 import { useProfile } from './useProfile';
 
 export function Avatar({ profile, size = 32 }: { profile: Profile | null; size?: number }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
   if (!profile) {
     return <span className="avatar" style={{ width: size, height: size }} aria-hidden="true"><Icon name="user" size={size * 0.6} /></span>;
   }
-  if (profile.avatarUrl) return <img className="avatar" src={profile.avatarUrl} alt="" width={size} height={size} />;
+  // Kite's picture is remote: offline, or blocked by a future img-src CSP, it would show a broken image, so a failed
+  // load falls back to the initials (Ruling 90 M3). A different URL is tried afresh.
+  if (profile.avatarUrl && failedUrl !== profile.avatarUrl) {
+    return <img className="avatar" src={profile.avatarUrl} alt="" width={size} height={size} onError={() => setFailedUrl(profile.avatarUrl)} />;
+  }
   return <span className="avatar" style={{ width: size, height: size }} aria-hidden="true">{profile.initials}</span>;
 }
 

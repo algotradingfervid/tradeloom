@@ -69,3 +69,14 @@ describe('mock backend', () => {
     expect(seedByName('personal').session.dataPlan).toBe('none');
   });
 });
+
+describe('failAlways / clearFailures (Task 19 e2e ?fail=)', () => {
+  it('fails every call until cleared, then answers again', async () => {
+    const m = createMockBackend(demoSeed());
+    m.failAlways('system.info', 'down');
+    await expect(m.system.info()).rejects.toThrow('down');
+    await expect(m.system.info()).rejects.toThrow('down');
+    m.clearFailures();
+    await expect(m.system.info()).resolves.toMatchObject({ version: expect.any(String) });
+  });
+});
