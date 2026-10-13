@@ -37,7 +37,8 @@ describe('useSetting', () => {
   it('keeps the old value and returns the reason when the backend refuses (FR-ACCT-012 AC2 pattern)', async () => {
     const { user } = setup();
     await user.click(screen.getByText('bad'));
-    expect(await screen.findByText('Keep between 1 and 365 backups')).toBeInTheDocument();
+    // Go service.SetSetting: invalid_setting with the settings.ValidationError text (settings: <key>: <reason>).
+    expect(await screen.findByText('settings: backup.schedule.keep: 0 is outside 1…365')).toBeInTheDocument();
     expect(screen.getByTestId('value')).toHaveTextContent('7');
   });
   it('does not call the backend while writes are suspended', async () => {
@@ -55,7 +56,7 @@ describe('writeSetting rollback guard (Ruling 83-F M4)', () => {
     useSettingsStore.getState().hydrate([{ name: 'backup.schedule.keep', valueJson: '7' }]);
     const pending = writeSetting(backend, 'backup.schedule.keep', 0);
     useSettingsStore.getState().put('backup.schedule.keep', 14); // settings.changed from another writer
-    expect(await pending).toMatchObject({ code: 'invalid' });
+    expect(await pending).toMatchObject({ code: 'invalid_setting', stage: 'settings', reason: 'settings: backup.schedule.keep: 0 is outside 1…365' });
     expect(useSettingsStore.getState().values['backup.schedule.keep']).toBe(14);
   });
   it('still rolls back when nothing else changed the key', async () => {

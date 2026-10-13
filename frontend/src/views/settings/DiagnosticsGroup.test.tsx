@@ -21,7 +21,7 @@ describe('FR-SHELL-018 diagnostics (UI)', () => {
     const select = await screen.findByLabelText('Log detail');
     // Armed after mount: ui.last_route is written through settings.set on mount.
     await waitFor(() => expect(backend.callsTo('settings.set').some((c) => c.args[0] === 'ui.last_route')).toBe(true));
-    backend.failNext('settings.set', 'Settings database is read-only', 'invalid');
+    backend.failNext('settings.set', 'Settings database is read-only', 'internal');
     await user.selectOptions(select, 'debug');
     expect(await screen.findByText('Settings database is read-only')).toBeInTheDocument();
     expect(select).toHaveValue('info');

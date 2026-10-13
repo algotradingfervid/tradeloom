@@ -435,11 +435,11 @@ describe('Settings → Appearance and Chart', () => {
     const backend = createMockBackend(demoSeed());
     const { user } = renderApp({ route: '/settings/appearance', backend });
     const dark = await screen.findByRole('switch', { name: 'Dark theme' });
-    backend.failNext('settings.set', 'Settings database is read-only', 'invalid');
+    backend.failNext('settings.set', 'Settings database is read-only', 'internal');
     await user.click(dark);
     expect(await screen.findByText('The theme could not be saved: Settings database is read-only')).toBeInTheDocument();
     await waitFor(() => expect(dark).toHaveAttribute('aria-checked', 'false'));
-    backend.failNext('settings.set', 'Settings database is read-only', 'invalid');
+    backend.failNext('settings.set', 'Settings database is read-only', 'internal');
     await user.click(screen.getByRole('switch', { name: 'Follow system theme' }));
     expect(await screen.findByText('The setting could not be saved: Settings database is read-only')).toBeInTheDocument();
   });

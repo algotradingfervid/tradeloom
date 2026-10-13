@@ -1,11 +1,13 @@
 import type {
   AppInfo, Backend, BackupInfo, BookSnapshot, CalendarEntryInput, CalendarInfo, CrashInfo, CredentialsInput, DataStats,
   EventMap, EventName, HoldingsSnapshot, JobProgress, PositionsSnapshot, Profile, RefreshScope, SessionStatus, ShortcutAction,
-  ShortcutScope, StatusSnapshot,
+  StatusSnapshot,
 } from '../backend';
 import { CalendarRefusal, checkEntry, mergeOverrides, parseCalendarCsv } from './calendar';
 import { next0600Ist } from './fixtures';
 import { createMarketDomains, type MarketMockState } from './market';
+import { checkSetting, SettingRefusal } from './settings';
+import { checkRebind, ShortcutRefusal } from './shortcuts';
 
 export interface MockState extends MarketMockState {
   session: SessionStatus;
@@ -69,23 +71,12 @@ function goLike<T>(fn: () => T): T {
   }
 }
 
-const TIMEFRAMES = ['minute', '3minute', '5minute', '10minute', '15minute', '30minute', '60minute', 'day'];
-
-// The Go validators of contract §E that the UI can trip.
-const VALIDATORS: Record<string, (v: unknown) => string | null> = {
-  'backup.schedule.keep': (v) => (Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 365 ? null : 'Keep between 1 and 365 backups'),
-  'log.level': (v) => (v === 'info' || v === 'debug' ? null : 'Log level must be info or debug'),
-  'chart.default_timeframe': (v) => (typeof v === 'string' && TIMEFRAMES.includes(v) ? null : 'Unknown timeframe'),
-};
-
 const CRED_RE = /^[A-Za-z0-9]{6,64}$/;
 const normalizeCredential = (v: string): string => v.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
 
 /** Go kite.CodeLoginBusy (internal/kite/session_types.go). */
 const LOGIN_BUSY = 'login_in_progress';
 const INVALID_PORT = 'Choose a port between 1024 and 65535. Then set the redirect URL of your app in the Kite developer console to http://127.0.0.1:<port>/kite/callback with that port.';
-
-const overlaps = (a: ShortcutScope, b: ShortcutScope) => a === b || a === 'global' || b === 'global';
 
 type Fns = Record<string, (...args: never[]) => unknown>;
 type Wrapped<T extends Fns> = { [K in keyof T]: (...a: Parameters<T[K]>) => Promise<Awaited<ReturnType<T[K]>>> };
@@ -307,23 +298,32 @@ export function createMockBackend(seed: MockState, opts: MockOptions = {}): Mock
     settings: wrap('settings', {
       all: () => Object.entries(state.settings).filter(([name]) => !name.startsWith('kite.')).map(([name, valueJson]) => ({ name, valueJson })),
       set: (name: string, valueJSON: string) => {
-        if (name.startsWith('kite.')) throw refusal('use_credentials_flow', 'settings', 'Change Kite settings in Settings → Kite connection');
-        const value: unknown = JSON.parse(valueJSON);
-        const reason = VALIDATORS[name]?.(value);
-        if (reason) throw refusal('invalid', 'settings', reason);
-        state.settings[name] = valueJSON;
+        if (name.startsWith('kite.')) throw refusal('use_credentials_flow', 'settings', 'Change Kite settings in Settings → Kite connection.');
+        // As Go service.SetSetting: invalid_setting / unknown_setting with Go's reasons; the canonical JSON is stored.
+        let checked: ReturnType<typeof checkSetting>;
+        try {
+          checked = checkSetting(name, valueJSON);
+        } catch (e) {
+          if (e instanceof SettingRefusal) throw refusal(e.code, 'settings', e.reason);
+          throw e;
+        }
+        state.settings[name] = checked.valueJson;
         persist();
-        emit('settings.changed', { key: name, value });
-        return { name, valueJson: valueJSON };
+        emit('settings.changed', { key: name, value: checked.value });
+        return { name, valueJson: checked.valueJson };
       },
       shortcuts: () => copy(state.shortcuts),
       rebind: (actionId: string, binding: string) => {
-        const target = state.shortcuts.find((a) => a.id === actionId);
-        if (!target) throw refusal('invalid', 'shortcuts', `Unknown action ${actionId}`);
-        // As in Go: an empty binding (unbound action) never conflicts.
-        const clash = binding === '' ? undefined : state.shortcuts.find((a) => a.id !== actionId && a.binding === binding && overlaps(a.scope, target.scope));
-        if (clash) throw refusal('conflict', 'shortcuts', clash.label);
-        target.binding = binding;
+        // As Go service.Rebind: invalid / unknown_action / conflict with Go's reasons; the canonical binding is stored.
+        let checked: ReturnType<typeof checkRebind>;
+        try {
+          checked = checkRebind(state.shortcuts, actionId, binding);
+        } catch (e) {
+          if (e instanceof ShortcutRefusal) throw refusal(e.code, 'shortcuts', e.reason);
+          throw e;
+        }
+        const { target, canon } = checked;
+        target.binding = canon;
         // As in Go (service.publishShortcuts): the full list on settings.changed key "shortcuts".
         emit('settings.changed', { key: 'shortcuts', value: state.shortcuts });
         return copy(target);
