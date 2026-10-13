@@ -219,6 +219,7 @@ func TestImportRules_Fixture(t *testing.T) {
 	assertList(t, got, []string{
 		"g0-http fixture/internal/rawhttp net/http",
 		"g0-http fixture/internal/netuser net/http",
+		"g0-http fixture/internal/httpvia net/http", // dot.go (g0-httpuse fixture)
 		"g0-net fixture/internal/netuser crypto/tls",
 		"g0-net fixture/internal/netuser net",
 		"g0-net fixture/internal/netuser os/exec",
