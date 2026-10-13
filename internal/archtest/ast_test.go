@@ -219,6 +219,7 @@ func TestImportRules_Fixture(t *testing.T) {
 	assertList(t, got, []string{
 		"g0-http fixture/internal/rawhttp net/http",
 		"g0-http fixture/internal/netuser net/http",
+		"g0-http fixture/internal/httpvia net/http", // dot.go (g0-httpuse fixture)
 		"g0-net fixture/internal/netuser crypto/tls",
 		"g0-net fixture/internal/netuser net",
 		"g0-net fixture/internal/netuser os/exec",
@@ -263,6 +264,10 @@ func TestPathRule_Fixture(t *testing.T) {
 		"g0-path rawhttp/kitehttp.go:14", "g0-path rawhttp/kitehttp.go:23", "g0-path rawhttp/kitehttp.go:29", "g0-path rawhttp/kitehttp.go:35",
 		"g0-path rawpath/path.go:4", "g0-path rawpath/path.go:13", "g0-path rawpath/path.go:14", "g0-path rawpath/path.go:19", "g0-path rawpath/path.go:20",
 		"g0-path rawpath/upper.go:5", "g0-path rawpath/upper.go:6", "g0-path rawpath/upper.go:7",
+		// M1: the path is percent-decoded, given a leading "/" when relative (with a "/" in it) and cleaned
+		// before it is matched.
+		"g0-path rawpath/bypass.go:7", "g0-path rawpath/bypass.go:8", "g0-path rawpath/bypass.go:9", "g0-path rawpath/bypass.go:10",
+		"g0-path rawpath/bypass.go:11", "g0-path rawpath/bypass.go:12", "g0-path rawpath/bypass.go:13", "g0-path rawpath/bypass.go:14",
 	}
 	for _, tags := range []string{"noorders", "orders", "orders,noorders"} {
 		t.Run(tags, func(t *testing.T) { assertList(t, runFixture(t, tags, CheckKitePaths), want) })

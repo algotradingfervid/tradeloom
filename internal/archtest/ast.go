@@ -10,7 +10,9 @@ import (
 	"go/token"
 	"go/types"
 	"io/fs"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -596,8 +598,18 @@ func CheckKiteRawWrite(module string, pkgs []*packages.Package) []Violation {
 // orders, GTT, alerts, mutual funds, position conversion and holdings authorisation. /orders and
 // /portfolio/positions also prefix read endpoints; the rule bans those too outside the mock, because
 // production code reaches Kite only through gokiteconnect's read methods. The entries omit the leading
-// "/" (writePathPrefix adds it) so this list does not trip g0-path itself without exempting archtest.
-var writePathPrefixes = []string{"orders", "gtt", "alerts", "mf/", "portfolio/positions", "portfolio/holdings/authorise"}
+// "/" (writePathPrefix adds it) and are joined from segments at run time, so this list does not trip
+// g0-path itself (a relative path with a "/" is matched too, M1) without exempting archtest.
+var writePathPrefixes = joinSegments([][]string{{"orders"}, {"gtt"}, {"alerts"}, {"mf", ""},
+	{"portfolio", "positions"}, {"portfolio", "holdings", "authorise"}})
+
+func joinSegments(segs [][]string) []string {
+	out := make([]string, 0, len(segs))
+	for _, s := range segs {
+		out = append(out, strings.Join(s, "/"))
+	}
+	return out
+}
 
 // kitePath trims leading whitespace and a host ("https://api.kite.trade/x" or "api.kite.trade/x")
 // from s, leaving the path.
@@ -618,10 +630,33 @@ func kitePath(s string) string {
 	return s
 }
 
-// writePathPrefix returns the write-path prefix s starts with (case-folded), or "".
+// normKitePath returns the path s names as the server would route it (M1), or "" when s is not a path:
+// percent-decoded until stable (as netguard's requestPaths), host and leading whitespace trimmed
+// (kitePath), given a leading "/" when it is relative but contains a "/" ("orders/regular"; a bare word
+// such as "orders" or "GetOrders" is not a path), cleaned of dot segments and repeated slashes
+// (path.Clean), and lower-cased. A string that does not decode is matched undecoded.
+func normKitePath(s string) string {
+	for i := 0; i < 8; i++ {
+		u, err := url.PathUnescape(s)
+		if err != nil || u == s {
+			break
+		}
+		s = u
+	}
+	s = kitePath(s)
+	if !strings.HasPrefix(s, "/") {
+		if !strings.Contains(s, "/") {
+			return ""
+		}
+		s = "/" + s
+	}
+	return strings.ToLower(path.Clean(s))
+}
+
+// writePathPrefix returns the write-path prefix the normalised s starts with (normKitePath), or "".
 func writePathPrefix(s string) string {
-	p := strings.ToLower(kitePath(s))
-	if !strings.HasPrefix(p, "/") {
+	p := normKitePath(s)
+	if p == "" {
 		return ""
 	}
 	for _, w := range writePathPrefixes {
@@ -924,6 +959,131 @@ func CheckKiteConstruct(module string, pkgs []*packages.Package) []Violation {
 			}
 			out = append(out, Violation{"g0-kitenew", position(p.Fset, id.Pos()),
 				"kiteconnect." + name + " is only allowed in internal/kite/auth.go and internal/kite/client.go"})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// httpUseFuncs are the package-level net/http identities that build or send a request outside the
+// gokiteconnect client kite.New / NewAuth construct (g0-httpuse); httpUseMethods are the *http.Client
+// methods that send one. A client built from them carries no write deny-list (netguard.go guardWrites).
+var (
+	httpUseFuncs   = []string{"Client", "Transport", "DefaultClient", "DefaultTransport", "NewRequest", "NewRequestWithContext", "Get", "Post", "PostForm", "Head"}
+	httpUseMethods = []string{"Do", "Get", "Post", "PostForm", "Head"}
+)
+
+// httpAllowance is what one file may use of the g0-httpuse identities ("net/http.Client",
+// "net/http.(*Client).Do") and why.
+type httpAllowance struct {
+	objects []string
+	reason  string
+}
+
+// httpUseAllowed is the explicit allow-list of g0-httpuse, keyed by module-relative file (I3). Found with
+// grep and CheckHTTPUse on the real module (tags webkit2_41,noorders / orders) on 2026-10-13: these are
+// exactly the files that use one today. Adding a file or an object is a G-0 review item.
+var httpUseAllowed = map[string]httpAllowance{
+	"internal/kite/client.go": {[]string{"net/http.Client"},
+		"kite.(*Client).attempt hands gokiteconnect a per-attempt *http.Client whose transport is ctxTransport over the recorder over guardWrites (New)"},
+	"internal/kite/auth.go": {[]string{"net/http.Client", "net/http.DefaultTransport"},
+		"NewAuth takes and copies a *http.Client and puts it behind guardWrites; nil gets NewAllowListTransport(http.DefaultTransport, AllowedHosts)"},
+	"internal/kite/netguard.go": {[]string{"net/http.DefaultTransport"},
+		"NewAllowListTransport and guardWrites default a nil next to http.DefaultTransport, under the deny-list they add"},
+	"internal/kite/mock/recorder.go": {[]string{"net/http.Client"},
+		"(*Recorder).Client returns the httptest server's client for tests; g0-mock bars non-test code from importing the mock"},
+}
+
+// httpUseObjects resolves httpUseFuncs and httpUseMethods in the loaded net/http to their objects, labelled
+// "net/http.Name" and "net/http.(*Client).Name".
+func httpUseObjects(pkgs []*packages.Package) map[types.Object]string {
+	out := map[types.Object]string{}
+	hp := typesByPath(pkgs)["net/http"]
+	if hp == nil {
+		return out
+	}
+	for _, n := range httpUseFuncs {
+		if obj := hp.Scope().Lookup(n); obj != nil {
+			out[obj] = "net/http." + n
+		}
+	}
+	if tn, ok := hp.Scope().Lookup("Client").(*types.TypeName); ok {
+		for _, n := range httpUseMethods {
+			if m, _, _ := types.LookupFieldOrMethod(types.NewPointer(tn.Type()), true, hp, n); m != nil {
+				if _, isFunc := m.(*types.Func); isFunc {
+					out[m] = "net/http.(*Client)." + n
+				}
+			}
+		}
+	}
+	return out
+}
+
+// HTTPUseMissing lists the g0-httpuse identities the loaded net/http does not declare, and the allow
+// entries ("file: name") that are not one of them. pkgs (one load) must include net/http.
+func HTTPUseMissing(pkgs []*packages.Package, allow map[string]httpAllowance) []string {
+	banned := httpUseObjects(pkgs)
+	labels := map[string]bool{}
+	for _, l := range banned {
+		labels[l] = true
+	}
+	var out []string
+	for _, n := range httpUseFuncs {
+		if !labels["net/http."+n] {
+			out = append(out, "net/http."+n)
+		}
+	}
+	for _, n := range httpUseMethods {
+		if !labels["net/http.(*Client)."+n] {
+			out = append(out, "net/http.(*Client)."+n)
+		}
+	}
+	byPath := typesByPath(pkgs)
+	for file, a := range allow {
+		for _, name := range a.objects {
+			switch {
+			case labels[name]:
+			case lookupPkgObject(byPath, name) != nil:
+				out = append(out, file+": "+name+" (not a banned net/http identity)")
+			default:
+				out = append(out, file+": "+name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CheckHTTPUse reports every use, in any module package, of a net/http identity that builds or sends a
+// request (httpUseFuncs, httpUseMethods) outside the file and object pairs of httpUseAllowed (g0-httpuse,
+// I3). g0-http lets all of internal/kite import net/http, so without this a hand-rolled client in a new
+// internal/kite file would send requests that pass neither through kite.New / NewAuth (and so the write
+// deny-list) nor through gokiteconnect's write methods (the nm check). Matched by types.Object identity
+// through TypesInfo.Uses: renamed and dot-imports, function and method values, method expressions and
+// methods on a *http.Client returned by another package are caught; kite.Client and fields named Client
+// are not. Test files are not loaded and are exempt. Residual: a request sent through a RoundTripper or
+// *http.Client value that an allowed file hands out (the method of the RoundTripper interface is not
+// banned), httptest, and golang.org/x/net or raw net sockets under internal/kite.
+func CheckHTTPUse(module string, pkgs []*packages.Package) []Violation {
+	return checkHTTPUse(module, pkgs, httpUseAllowed)
+}
+
+func checkHTTPUse(module string, pkgs []*packages.Package, allow map[string]httpAllowance) []Violation {
+	banned := httpUseObjects(pkgs)
+	var out []Violation
+	for _, p := range pkgs {
+		rel := relPkg(module, p.PkgPath)
+		for id, obj := range p.TypesInfo.Uses {
+			name, ok := banned[obj]
+			if !ok {
+				continue
+			}
+			file := rel + "/" + filepath.Base(p.Fset.Position(id.Pos()).Filename)
+			if containsStr(allow[file].objects, name) {
+				continue
+			}
+			out = append(out, Violation{"g0-httpuse", position(p.Fset, id.Pos()),
+				name + " builds or sends an HTTP request; allowed only in the httpUseAllowed files (kite.New / NewAuth put the write deny-list under every Kite client)"})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })

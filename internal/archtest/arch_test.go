@@ -65,11 +65,15 @@ func TestArchitecture(t *testing.T) {
 				vs = append(vs, CheckExec("tradeloom", set)...)
 				vs = append(vs, CheckSysObjects("tradeloom", set)...)
 				vs = append(vs, CheckKiteConstruct("tradeloom", set)...)
+				vs = append(vs, CheckHTTPUse("tradeloom", set)...)
 				vs = append(vs, CheckOtherFiles("tradeloom", set)...)
 				vs = append(vs, CheckCgo("tradeloom", set)...)
 			}
 			if missing := SysAllowMissing(pkgs, sysImporters); len(missing) != 0 {
 				t.Errorf("Ruling 99 g0-sys allow-list entries not found: %v", missing)
+			}
+			if missing := HTTPUseMissing(pkgs, httpUseAllowed); len(missing) != 0 {
+				t.Errorf("I3 g0-httpuse names or allow-list entries not found: %v", missing)
 			}
 			if missing := KiteConstructMissing(pkgs); len(missing) != 0 {
 				t.Errorf("Ruling 91 g0-kitenew names not found in gokiteconnect: %v", missing)
